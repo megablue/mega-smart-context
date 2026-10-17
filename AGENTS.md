@@ -124,10 +124,15 @@ The gate before a commit is every check, not just the tests:
     npm run typecheck; npm run smoke; npm run test:install   (from the repo root)
 
 This shell is Windows PowerShell 5.1: no `&&` (a parser error), chain with `;`
-and check `$LASTEXITCODE`. There is no separate formatter or linter yet;
-`tsc --noEmit` under `strict: true` is the strict flag the smoke runs after. A
-smoke run alone will import and execute a module that still fails strict
-typecheck, so the typecheck is part of the gate rather than a nicety.
+and check `$LASTEXITCODE`. The global `core.autocrlf` is `true`, so
+`.gitattributes` pins `* text=auto eol=lf`: index and working copy are both LF
+and `git add` stays quiet; a file that arrives with CRLF is the exception worth
+noticing, not the norm.
+
+There is no separate formatter or linter yet; `tsc --noEmit` under `strict: true`
+is the strict flag the smoke runs after. A smoke run alone will import and
+execute a module that still fails strict typecheck, so the typecheck is part of
+the gate rather than a nicety.
 
 ## Workflow
 

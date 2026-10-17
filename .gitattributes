@@ -1,0 +1,4 @@
+# Normalize every text file to LF in the repository and in the working copy.
+# The global core.autocrlf=true would otherwise hand CRLF back on checkout and
+# make every file look modified to a tool that writes LF.
+* text=auto eol=lf
