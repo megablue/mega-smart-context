@@ -1,0 +1,15 @@
+#!/bin/sh
+# Stamp the per-commit version before the commit exists.
+#
+# The patch is the commit count since the base in package.json. A pre-commit
+# hook runs while HEAD is still the parent, so it counts the commit about to be
+# made (--next) and stages what it rewrote, so the number lands in this commit.
+#
+# Installed per clone with: npm run hooks
+set -e
+
+cd "$(git rev-parse --show-toplevel)"
+node scripts/version.mjs --write --next
+git add package.json
+if [ -f package-lock.json ]; then git add package-lock.json; fi
+exit 0

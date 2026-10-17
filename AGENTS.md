@@ -110,6 +110,13 @@ Everything runs from the repo root unless said otherwise.
 - Install into project scope (this repo only): `npm run plugin:install:project`
 - Install into user scope (every project): `npm run plugin:install`
 - Check or remove: `npm run plugin:status`, `npm run plugin:uninstall`
+- Git hooks (once per clone): `npm run hooks` sets this repo's
+  `core.hooksPath=.githooks`, so the pre-commit version stamp and the
+  `commit-msg` forward run. It shadows the machine-wide
+  `C:/Users/mega/.githooks`, and `.githooks/commit-msg` forwards to that guard
+  rather than copying it.
+- Version: `npm run version` prints what `HEAD` implies; `npm run version:check`
+  asserts `package.json` already carries it. See `docs/features/version.md`.
 - Load the plugin in OpenCode: the host resolves `<plugin-root>/server`, so
   point a discovery directory at this package. Project scope:
   `.opencode/plugin/mega-smart-context`; user scope:
@@ -121,7 +128,7 @@ Everything runs from the repo root unless said otherwise.
 
 The gate before a commit is every check, not just the tests:
 
-    npm run typecheck; npm run smoke; npm run test:install   (from the repo root)
+    npm run typecheck; npm run smoke; npm run test:install; npm run version:check   (from the repo root)
 
 This shell is Windows PowerShell 5.1: no `&&` (a parser error), chain with `;`
 and check `$LASTEXITCODE`. The global `core.autocrlf` is `true`, so
@@ -183,6 +190,9 @@ the gate rather than a nicety.
   (a count since a base tag, a stamped build number), packaging first yields
   the previous commit's number. Raise the minor and the base together, in the
   same commit, and keep every reader of that number reading it from one place.
+  This repository stamps the patch itself: `.githooks/pre-commit` runs
+  `node scripts/version.mjs --write --next`, which requires `npm run hooks` to
+  have been run once (see Commands and `docs/features/version.md`).
 - **Do not commit before the user has looked at it.** Hand a visual change over
   as a build and wait for confirmation.
 

@@ -21,6 +21,8 @@ export interface CommandDeps {
   readonly config: ResolvedConfig
   /** Deliver text to the session. The adapter maps this to `ctx.session.prompt`. */
   readonly reply: (sessionID: string, text: string) => Promise<void>
+  /** The loaded build's own version, shown by `status`. The adapter reads it. */
+  readonly version?: string
   readonly now?: () => number
 }
 
@@ -31,7 +33,7 @@ export async function runContextCommand(sessionID: string, args: string, deps: C
   const record = await deps.store.load(sessionID)
 
   if (text.length === 0 || text === "status") {
-    await deps.reply(sessionID, renderStats(record, deps.config))
+    await deps.reply(sessionID, renderStats(record, deps.config, deps.version))
     return
   }
 
@@ -46,7 +48,7 @@ export async function runContextCommand(sessionID: string, args: string, deps: C
       if (entry !== undefined) archived += 1
     }
     await deps.store.save(sessionID, record)
-    await deps.reply(sessionID, `archived ${archived} pending turn(s)\n\n` + renderStats(record, deps.config))
+    await deps.reply(sessionID, `archived ${archived} pending turn(s)\n\n` + renderStats(record, deps.config, deps.version))
     return
   }
 

@@ -22,6 +22,7 @@ import { pathToFileURL } from "node:url"
 
 import { parseLayer } from "../src/core/config.ts"
 import { emptyMemory } from "../src/core/schema.ts"
+import { deriveVersion, readVersionBase } from "../src/core/version.ts"
 import { balanceCuts, erodeToolResults, selectWorkingWindow, turnSpans } from "../src/core/view.ts"
 
 const root = resolve(process.argv[2] ?? ".")
@@ -42,6 +43,32 @@ passed += 1
 assert.equal(parseLayer({ memoryTokens: 10 }, "test").memoryTokens, 1000, "memoryTokens has a floor")
 passed += 1
 assert.equal(parseLayer({ charsPerToken: 0 }, "test").charsPerToken, 2, "charsPerToken is clamped")
+passed += 1
+
+// ---------------------------------------------------------------------------
+// Unit: the per-commit version arithmetic
+// ---------------------------------------------------------------------------
+
+const versionBase = readVersionBase({ version: "0.1.7", megaSmartContext: { countBase: 3 } })
+assert.equal(versionBase.major, 0, "readVersionBase reads the major")
+assert.equal(versionBase.minor, 1, "readVersionBase reads the minor")
+assert.equal(versionBase.countBase, 3, "readVersionBase reads the count base")
+passed += 1
+assert.equal(deriveVersion(versionBase, 3), "0.1.0", "the patch counts from the base")
+passed += 1
+assert.equal(deriveVersion(versionBase, 11), "0.1.8", "the patch grows with the commit count")
+passed += 1
+assert.equal(deriveVersion(versionBase, 1), "0.1.0", "a count below the base clamps at zero")
+passed += 1
+assert.equal(deriveVersion({ major: 0, minor: 2, countBase: 0 }, 4), "0.2.4", "a zero base counts every commit")
+passed += 1
+assert.equal(readVersionBase({ version: "2.3.9", megaSmartContext: { countBase: 0 } }).major, 2, "a major other than zero reads")
+passed += 1
+assert.throws(() => readVersionBase({ version: "1.0.0" }), /countBase/, "a missing base is rejected")
+passed += 1
+assert.throws(() => readVersionBase({ version: "one.two.three", megaSmartContext: { countBase: 0 } }), /MAJOR/, "a non-numeric version is rejected")
+passed += 1
+assert.throws(() => readVersionBase({ version: "1.0.0", megaSmartContext: { countBase: -1 } }), /countBase/, "a negative base is rejected")
 passed += 1
 
 function user(id, text) {
@@ -355,6 +382,10 @@ ok(compaction.result.summary.includes("ship v0.1"), "compaction returns the memo
 
 await host.commands[0].execute({ sessionID: "s1", prompt: { text: "/context" } })
 ok(host.replies.at(-1).text.includes("smart-context"), "/context prints the status")
+ok(
+  /^smart-context v\d+\.\d+\.\d+ · /.test(host.replies.at(-1).text),
+  "/context status shows the build's version",
+)
 await host.commands[0].execute({ sessionID: "s1", prompt: { text: "/context memory goal" } })
 ok(host.replies.at(-1).text.includes("ship v0.1"), "/context memory reads one key")
 

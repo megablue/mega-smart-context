@@ -116,11 +116,13 @@ The `/context` command prints the same state for the user:
 
 | Command | Effect |
 | --- | --- |
-| `/context` or `/context status` | memory, working, pending, archive, goal |
+| `/context` or `/context status` | memory, working, pending, archive, goal, and the loaded build's version |
 | `/context now` | archive every pending turn now |
 | `/context memory <key>` | print one memory key |
 | `/context recall <query>` | search the archive as the user |
 | `/context purge <turn>` | delete a pending or archived turn |
+
+The version is `MAJOR.MINOR.PATCH`: MAJOR.MINOR is the released line, and PATCH is the number of commits since the base recorded in `package.json`, so it advances with every commit and the README version badge follows the same field. What `/context` prints is the loaded build's own version, which lags the repository until the install is re-synced.
 
 ## Settings
 

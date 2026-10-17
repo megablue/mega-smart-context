@@ -1,0 +1,16 @@
+#!/bin/sh
+# Chain the machine-wide commit-msg guard.
+#
+# This repository sets core.hooksPath=.githooks, which shadows the machine-wide
+# C:/Users/mega/.githooks. Without this forward the co-author guard there would
+# silently stop running in this repo, so the guard is re-run from its home
+# rather than copied (and possibly drifting).
+#
+# Installed per clone with: npm run hooks
+set -e
+
+global=$(git config --global --get core.hooksPath)
+if [ -n "$global" ] && [ -f "$global/commit-msg" ]; then
+  exec sh "$global/commit-msg" "$@"
+fi
+exit 0

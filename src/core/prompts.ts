@@ -173,11 +173,17 @@ export function renderMemory(record: SessionRecord, config: ResolvedConfig, repo
   return lines.join("\n")
 }
 
-/** The multi-line status `/context` prints. */
-export function renderStats(record: SessionRecord, config: ResolvedConfig): string {
+/**
+ * The multi-line status `/context` prints.
+ *
+ * `version` is the loaded build's own `package.json` version, passed by the
+ * adapter; the core does not read it, so a caller without one still gets the
+ * status.
+ */
+export function renderStats(record: SessionRecord, config: ResolvedConfig, version?: string): string {
   const report = budgetOf(record, config)
   const lines = [
-    `smart-context · ${budgetLine(report)}`,
+    `smart-context${version === undefined ? "" : ` v${version}`} · ${budgetLine(report)}`,
     `window: ${report.workingTurns} turns kept, ${report.droppedTurns} dropped · over budget: ${report.overBudget ? "yes" : "no"}`,
     `goal: ${report.goalEmpty ? "(empty)" : q(oneLine(record.memory.goal))}`,
   ]

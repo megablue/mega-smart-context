@@ -25,6 +25,7 @@ import { resolveHostConfig } from "./config.ts"
 import { createFsFeatureMap, runContextTransform } from "./context.ts"
 import { SessionStore } from "../../core/state.ts"
 import { createSmartContextTool } from "./tool.ts"
+import { readPluginVersion } from "./version.ts"
 import type { PluginContext, Registration } from "./types.ts"
 
 export const id = "mega-smart-context"
@@ -47,6 +48,8 @@ export async function setup(ctx: PluginContext): Promise<() => Promise<void>> {
   const featureMap = createFsFeatureMap()
   const childCache = new Map<string, boolean>()
   const registrations: Registration[] = []
+  // The build's own version, so `/context status` shows what is loaded.
+  const version = readPluginVersion()
 
   registrations.push(
     await ctx.session.hook("context", async (event) => {
@@ -89,6 +92,7 @@ export async function setup(ctx: PluginContext): Promise<() => Promise<void>> {
             createContextCommand({
               store,
               config,
+              version,
               reply: async (sessionID, text) => {
                 await ctx.session.prompt({ sessionID, text })
               },

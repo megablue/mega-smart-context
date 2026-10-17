@@ -15,6 +15,7 @@ Read order: `HANDOFF.md` (current state) -> this index -> **the page for your ar
 | Feature refs | [feature-refs.md](feature-refs.md) | the `ref` action, `extractSection`, gist vs section, `docs/features`, "pointer or paste" |
 | Compaction | [compaction.md](compaction.md) | the `compaction` hook, `runCompaction`, a checkpoint, "the summary and memory disagree" |
 | Installation | [installation.md](installation.md) | `plugin:install`, `.opencode/plugin`, `~/.config/opencode/plugins`, drift, `files[]`, "a stale install" |
+| Version stamping | [version.md](version.md) | `scripts/version.mjs`, `countBase`, the version in `/context status`, the README badge, `npm run hooks`, the pre-commit stamp, "the version is wrong after a rebase" |
 
 The index is the entry point, not a glob: pages may live in subdirectories as well as at the top level, so `docs/features/*.md` alone misses them. Follow the row's link.
 

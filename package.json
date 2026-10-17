@@ -1,6 +1,9 @@
 {
   "name": "mega-smart-context",
-  "version": "0.1.0",
+  "version": "0.1.1",
+  "megaSmartContext": {
+    "countBase": 3
+  },
   "private": true,
   "description": "OpenCode 2.0 plugin: the model owns the context window — a bounded memory document, a verbatim working window, and a gated archive instead of append-only history",
   "type": "module",
@@ -29,6 +32,9 @@
     "typecheck": "tsc --noEmit",
     "smoke": "node scripts/smoke.mjs .",
     "test:install": "node scripts/install-smoke.mjs .",
+    "version": "node scripts/version.mjs",
+    "version:check": "node scripts/version.mjs --check",
+    "hooks": "git config core.hooksPath .githooks",
     "plugin:install": "node scripts/install.ts",
     "plugin:install:project": "node scripts/install.ts --project",
     "plugin:uninstall": "node scripts/install.ts --remove",

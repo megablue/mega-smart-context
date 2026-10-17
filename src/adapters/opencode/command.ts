@@ -17,6 +17,7 @@ export function createContextCommand(options: {
   readonly store: SessionStore
   readonly config: ResolvedConfig
   readonly reply: (sessionID: string, text: string) => Promise<void>
+  readonly version?: string
 }): CommandDefinition {
   return {
     name: "context",
