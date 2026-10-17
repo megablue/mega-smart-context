@@ -1,0 +1,41 @@
+# Session handoff - mega-smart-context
+
+Next: `docs/features/README.md` - the feature map. Read only the page for your area before the code.
+
+**A snapshot, not a source of truth.** This file goes stale by design. If it disagrees with the code, the code is right. `AGENTS.md` is the process doc, `docs/features/` is the feature map and `docs/SPEC.md` is the behavior spec. This file is the volatile one - it exists so a new session knows *where things stand*, not *how they work*.
+
+As of `working tree (no commit yet)` - 2026-10-17.
+
+## State
+
+- **v0.1 is implemented and the gate is green.** `npm run typecheck` passes; `npm run smoke` prints `smoke: 49 assertions passed`; `npm run test:install` prints `install smoke: 17 assertions passed`.
+- **The live run exposed one real bug, now fixed in the source and synced to the project copy.** A tool result whose `result.type` is `content` (a multi-part result, e.g. two text blocks) was eroded by writing a string into `result.value`. OpenCode's `SessionModelRequest.prepare` maps over that array (`l.value.map`), so every continuation of that turn failed with **"session failed: l.value.map is not a function"**. `erodeToolResults` now shrinks only the text parts and keeps the array; `json` results are left untouched. Pinned by three new smoke assertions. **The running host still has the old code until OpenCode restarts.**
+- **The install routine is coded.** `scripts/install.ts` copies the shippable set into the user or project scope, reports drift, and removes a copy. `package.json` has `plugin:install`, `plugin:install:project`, `plugin:uninstall`, `plugin:status` and `test:install`. `README.md` is the user-facing install and configure guide.
+- **The package `options.json` is now a real config layer.** `src/core/config.ts` resolves defaults -> package options -> host options -> user file. The adapter reads `options.json` from the package root (`OPTIONS_PATH`).
+- **mega-skillstate is disabled, not removed.** `C:\Users\mega\.config\opencode\mega-skillstate.json` has `"enabled": false`; the user restarted OpenCode. Re-enable by setting it back to `true` and restarting.
+- **The project-scope install is the next step.** `npm run plugin:install:project` writes `.opencode/plugin/mega-smart-context`; that directory is ignored by `.gitignore`. A fresh clone must run the command again.
+- **The plugin has run live (v0.1, OpenCode 2.0.32), and the live verification is complete.** Confirmed: the `<smart-context>` block on every request, `smart_context` callable by name, per-session memory that survives a restart, a child session with its own empty memory (parent counts do not leak), `/context` delivery, and the `compaction` hook. The compaction probe (a seeded session, then a manual compact) produced a checkpoint whose summary was exactly the rendered memory block - `owned`, no host summarization. The live message shape also disproved the fake host in one place: a real tool result can be `{ result: { type: "content", value: [...] } }`, which the smoke only modelled as `type: "text"`.
+- **The erosion fix is live.** OpenCode restarted at 22:11, after the 22:07 edit of `view.ts`; the installed copy is in sync (26 files) and the gate is green again (`typecheck`, `smoke: 49`, `install smoke: 17`).
+
+## Open threads
+
+- **Make the first commit.** The user has not reviewed the build yet; `AGENTS.md` says do not commit before they have. Once approved, `git init`, stage the source (not `node_modules/`, not `.opencode/plugin/`), and write the message through a file.
+- **Install user scope after approval.** `npm run plugin:install` and restart.
+- **Consider a dedicated missing-section ref test.** The smoke's `ref` uses `context-handoff.md` / `How & why`, which resolves. The `undefined` branch in `createFsFeatureMap` is reviewed, not asserted.
+- **Consider a live test for a mixed-shape turn.** The erosion fix is live but has not yet been exercised by a real multi-part result over `maxResultChars` since the restart.
+
+## Known gaps (volatile; the durable traps live in the feature pages)
+
+- **The smoke is not the host.** It exercises the transform, the tool, the archive, subagents, compaction and the installer through a fake `ctx`. The live run found one shape mismatch the fake host hid (`content` tool results); assume other shapes can differ too.
+- **`/context` delivers through `ctx.session.prompt`.** That creates a user message, which the next context pass treats as a real turn. It does not corrupt memory, but the command's report can become part of the conversation it is reporting on. There is no display-only channel: `ctx.session.synthetic` still starts a model turn (probed live), so `prompt` is the honest choice.
+- **A child's archive survives until the store's LRU evicts it** (`MAX_SESSIONS` 64). There is no per-child cleanup on session end.
+- **The archive caps are per session** (`archiveMaxTurns`, `archiveMaxChars`); there is no global storage budget.
+- **The ref reader uses the session directory's `docs/features/`.** A worktree without that directory reports "section not found" but still stores the pointer.
+- **The install is a copy.** Editing the source tree does not update an installed copy; run `plugin:install` again and restart. `plugin:status` reports the drift.
+- Environment note: this shell is Windows PowerShell 5.1 - no `&&` (a parser error), chain with `;` and check `$LASTEXITCODE`. `Get-Content` can render UTF-8 punctuation as mojibake, so verify a written `.md` with a `node -e` UTF-8 read rather than trusting the console.
+
+## Local-only state (not on the remote)
+
+- `node_modules/` and `package-lock.json` from `npm install` (both ignored).
+- `.opencode/plugin/mega-smart-context` - the project-scope copy, ignored by `.gitignore`.
+- No `.git`, no remote, no tags.

@@ -1,0 +1,15 @@
+{
+  "enabled": true,
+  "memoryTokens": 50000,
+  "workingTokens": 16000,
+  "charsPerToken": 4,
+  "subagents": true,
+  "evictionLead": 1,
+  "autoArchive": true,
+  "archiveMaxTurns": 200,
+  "archiveMaxChars": 400000,
+  "refs": true,
+  "maxResultChars": 4000,
+  "manualCommand": true,
+  "debug": false
+}
