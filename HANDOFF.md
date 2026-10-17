@@ -4,7 +4,7 @@ Next: `docs/features/README.md` - the feature map. Read only the page for your a
 
 **A snapshot, not a source of truth.** This file goes stale by design. If it disagrees with the code, the code is right. `AGENTS.md` is the process doc, `docs/features/` is the feature map and `docs/SPEC.md` is the behavior spec. This file is the volatile one - it exists so a new session knows *where things stand*, not *how they work*.
 
-As of `main` (HEAD `99ca999`, plus an uncommitted README packaging pass) - 2026-10-17.
+As of `main` (HEAD `a048664`, plus an uncommitted README packaging pass) - 2026-10-18.
 
 ## State
 
@@ -40,5 +40,6 @@ As of `main` (HEAD `99ca999`, plus an uncommitted README packaging pass) - 2026-
 
 - **`node_modules/` is ignored; `package-lock.json` is tracked** (the pre-commit hook stamps its version fields too).
 - Run `npm run hooks` once per clone: it sets `core.hooksPath=.githooks`, which is what makes the pre-commit stamp and the `commit-msg` forward fire. This clone has it set.
+- The user-scope copy at `~/.config/opencode/plugins/mega-smart-context` was re-synced (29 files, in sync) after the version change. **OpenCode must restart before `/context` prints the version** - the running host still has the pre-version code.
 - `.opencode/plugin/` - empty; the project-scope copy was removed (the user scope is the install), and `.gitignore` covers it.
 - `.git` is present (branch `main`, three commits); no remote and no tags yet.
