@@ -61,6 +61,8 @@ The plugin imports the host only as types; the runtime has no `@opencode/plugin`
 
 Do not run this alongside `mega-skillstate` (or any other plugin that rewrites `context`). Both rewrite the same request and both may own `compaction`. Disable the other plugin first; see the README.
 
+Two scopes are two managers. The host reads both discovery roots and keys a plugin by the path it loaded it from, so a user copy and a project copy of *this* plugin are two instances in one session — the log shows `msg="loading plugin"` twice with different `id=` values, both `role=server`. The payload still converges: the second pass sees the `megasc_memory` id and drops it, the policy dedupes by exact text, and `event.tools[TOOL_NAME]` is a keyed write. What does not converge is the per-request work (two window passes), `compaction` ownership and the `/context` registration, and the two copies drift independently. Install one scope; `--status` prints both so a stray copy is visible.
+
 ## Config keys / UI
 
 | Script | Effect |
