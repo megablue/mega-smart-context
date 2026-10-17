@@ -1,6 +1,31 @@
+<div align="center">
+
+<img src="docs/assets/header.svg" alt="mega-smart-context — the model owns the context window" width="860" />
+
+</div>
+
 # mega-smart-context
 
 An OpenCode 2.0 plugin that hands context management to the model. Instead of replaying the whole transcript, every request carries the memory document the model wrote, a short verbatim working window, and the current turn.
+
+<div align="center">
+
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg?style=flat-square)](LICENSE)
+[![Version](https://img.shields.io/github/package-json/v/megablue/mega-smart-context?style=flat-square)](package.json)
+[![Topic: opencode-plugin](https://img.shields.io/badge/topic-opencode--plugin-0e7490.svg?style=flat-square)](https://github.com/topics/opencode-plugin)
+[![Dependencies: none](https://img.shields.io/badge/dependencies-none-brightgreen.svg?style=flat-square)](package.json)
+[![Buy me a coffee](https://img.shields.io/badge/buy%20me%20a%20coffee-PayPal-ffdd00.svg?style=flat-square&logo=buymeacoffee&logoColor=black)](https://www.paypal.me/mega3dp)
+
+</div>
+
+## What it does
+
+- The model writes a **memory document** with the `smart_context` tool — the goal, plan, facts, files, decisions and open threads — and every request starts with it.
+- A short **verbatim working window** keeps the newest turns exactly as they happened, so nothing in the live tool loop is paraphrased.
+- When a turn leaves the window it moves to a **gated archive**, kept for `recall` rather than replayed or dropped silently.
+- **Compaction is owned by the plugin.** When the host makes a checkpoint, the plugin answers with the memory document itself instead of a separate summarization call.
+- **Subagents are managed independently**, each with its own window and memory, so a child never inherits the parent's context.
+- `/context` prints the current memory and archive; `/context now` archives pending turns.
 
 ## Requirements
 
@@ -81,6 +106,28 @@ Every request starts with a `<smart-context>` block. If `goal` is empty, the mod
 
 It is idempotent by content hash: an in-sync copy is left alone; a drifted copy is resynchronized. `--status` reports missing, changed and extra files. It never copies `node_modules`.
 
+## Checks
+
+```sh
+npm install
+npm run typecheck     # tsc --noEmit, strict
+npm run smoke         # the context pass: memory injection, the working window, the archive
+npm run test:install  # the installer's copy/drift/remove assertions
+```
+
+## Where the details live
+
+- [`docs/SPEC.md`](docs/SPEC.md) — the user-visible behavior in full.
+- [`docs/features/`](docs/features/README.md) — the feature map for this plugin itself: the handoff, the memory tool, the archive, subagents, refs, compaction and the install.
+- [`AGENTS.md`](AGENTS.md) — how to work on the plugin.
+- [`HANDOFF.md`](HANDOFF.md) — where things currently stand.
+
+## Buy me a coffee
+
+This plugin is free and MIT-licensed. If it earns its keep, you can [buy me a coffee via PayPal](https://www.paypal.me/mega3dp).
+
 ## License
 
-MIT.
+MIT — see [`LICENSE`](LICENSE).
+
+Copyright (c) Evert Chin
