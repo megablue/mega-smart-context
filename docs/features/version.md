@@ -1,6 +1,6 @@
 # Version stamping - one number, derived from the commit count
 
-Status: shipped (v0.1) - Read when: `scripts/version.mjs`, `countBase`, the version in `/context status`, the README badge, `npm run hooks`, the pre-commit stamp, or "the version is wrong after a rebase".
+Status: shipped (v0.1) - Read when: `scripts/version.mjs`, `countBase`, the version in `/context status`, the README badge, `npm run hooks`, the pre-commit stamp, "the version is wrong after a rebase", or "the version jumped after an amend".
 
 ## What it does
 
@@ -36,6 +36,10 @@ User-visible behavior is in `docs/SPEC.md`.
 ### The count survives a rebase by clamping
 
 A commit count below `countBase` yields patch 0 rather than a negative number. Rewriting the counted history (rebase, squash, amending the base) therefore cannot produce an unpublishable version, but it does not restore the old number either: after a rewrite the number is the new count, which is what "commits since the base" means.
+
+### An amend is stamped one patch ahead
+
+The hook adds one because a commit is about to be created, and an amend does not create one: it replaces `HEAD`, so `git commit --amend` is stamped one patch above the count itself, and `npm run version:check` fails while that commit is the tip. The hook cannot tell the two apart - git leaves `GIT_REFLOG_ACTION` unset in `pre-commit` here (2.55), and the index, the message and the reflog all look the same at that point. It costs nothing to leave alone: the number self-corrects at the next commit, which stamps from its own count, and the sequence still rises. Make a new commit rather than an amend when the tip must pass `version:check`.
 
 ### The two hooks, and why one chains
 

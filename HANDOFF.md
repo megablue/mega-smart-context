@@ -4,7 +4,7 @@ Next: `docs/features/README.md` - the feature map. Read only the page for your a
 
 **A snapshot, not a source of truth.** This file goes stale by design. If it disagrees with the code, the code is right. `AGENTS.md` is the process doc, `docs/features/` is the feature map and `docs/SPEC.md` is the behavior spec. This file is the volatile one - it exists so a new session knows *where things stand*, not *how they work*.
 
-As of `main` (HEAD `a048664`, plus an uncommitted README packaging pass) - 2026-10-18.
+As of `main` (HEAD `bf76065`) - 2026-10-18.
 
 ## State
 
@@ -21,8 +21,8 @@ As of `main` (HEAD `a048664`, plus an uncommitted README packaging pass) - 2026-
 
 ## Open threads
 
-- **Push the repository.** `main` has three commits and no remote; add one when the user is ready (the README badge URLs assume `github.com/megablue/mega-smart-context`).
-- **Install user scope after approval.** `npm run plugin:install` and restart.
+- **Push the repository.** `main` has no remote yet; add one when the user is ready (the README badge URLs assume `github.com/megablue/mega-smart-context`).
+- **Re-sync the install and restart.** The user-scope copy lags `main` after the packaging commit. Run `npm run plugin:install`, then restart OpenCode for `/context` to print the version.
 - **Consider a dedicated missing-section ref test.** The smoke's `ref` uses `context-handoff.md` / `How & why`, which resolves. The `undefined` branch in `createFsFeatureMap` is reviewed, not asserted.
 - **Consider a live test for a mixed-shape turn.** The erosion fix is live but has not yet been exercised by a real multi-part result over `maxResultChars` since the restart.
 
@@ -40,6 +40,6 @@ As of `main` (HEAD `a048664`, plus an uncommitted README packaging pass) - 2026-
 
 - **`node_modules/` is ignored; `package-lock.json` is tracked** (the pre-commit hook stamps its version fields too).
 - Run `npm run hooks` once per clone: it sets `core.hooksPath=.githooks`, which is what makes the pre-commit stamp and the `commit-msg` forward fire. This clone has it set.
-- The user-scope copy at `~/.config/opencode/plugins/mega-smart-context` was re-synced (29 files, in sync) after the version change. **OpenCode must restart before `/context` prints the version** - the running host still has the pre-version code.
+- The user-scope copy at `~/.config/opencode/plugins/mega-smart-context` is re-synced (29 files, in sync) after the version change. **OpenCode must restart before `/context` prints the version** - the running host still has the pre-version code.
 - `.opencode/plugin/` - empty; the project-scope copy was removed (the user scope is the install), and `.gitignore` covers it.
-- `.git` is present (branch `main`, three commits); no remote and no tags yet.
+- `.git` is present (branch `main`); no remote and no tags yet.
