@@ -37,10 +37,11 @@ the working budget (verbatim), and the current turn.
   mechanical gist; purge what is irrelevant.
 - Do not search the archive out of habit. \`recall\` requires \`lost:true\`: use it
   only when a fact you need is missing from memory and the working window.
-- Host notices (Plan/Build mode) are pinned, not replayed: they stay in the system
-  prompt until a newer one replaces them, so a mode switch never evicts a turn.
-  List them with action:"notice"; retire a superseded one with remove:"<id>" (the
-  newest is the live instruction and a removal of it is refused).
+- Host notices (a Plan/Build switch, an output-limit nudge) are pinned, not
+  replayed: they stay in the system prompt until a newer one replaces them, so a
+  mode switch never evicts a turn. List them with action:"notice"; retire a
+  superseded one with remove:"<id>" (the newest is the live instruction and a
+  removal of it is refused).
 - For project knowledge, prefer a feature-map reference over pasted prose when
   the reference is shorter. action:"ref" reports the gist and section costs.
 - Keep memory lean. The budget header is the truth; compact before it is over.`
@@ -59,6 +60,9 @@ export interface BudgetReport {
   readonly overBudget: boolean
   readonly goalEmpty: boolean
   readonly modelContext?: number
+  /** The request's own system parts this plugin did not write, for display only. */
+  readonly hostSystemTokens?: number
+  readonly hostSystemParts?: number
 }
 
 /** Measure the current record. The working numbers come from the last pass. */
@@ -79,6 +83,8 @@ export function budgetOf(record: SessionRecord, config: ResolvedConfig): BudgetR
     overBudget: memoryTokens > config.memoryTokens || workingTokens > config.workingTokens,
     goalEmpty: record.memory.goal.trim().length === 0,
     modelContext: record.lastReport?.modelContext,
+    hostSystemTokens: record.lastReport?.hostSystemTokens,
+    hostSystemParts: record.lastReport?.hostSystemParts,
   }
 }
 
@@ -221,8 +227,13 @@ export function renderStats(record: SessionRecord, config: ResolvedConfig, versi
   const lines = [
     `smart-context${version === undefined ? "" : ` v${version}`} · ${budgetLine(report)}`,
     `window: ${report.workingTurns} turns kept, ${report.droppedTurns} dropped · over budget: ${report.overBudget ? "yes" : "no"}`,
-    `goal: ${report.goalEmpty ? "(empty)" : q(oneLine(record.memory.goal))}`,
   ]
+  if (report.hostSystemTokens !== undefined) {
+    lines.push(
+      `host system ~${formatTokens(report.hostSystemTokens)} est (${report.hostSystemParts ?? 0} parts) · not counted`,
+    )
+  }
+  lines.push(`goal: ${report.goalEmpty ? "(empty)" : q(oneLine(record.memory.goal))}`)
   if ((record.notices ?? []).length > 0) {
     lines.push("", NOTICE_HEADING)
     for (const notice of [...(record.notices ?? [])].reverse()) {

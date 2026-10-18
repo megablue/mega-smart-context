@@ -33,7 +33,7 @@ Actions:
 - purge { turn? | query? } — delete a pending or archived turn, or matching entries.
 - recall { query, lost:true } — search the archive. Requires lost:true: use it only when a fact you need is missing.
 - expand { turn } — read an archived turn back.
-- notice { remove? } — list the pinned host notices (Plan/Build mode), or retire a superseded one by id. The newest is the live instruction and is refused.`
+- notice { remove? } — list the pinned host notices (a mode switch or an output-limit nudge), or retire a superseded one by id. The newest is the live instruction and is refused.`
 
 export const TOOL_INPUT = {
   type: "object",

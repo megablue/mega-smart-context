@@ -23,13 +23,13 @@ import { pathToFileURL } from "node:url"
 import { parseLayer, resolveConfig } from "../src/core/config.ts"
 import { buildPayload } from "../src/core/context.ts"
 import { runMemoryTool } from "../src/core/memory-tool.ts"
-import { messagesChars } from "../src/core/measure.ts"
+import { messageChars, messagesChars } from "../src/core/measure.ts"
 import { NOTICE_HEADING } from "../src/core/prompts.ts"
 import { emptyMemory } from "../src/core/schema.ts"
 import { MAX_HISTORY, MAX_NOTICES, MAX_NOTICE_CHARS, MAX_RETIRED, SessionStore, pruneOrphans, retireNotice, sameDirectory, trimHistory, upsertNotices } from "../src/core/state.ts"
 import { extractHtmlSection, extractSection, htmlToText, pageCandidates } from "../src/core/refs.ts"
 import { deriveVersion, readVersionBase } from "../src/core/version.ts"
-import { balanceCuts, erodeToolResults, noticeOf, selectWorkingWindow, splitNotices, turnSpans } from "../src/core/view.ts"
+import { balanceCuts, erodeToolResults, hostMessageOf, isHostJob, isHostMessage, isRealUser, noticeOf, selectWorkingWindow, splitNotices, turnSpans } from "../src/core/view.ts"
 import { livenessFromError } from "../src/adapters/opencode/sessions.ts"
 import {
   DEFAULT_KEEP,
@@ -413,7 +413,7 @@ const afterB = await ageStore.load("age")
 ok(afterB.pending.some((pending) => pending.id === "u1"), "a turn that leaves the window becomes pending")
 const cReport = await agePass([...firstTurn, ...secondTurn, noticeMsg("n-mode", BUILD_NOTICE)])
 const afterC = await ageStore.load("age")
-ok(cReport.workingTurns === bReport.workingTurns, "a mode switch adds no working turn")
+ok(cReport.report.workingTurns === bReport.report.workingTurns, "a mode switch adds no working turn")
 ok(afterC.pending.some((pending) => pending.id === "u1"), "a mode switch does not age a pending turn")
 ok(afterC.archive.length === 0, "a mode switch does not archive a pending turn")
 
@@ -491,6 +491,102 @@ const plain = await noticePass("plain", [user("u1", "hello")])
 ok(plain.system.every((part) => !part.text.startsWith(NOTICE_HEADING)), "an empty notice list adds no system part")
 const noneOut = await runMemoryTool({ sessionID: "plain", action: "notice" }, noticeDeps)
 ok(noneOut.ok && /no pinned/.test(noneOut.text), "listing with no notices is a clean empty answer")
+
+// ---------------------------------------------------------------------------
+// Host messages that are not user turns: job completions and the output nudge
+// ---------------------------------------------------------------------------
+
+const OUTPUT_NUDGE =
+  "Your last response hit the output token limit (stop reason: length). Do not apologize, recap, or repeat yourself. Break the remaining work into smaller pieces."
+const SHELL_JOB = '<shell id="sh_1" state="completed" command="npm test">\nall good\n</shell>'
+const SUBAGENT_JOB = '<subagent sessionID="ses_1" state="completed" description="research">\nfindings\n</subagent>'
+
+ok(hostMessageOf(noticeMsg("o1", OUTPUT_NUDGE))?.kind === "notice", "the output-limit nudge is a notice")
+ok(noticeOf(noticeMsg("o1", OUTPUT_NUDGE, "\n@3@"))?.text === OUTPUT_NUDGE, "the nudge is recognised with a trailing @n@ marker")
+ok(
+  noticeOf(noticeMsg("o2", "The output token limit stopped your reply short.")) === undefined,
+  "a message merely about the limit is not the nudge",
+)
+ok(hostMessageOf(noticeMsg("j1", SHELL_JOB))?.kind === "job", "a shell completion is a job")
+ok(noticeOf(noticeMsg("j1", SHELL_JOB)) === undefined, "a job is not a notice, so it is never pinned")
+ok(hostMessageOf(noticeMsg("j2", SUBAGENT_JOB))?.kind === "job", "a subagent completion is a job")
+ok(isHostMessage(noticeMsg("j2", SUBAGENT_JOB)) && isHostJob(noticeMsg("j2", SUBAGENT_JOB)), "a job is a host message")
+ok(isRealUser(noticeMsg("j1", SHELL_JOB)) === false, "a job does not start a turn")
+ok(isRealUser(user("ur", "a real request")) === true, "a plain user message still starts a turn")
+ok(hostMessageOf(user("ur", "a real request")) === undefined, "a real message is not a host message")
+
+const withJob = [
+  user("u1", "Run it. ".repeat(20)),
+  assistant("a1", "Calling. ".repeat(10)),
+  noticeMsg("j-shell", SHELL_JOB),
+  assistant("a2", "Done. ".repeat(20)),
+]
+ok(turnSpans(withJob).length === 1, "a job completion annexes to the turn that started it")
+ok(
+  turnSpans(withJob)[0].chars === withJob.reduce((sum, message) => sum + messageChars(message), 0),
+  "the job's bytes stay in the turn that owns it",
+)
+
+// The nudge rides the notice rail: stripped from the window, pinned.
+const nudgeStore = new SessionStore()
+const nudgeDeps = { store: nudgeStore, config: noticeConfig }
+const nudgePass = (messages) =>
+  buildPayload({ sessionID: "nudge", system: [{ type: "text", text: "base" }], messages, model: {} }, nudgeDeps)
+const nudgePlan = await nudgePass([user("u1", "hi"), noticeMsg("o-nudge", OUTPUT_NUDGE)])
+ok(
+  nudgePlan.messages.every((message) => !JSON.stringify(message).includes("output token limit")),
+  "the nudge is not replayed as a turn",
+)
+ok(
+  nudgePlan.system.some((part) => part.text.startsWith(NOTICE_HEADING) && part.text.includes("output token limit")),
+  "the nudge is pinned on the notice rail",
+)
+const nudgeRecord = await nudgeStore.load("nudge")
+ok(nudgeRecord.notices.length === 1 && nudgeRecord.notices[0].id === "o-nudge", "the nudge is stored as a notice")
+
+// A job completion must not age a pending turn, exactly like a mode switch.
+const jobStore = new SessionStore()
+const jobDeps = {
+  store: jobStore,
+  config: resolveConfig({
+    options: { workingTokens: 500, memoryTokens: 3000, charsPerToken: 2, autoArchive: true, evictionLead: 1 },
+  }),
+}
+const jobPass = (messages) =>
+  buildPayload({ sessionID: "job", system: [{ type: "text", text: "base" }], messages, model: {} }, jobDeps)
+await jobPass(firstTurn)
+const jobBefore = await jobPass([...firstTurn, ...secondTurn])
+ok((await jobStore.load("job")).pending.some((pending) => pending.id === "u1"), "the job baseline has a pending turn")
+const jobAfter = await jobPass([...firstTurn, ...secondTurn, noticeMsg("j-late", SHELL_JOB)])
+const jobRecord = await jobStore.load("job")
+ok(jobAfter.report.workingTurns === jobBefore.report.workingTurns, "a job completion adds no working turn")
+ok(
+  jobAfter.report.workingTokens > jobBefore.report.workingTokens,
+  "the job's bytes are still counted in the working window",
+)
+ok(jobRecord.pending.some((pending) => pending.id === "u1"), "a job completion does not age a pending turn")
+ok(jobRecord.archive.length === 0, "a job completion does not archive a pending turn")
+
+// The host's own system parts are measured for display, never for a budget.
+const sysStore = new SessionStore()
+const sysPass = (system) =>
+  buildPayload({ sessionID: "sys", system, messages: [user("u1", "hi")], model: {} }, { store: sysStore, config: noticeConfig })
+const sysPlan = await sysPass([{ type: "text", text: "core instructions here. ".repeat(50) }])
+ok(sysPlan.report.hostSystemTokens > 0 && sysPlan.report.hostSystemParts === 1, "the host's own system part is measured")
+ok(
+  sysPlan.report.totalTokens === sysPlan.report.memoryTokens + sysPlan.report.workingTokens,
+  "the host system size is not added to the budget",
+)
+const sysToolDeps = { store: sysStore, config: noticeConfig }
+ok(
+  /host system ~/.test((await runMemoryTool({ sessionID: "sys", action: "stats" }, sysToolDeps)).text),
+  "/context shows the host system size when the host supplies one",
+)
+await sysPass([])
+ok(
+  !/host system ~/.test((await runMemoryTool({ sessionID: "sys", action: "stats" }, sysToolDeps)).text),
+  "no host system part, no line",
+)
 
 // ---------------------------------------------------------------------------
 // Native compaction: the second baseline in the report

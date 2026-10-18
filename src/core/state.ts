@@ -33,9 +33,9 @@ export const MAX_HISTORY = 200
 /**
  * How many distinct host notices a session record pins.
  *
- * Not a config key: the list is a handful of short mode reminders, and a fixed
- * cap keeps the record bounded without a second knob. The oldest non-newest
- * entries are dropped first, so the live instruction always survives.
+ * Not a config key: the list is a handful of short notices, and a fixed cap keeps
+ * the record bounded without a second knob. The oldest non-newest entries are
+ * dropped first, so the live instruction always survives.
  */
 export const MAX_NOTICES = 8
 

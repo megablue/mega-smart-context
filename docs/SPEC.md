@@ -54,7 +54,11 @@ An empty `goal` renders an explicit warning. Values are JSON-quoted so a newline
 
 The working window follows the block, verbatim, newest turns first in budget terms. The current turn is always kept, including every tool call and result the model just asked for. Completed turns lose their private reasoning; the current turn keeps it.
 
-Host **mode notices** - the Plan/Build reminders the host injects as synthetic user messages - are not replayed as turns. The plugin strips them from the working window and pins every distinct text into the system prompt under "## Pinned host notices", newest first. "Newest" is recency of emission: a text the host re-emits moves to the end, so the refusal lands on the instruction that is actually live. A mode switch therefore cannot evict a turn, and the standing instruction survives every pass until a newer notice replaces it. The model may retire a superseded notice with `smart_context { action:"notice", remove:"<id>" }`; the newest is the live instruction and a removal of it is refused. A retirement outlives the pass that recorded it - the text stays retired while the host's window still holds a copy - and clears when the host emits the same text again under a new id.
+Host **notices** - the Plan/Build reminders the host injects as synthetic user messages, and the nudge it appends when a reply is cut off at the output-token limit - are not replayed as turns. The plugin strips them from the working window and pins every distinct text into the system prompt under "## Pinned host notices", newest first. "Newest" is recency of emission: a text the host re-emits moves to the end, so the refusal lands on the instruction that is actually live. A mode switch therefore cannot evict a turn, and the standing instruction survives every pass until a newer notice replaces it. The model may retire a superseded notice with `smart_context { action:"notice", remove:"<id>" }`; the newest is the live instruction and a removal of it is refused. A retirement outlives the pass that recorded it - the text stays retired while the host's window still holds a copy - and clears when the host emits the same text again under a new id.
+
+Host messages split into a second class. A background job's completion (a `<shell>` or `<subagent>` block) arrives the same way a notice does, but it belongs to the turn that launched it: the plugin leaves it in the window, counts its bytes toward that turn, and starts no turn of its own, so a job finishing cannot age a pending eviction or show up as a working turn.
+
+What the plugin never counts is the host's own instruction set. Its `core/instructions` and neighbouring blobs ride in the request's system parts beside the policy, and no budget includes them: `/context` reports them as `host system ~X est (N parts)` for display only, and the line is absent when the host supplies no such part. When the build's debug option is on, the context pass also logs the count and the head of each such part, which is how the shape of `event.system` is checked.
 
 ## The first turn and `goal`
 
@@ -117,13 +121,13 @@ When the host asks for a checkpoint summary, the plugin returns the rendered mem
 | `purge { turn? \| query? }` | delete a pending or archived turn, or matching entries |
 | `recall { query, lost:true }` | search the cold archive; refuses without `lost:true` |
 | `expand { turn }` | read an archived turn back |
-| `notice { remove? }` | list the pinned host notices, or retire a superseded one by id; the newest is refused, and a retirement holds until the host emits that text again under a new id |
+| `notice { remove? }` | list the pinned host notices - a mode switch or an output-limit nudge - or retire a superseded one by id; the newest is refused, and a retirement holds until the host emits that text again under a new id |
 
 The `/context` command prints the same state for the user:
 
 | Command | Effect |
 | --- | --- |
-| `/context` or `/context status` | memory, working, pending, archive, goal, and the loaded build's version |
+| `/context` or `/context status` | memory, working, pending, archive, goal, the host system size, and the loaded build's version |
 | `/context now` | archive every pending turn now |
 | `/context memory <key>` | print one memory key |
 | `/context recall <query>` | search the archive as the user |

@@ -33,21 +33,36 @@ export function isMemoryMessage(message: Message | undefined): boolean {
   return message?.id === MEMORY_MESSAGE_ID
 }
 
-/** Is this a user message the conversation actually started a turn with? */
-export function isRealUser(message: Message | undefined): boolean {
-  return message?.role === "user" && !isInjected(message)
+/** Which kind of message the host injected as a *user* turn. */
+export type HostMessageKind = "notice" | "job"
+
+/** A message the host injected as a user turn: a standing notice, or a job's completion. */
+export interface HostMessage {
+  readonly kind: HostMessageKind
+  readonly id: string
+  readonly text: string
 }
 
+/** How the host opens the nudge it appends when a response is cut off at the output-token limit. */
+const OUTPUT_LIMIT_PREFIX = "Your last response hit the output token limit"
+
 /**
- * A host mode notice, when this message is one.
+ * Classify a host-injected user message; `undefined` for a message a person wrote.
  *
- * The host admits a Plan/Build switch as a synthetic *user* message whose whole
- * text is a `<system-reminder>` block (some carry a trailing `@n@` marker). Left
- * in place it starts a turn: it inflates the working window and ages a pending
- * turn on a mode switch the model never made. Recognised here, it is stripped
- * from the window and pinned into the system prompt instead.
+ * The host admits three things as a *user* message that no one typed: a Plan/Build
+ * mode notice (a `<system-reminder>` block, sometimes with a trailing `@n@`
+ * marker), the output-token-limit nudge, and a background job's completion (a
+ * `<shell>` or `<subagent>` block). All three are one text part under an
+ * unprefixed id, so the shape is the only tell.
+ *
+ * - A *notice* is a standing instruction. Left in place it starts a turn: it
+ *   inflates the working window and ages a pending turn on a mode switch the
+ *   model never made. It is stripped from the window and pinned instead.
+ * - A *job* is the tail of the turn that started it. It stays in the window but
+ *   starts no turn, so it annexes to the newest span rather than ageing a pending
+ *   eviction on work the model already asked for.
  */
-export function noticeOf(message: Message | undefined): { id: string; text: string } | undefined {
+export function hostMessageOf(message: Message | undefined): HostMessage | undefined {
   if (message?.role !== "user" || isInjected(message)) return undefined
   if (typeof message.id !== "string" || message.id.length === 0) return undefined
   const content = message.content ?? []
@@ -58,16 +73,50 @@ export function noticeOf(message: Message | undefined): { id: string; text: stri
     .trim()
     .replace(/\s*@[^@\s]*@\s*$/u, "")
     .trim()
-  if (!/^<system-reminder>[\s\S]*<\/system-reminder>$/u.test(text)) return undefined
-  return { id: message.id, text }
+  const id = message.id
+  if (/^<system-reminder>[\s\S]*<\/system-reminder>$/u.test(text)) return { kind: "notice", id, text }
+  if (text.startsWith(OUTPUT_LIMIT_PREFIX)) return { kind: "notice", id, text }
+  if (/^<shell\b[\s\S]*<\/shell>$/u.test(text) || /^<subagent\b[\s\S]*<\/subagent>$/u.test(text)) {
+    return { kind: "job", id, text }
+  }
+  return undefined
+}
+
+/** Is this a message the host injected as a user turn, rather than one a person wrote? */
+export function isHostMessage(message: Message | undefined): boolean {
+  return hostMessageOf(message) !== undefined
+}
+
+/** A host job completion: kept in the window, but it starts no turn of its own. */
+export function isHostJob(message: Message | undefined): boolean {
+  return hostMessageOf(message)?.kind === "job"
 }
 
 /**
- * Pull the host's mode notices out of a payload.
+ * Is this a user message the conversation actually started a turn with?
+ *
+ * A job completion is excluded: it belongs to the turn that launched it. A notice
+ * is not excluded here because `splitNotices` removes it before the spans are
+ * taken; leaving it a boundary keeps that split the thing that matters.
+ */
+export function isRealUser(message: Message | undefined): boolean {
+  return message?.role === "user" && !isInjected(message) && !isHostJob(message)
+}
+
+/** A host notice (a mode reminder, or the output-limit nudge), when this message is one. */
+export function noticeOf(message: Message | undefined): { id: string; text: string } | undefined {
+  const host = hostMessageOf(message)
+  return host?.kind === "notice" ? { id: host.id, text: host.text } : undefined
+}
+
+/**
+ * Pull the host's notices out of a payload.
  *
  * `rest` is the conversation the window reasons about: no notice, so no phantom
  * turn and no eviction lead burned on a mode switch. `notices` is every notice in
- * transcript order, for the record to pin (deduped by exact text when stored).
+ * transcript order — the mode reminders and the output-token-limit nudge — for the
+ * record to pin (deduped by exact text when stored). Job completions are not
+ * pulled: they stay in the window and are kept out of the turn count instead.
  */
 export function splitNotices(messages: ReadonlyArray<Message>): {
   rest: Message[]

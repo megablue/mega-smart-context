@@ -157,14 +157,14 @@ export interface ArchivedTurn {
 }
 
 /**
- * A host-injected system-mode notice, kept verbatim and pinned.
+ * A host-injected notice, kept verbatim and pinned.
  *
  * The host admits a mode switch as a synthetic *user* message carrying a
- * `<system-reminder>` block, not as a system part. Counting it as a turn inflates
- * the working window and ages a pending turn on a mode switch the model never
- * made. The plugin strips it from the window instead and stores the text here, so
- * the standing instruction survives every pass and the model can retire a
- * superseded one.
+ * `<system-reminder>` block, and an output-limit nudge the same way, not as a
+ * system part. Counting either as a turn inflates the working window and ages a
+ * pending turn on something the model never said. The plugin strips it from the
+ * window instead and stores the text here, so the standing instruction survives
+ * every pass and the model can retire a superseded one.
  */
 export interface Notice {
   /**
@@ -208,6 +208,18 @@ export interface LastReport {
   droppedTurns: number
   overBudget: boolean
   modelContext?: number
+  /**
+   * Tokens in the request's own system parts that this plugin did not write.
+   *
+   * The host assembles its instruction set (`core/instructions` and the rest) into
+   * `event.system`, which the plugin sees but counts in no budget. This is that
+   * size, display only — it never moves a cap. Optional: a record measured before
+   * the field existed, or a context where `event.system` carries no such part, has
+   * none.
+   */
+  hostSystemTokens?: number
+  /** How many host system parts `hostSystemTokens` covers. */
+  hostSystemParts?: number
 }
 
 /**
@@ -234,6 +246,12 @@ export interface PassSample {
   policyTokens: number
   /** The pinned-notices part we add, in estimated tokens. `0` when there is none. */
   noticeTokens?: number
+  /**
+   * The request's own system parts that this plugin did not write, in estimated
+   * tokens, and how many parts that is. Display only: no budget uses it.
+   */
+  hostSystemTokens?: number
+  hostSystemParts?: number
   memoryTokens: number
   workingTokens: number
   /** memory + working + policy, in estimated tokens. */
@@ -255,13 +273,14 @@ export interface SessionRecord {
   /** One sample per context pass, oldest first, bounded by `MAX_HISTORY`. */
   history?: PassSample[]
   /**
-   * Host-injected mode notices, oldest first, deduped by exact text.
+   * Host-injected notices, oldest first, deduped by exact text.
    *
-   * Pinned into the request's system parts rather than the working window, so a
-   * mode switch cannot evict a turn or churn the provider prefix. Order is
-   * recency: a text the host re-emits moves to the end, so the last entry is the
-   * live instruction the rail refuses to remove. Bounded by `MAX_NOTICES`, oldest
-   * dropped first. Optional: a record written before the field existed has none.
+   * A mode reminder or the output-limit nudge. Pinned into the request's system
+   * parts rather than the working window, so a mode switch cannot evict a turn or
+   * churn the provider prefix. Order is recency: a text the host re-emits moves to
+   * the end, so the last entry is the live instruction the rail refuses to remove.
+   * Bounded by `MAX_NOTICES`, oldest dropped first. Optional: a record written
+   * before the field existed has none.
    */
   notices?: Notice[]
   /**

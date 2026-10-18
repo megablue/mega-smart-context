@@ -84,6 +84,29 @@ export async function buildPayload(input: ContextInput, deps: ContextDeps): Prom
   const now = deps.now ?? (() => Date.now())
   const record: SessionRecord = await deps.store.load(input.sessionID)
 
+  // The host's own instruction set (`core/instructions` and the rest) rides in
+  // `event.system` beside the policy this plugin writes. It is measured for
+  // display only — no budget counts it — and only when a part is actually there,
+  // so a host that does not hand its instructions over shows nothing rather than
+  // a zero. The debug line names what was found, which is how the shape of
+  // `event.system` is checked after a restart.
+  const hostSystem = input.system.filter(
+    (part) => typeof part.text === "string" && part.text !== POLICY && !part.text.startsWith(NOTICE_HEADING),
+  )
+  const hostSystemTokens =
+    hostSystem.length === 0
+      ? undefined
+      : estimateTokens(
+          hostSystem.reduce((sum, part) => sum + part.text.length, 0),
+          config.charsPerToken,
+        )
+  if (config.debug && hostSystem.length > 0) {
+    deps.warn?.(
+      `context ${input.sessionID}: host system ~${hostSystemTokens} est in ${hostSystem.length} part(s): ` +
+        hostSystem.map((part) => JSON.stringify(part.text.replace(/\s+/g, " ").slice(0, 40))).join(", "),
+    )
+  }
+
   // The host rebuilds from the durable transcript, so an injected message here
   // would only be a stale copy. The mode notices are pulled out of the window and
   // pinned instead: left in place each one starts a turn, which inflates the
@@ -171,6 +194,8 @@ export async function buildPayload(input: ContextInput, deps: ContextDeps): Prom
     droppedTurns: window.dropped.length,
     overBudget,
     modelContext,
+    hostSystemTokens,
+    hostSystemParts: hostSystem.length,
   }
 
   // The counterfactual, recorded at the only moment both sides are exact: the
@@ -184,6 +209,8 @@ export async function buildPayload(input: ContextInput, deps: ContextDeps): Prom
     transcriptTokens: messagesChars(input.messages),
     policyTokens,
     noticeTokens: estimateTokens(noticeChars, config.charsPerToken),
+    hostSystemTokens,
+    hostSystemParts: hostSystem.length,
     memoryTokens,
     workingTokens,
     totalTokens: memoryTokens + workingTokens + policyTokens,
