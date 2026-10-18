@@ -85,7 +85,7 @@ function usage(record: SessionRecord, config: ResolvedConfig): string {
 
 function read(record: SessionRecord, request: MemoryToolRequest, config: ResolvedConfig): MemoryToolOutcome {
   const key = str(request.key)
-  if (key === undefined) return { text: renderMemory(record, config), ok: true }
+  if (key === undefined) return { text: renderMemory(record), ok: true }
   if (!MEMORY_KEYS.has(key)) {
     return { text: `smart_context: unknown key ${JSON.stringify(key)}. Keys: ${[...MEMORY_KEYS].join(", ")}`, ok: false }
   }

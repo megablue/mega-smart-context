@@ -24,7 +24,7 @@ import { parseLayer, resolveConfig } from "../src/core/config.ts"
 import { buildPayload } from "../src/core/context.ts"
 import { runMemoryTool } from "../src/core/memory-tool.ts"
 import { messageChars, messagesChars } from "../src/core/measure.ts"
-import { NOTICE_HEADING } from "../src/core/prompts.ts"
+import { NOTICE_HEADING, POLICY } from "../src/core/prompts.ts"
 import { emptyMemory } from "../src/core/schema.ts"
 import { MAX_HISTORY, MAX_NOTICES, MAX_NOTICE_CHARS, MAX_RETIRED, SessionStore, pruneOrphans, retireNotice, sameDirectory, trimHistory, upsertNotices } from "../src/core/state.ts"
 import { extractHtmlSection, extractSection, htmlToText, pageCandidates } from "../src/core/refs.ts"
@@ -385,10 +385,19 @@ const pinned = p1.system.find((part) => part.text.startsWith(NOTICE_HEADING))
 ok(pinned !== undefined, "the notices are pinned into a system part")
 ok(pinned.text.includes("n-plan") && pinned.text.includes("n-build"), "both notices are listed")
 ok(pinned.text.indexOf("n-build") < pinned.text.indexOf("n-plan"), "the newest notice is listed first")
+ok(p1.system[p1.system.length - 1].text.startsWith(NOTICE_HEADING), "the pinned notices are the last system part")
+ok(
+  p1.system.findIndex((part) => part.text === POLICY) < p1.system.length - 1,
+  "the policy sits before the pinned notices",
+)
 const p2 = await noticePass("n", withNotices, p1.system)
 ok(
   p2.system.filter((part) => part.text.startsWith(NOTICE_HEADING)).length === 1,
   "a re-pass that carries the previous block adds no second copy",
+)
+ok(
+  p2.system[p2.system.length - 1].text.startsWith(NOTICE_HEADING),
+  "the notices stay last on a re-pass over the previous system parts",
 )
 const nrec = await noticeStore.load("n")
 ok(nrec.notices.length === 2, "the record pins each distinct notice once")
@@ -491,6 +500,57 @@ const plain = await noticePass("plain", [user("u1", "hello")])
 ok(plain.system.every((part) => !part.text.startsWith(NOTICE_HEADING)), "an empty notice list adds no system part")
 const noneOut = await runMemoryTool({ sessionID: "plain", action: "notice" }, noticeDeps)
 ok(noneOut.ok && /no pinned/.test(noneOut.text), "listing with no notices is a clean empty answer")
+
+// ---------------------------------------------------------------------------
+// Prefix caching: no live numbers in the block, and a window message's bytes
+// never change once it has been sent
+// ---------------------------------------------------------------------------
+
+ok(!event.messages[0].content[0].text.includes("budget:"), "the memory block carries no budget line")
+ok(
+  !/^(memory|working|refs|pending|archive) /.test(event.messages[0].content[0].text.split("\n")[1] ?? ""),
+  "the memory block's second line is not a counter",
+)
+
+function withReasoning(id, reasoning, text) {
+  return {
+    id,
+    role: "assistant",
+    content: [
+      { type: "reasoning", text: reasoning },
+      { type: "text", text },
+    ],
+  }
+}
+
+const cacheStore = new SessionStore()
+const cacheDeps = {
+  store: cacheStore,
+  config: resolveConfig({ options: { workingTokens: 20_000, memoryTokens: 3000, charsPerToken: 2 } }),
+}
+const cachePass = (messages) =>
+  buildPayload({ sessionID: "cache", system: [{ type: "text", text: "base" }], messages, model: {} }, cacheDeps)
+
+const cacheTurn1 = [
+  user("u1", "First. ".repeat(40)),
+  withReasoning("a1", "private step. ".repeat(40), "Answer. ".repeat(20)),
+]
+const cached1 = await cachePass(cacheTurn1)
+const sentA1 = cached1.messages.find((message) => message.id === "a1")
+ok((sentA1.content ?? []).some((part) => part.type === "reasoning"), "reasoning is kept in the payload")
+const cached2 = await cachePass([
+  ...cacheTurn1,
+  user("u2", "Second. ".repeat(40)),
+  assistant("a2", "Again. ".repeat(20)),
+])
+ok(
+  JSON.stringify(cached2.messages.find((message) => message.id === "a1")) === JSON.stringify(sentA1),
+  "a completed turn's bytes do not change when the next turn arrives",
+)
+ok(
+  cached1.messages[0].content[0].text === cached2.messages[0].content[0].text,
+  "the memory block is byte-identical when only the window grew",
+)
 
 // ---------------------------------------------------------------------------
 // Host messages that are not user turns: job completions and the output nudge
@@ -857,6 +917,7 @@ const compaction = { sessionID: "s1", system: [], messages: [], tools: {} }
 const compactionOutcome = await host.hooks.compaction(compaction)
 ok(compactionOutcome?.owned === true, "compaction is owned when memory is non-empty")
 ok(compaction.result.summary.includes("ship v0.1"), "compaction returns the memory document")
+ok(!compaction.result.summary.includes("budget:"), "the compaction summary carries no live numbers either")
 
 await host.commands[0].execute({ sessionID: "s1", prompt: { text: "/context" } })
 ok(host.replies.at(-1).text.includes("smart-context"), "/context prints the status")

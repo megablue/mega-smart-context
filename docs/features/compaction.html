@@ -48,8 +48,8 @@ hr{border:0;border-top:1px solid var(--line);margin:2rem 0}
 <section id="how-why">
 <h2>How &amp; why</h2>
 <h3>The seam</h3>
-<p>The host calls the <code>compaction</code> hook with the transcript it is about to summarize. Setting <code>event.result = { summary }</code> makes the host persist that string as the compaction message and skip its own model call. <code>runCompaction</code> sets it to <code>renderMemory(record, config)</code> when the record&#39;s memory is not empty.</p>
-<p>This is the same block the next request will carry. A checkpoint and a working memory that disagree are worse than either alone, and a second summarizer would be a second source of truth.</p>
+<p>The host calls the <code>compaction</code> hook with the transcript it is about to summarize. Setting <code>event.result = { summary }</code> makes the host persist that string as the compaction message and skip its own model call. <code>runCompaction</code> sets it to <code>renderMemory(record)</code> when the record&#39;s memory is not empty.</p>
+<p>This is the same block the next request will carry, minus its live counters - the block has none. A checkpoint and a working memory that disagree are worse than either alone, and a second summarizer would be a second source of truth.</p>
 <h3>Why decline on empty</h3>
 <p>An empty memory document is not a summary. Returning it would replace a real checkpoint with an empty block and lose the transcript&#39;s content in the name of owning it. <code>isMemoryEmpty</code> checks every key; when it is true, <code>runCompaction</code> returns <code>undefined</code>, the host&#39;s own summarizer runs, and nothing is lost.</p>
 <h3>Type and safety notes</h3>
@@ -57,12 +57,12 @@ hr{border:0;border-top:1px solid var(--line);margin:2rem 0}
 </section>
 <section id="config-keys-ui">
 <h2>Config keys / UI</h2>
-<table><thead><tr><th>Key</th><th>Default</th><th>Effect</th></tr></thead><tbody><tr><td><code>memoryTokens</code></td><td>50000</td><td>the render&#39;s denominator in the budget line</td></tr><tr><td><code>charsPerToken</code></td><td>4</td><td>the render&#39;s estimate divisor</td></tr></tbody></table>
+<table><thead><tr><th>Key</th><th>Default</th><th>Effect</th></tr></thead><tbody><tr><td><code>memoryTokens</code></td><td>50000</td><td>the memory write cap, and the denominator the memory numbers are reported against</td></tr><tr><td><code>charsPerToken</code></td><td>4</td><td>the render&#39;s estimate divisor</td></tr></tbody></table>
 <p>There is no separate command; <code>/context</code> shows the same document before and after a checkpoint.</p>
 </section>
 <section id="tests-that-pin-it">
 <h2>Tests that pin it</h2>
-<ul><li>&quot;compaction is owned when memory is non-empty&quot;</li><li>&quot;compaction returns the memory document&quot;</li></ul>
+<ul><li>&quot;compaction is owned when memory is non-empty&quot;</li><li>&quot;compaction returns the memory document&quot;</li><li>&quot;the compaction summary carries no live numbers either&quot;</li></ul>
 </section>
 <section id="related">
 <h2>Related</h2>

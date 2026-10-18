@@ -29,7 +29,6 @@ It deliberately does **not**:
 Every request starts with a `<smart-context>` block:
 
 ```
-budget: memory 12.4k/50k est · working 6.1k/16k est · refs 3 · pending 1 · archive 41
 goal: "..."
 ## Plan
 - [active] 1. ...
@@ -50,9 +49,11 @@ goal: "..."
   -> smart_context action:"archive" turn:"u12" gist:"..." (or action:"purge" turn:"u12")
 ```
 
-An empty `goal` renders an explicit warning. Values are JSON-quoted so a newline or a delimiter inside a model-written note cannot change the shape. The block is data, not instructions; the standing policy lives in the system message.
+An empty `goal` renders an explicit warning. Values are JSON-quoted so a newline or a delimiter inside a model-written note cannot change the shape. The block is data, not instructions; the standing policy lives in the system message. It carries no live counters either: the running numbers are read on demand with `smart_context { action:"stats" }` or `/context`, so the block changes only when memory itself does.
 
-The working window follows the block, verbatim, newest turns first in budget terms. The current turn is always kept, including every tool call and result the model just asked for. Completed turns lose their private reasoning; the current turn keeps it.
+The working window follows the block, verbatim, newest turns first in budget terms. The current turn is always kept, including every tool call and result the model just asked for.
+
+Nothing the plugin does to a message in the window depends on a newer turn. An oversized tool result is shortened by a pure function of its own bytes, and reasoning is passed through exactly as the host sent it. A message therefore keeps the same bytes on every later pass, so a provider's prefix cache above it stays warm.
 
 Host **notices** - the Plan/Build reminders the host injects as synthetic user messages, and the nudge it appends when a reply is cut off at the output-token limit - are not replayed as turns. The plugin strips them from the working window and pins every distinct text into the system prompt under "## Pinned host notices", newest first. "Newest" is recency of emission: a text the host re-emits moves to the end, so the refusal lands on the instruction that is actually live. A mode switch therefore cannot evict a turn, and the standing instruction survives every pass until a newer notice replaces it. The model may retire a superseded notice with `smart_context { action:"notice", remove:"<id>" }`; the newest is the live instruction and a removal of it is refused. A retirement outlives the pass that recorded it - the text stays retired while the host's window still holds a copy - and clears when the host emits the same text again under a new id.
 
@@ -73,7 +74,7 @@ On the first turn the current user message is visible. Once it leaves the workin
 | `charsPerToken` | 4 | the divisor that turns characters into estimated tokens |
 | `maxResultChars` | 4,000 | one tool result larger than this is shortened head/tail |
 
-A tool result is shortened by keeping a head, a tail and a marker with the number of missing characters. The tool call and its result keep their ids and their order. A turn that alone exceeds the working budget is still kept; the header reports `OVER CAP` and the policy asks the model to fold sooner.
+A tool result is shortened by keeping a head, a tail and a marker with the number of missing characters. The tool call and its result keep their ids and their order. A turn that alone exceeds the working budget is still kept; `/context` and `action:"stats"` report `OVER CAP` and the policy asks the model to fold sooner.
 
 When the host reports a model context size, the plugin also warns when memory plus working would exceed 90% of it. It does not silently shrink either side.
 
@@ -101,7 +102,7 @@ Each session's memory, pinned host notices, retired notices, pending turns and a
 
 ## Compaction
 
-When the host asks for a checkpoint summary, the plugin returns the rendered memory document and skips the host's summarizer. If memory is empty, it declines and lets the host summarize; returning an empty block would erase the checkpoint in the name of owning it.
+When the host asks for a checkpoint summary, the plugin returns the rendered memory document and skips the host's summarizer. If memory is empty, it declines and lets the host summarize; returning an empty block would erase the checkpoint in the name of owning it. The summary is the same block the model reads, so it too carries no live counters.
 
 ## Feature-map references
 

@@ -17,7 +17,7 @@
 import { archivePending, knows, mechanicalGist, trimArchive, turnMessages } from "./archive.ts"
 import type { ResolvedConfig } from "./config.ts"
 import { estimateTokens, memoryChars, messageChars, messagesChars } from "./measure.ts"
-import { POLICY, NOTICE_HEADING, budgetOf, renderMemory, renderNotices } from "./prompts.ts"
+import { POLICY, NOTICE_HEADING, renderMemory, renderNotices } from "./prompts.ts"
 import { trimHistory, upsertNotices, type SessionStore } from "./state.ts"
 import type { Message, PassSample, SessionRecord, SystemPart } from "./types.ts"
 import {
@@ -26,7 +26,6 @@ import {
   isInjected,
   selectWorkingWindow,
   splitNotices,
-  stripReasoning,
   turnSpans,
 } from "./view.ts"
 
@@ -121,10 +120,11 @@ export async function buildPayload(input: ContextInput, deps: ContextDeps): Prom
   })
 
   const workingRaw = raw.slice(window.startIdx)
-  const eroded = erodeToolResults(workingRaw, config.maxResultChars)
-  const currentTurnStart =
-    window.turns.length > 0 ? Math.max(0, window.turns[window.turns.length - 1].startIdx - window.startIdx) : 0
-  const working = stripReasoning(eroded.messages, currentTurnStart)
+  // Exactly one rewrite touches a window message: `erodeToolResults`, which is a
+  // pure function of that message's own bytes, so the message is identical on
+  // every later pass and the prefix above it stays cached. Reasoning is left
+  // alone: dropping it from a completed turn would change bytes already sent.
+  const working = erodeToolResults(workingRaw, config.maxResultChars).messages
 
   const currentIds = window.turns.map((span) => span.id)
   const bootstrap = record.seenTurns.length === 0
@@ -228,7 +228,7 @@ export async function buildPayload(input: ContextInput, deps: ContextDeps): Prom
     goalEmpty: record.memory.goal.trim().length === 0,
   }
 
-  const memoryText = renderMemory(record, config, budgetOf(record, config))
+  const memoryText = renderMemory(record)
   const memoryMessage: Message = {
     id: MEMORY_MESSAGE_ID,
     role: "user",

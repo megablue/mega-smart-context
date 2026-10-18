@@ -12,7 +12,7 @@
  */
 
 import type { ResolvedConfig } from "./config.ts"
-import { budgetOf, renderMemory } from "./prompts.ts"
+import { renderMemory } from "./prompts.ts"
 import { isMemoryEmpty } from "./schema.ts"
 import type { SessionStore } from "./state.ts"
 import type { Message, SystemPart } from "./types.ts"
@@ -42,6 +42,6 @@ export async function runCompaction(
   if (sessionID.length === 0) return undefined
   const record = await deps.store.load(sessionID)
   if (isMemoryEmpty(record.memory)) return undefined
-  event.result = { summary: renderMemory(record, deps.config, budgetOf(record, deps.config)) }
+  event.result = { summary: renderMemory(record) }
   return { owned: true }
 }

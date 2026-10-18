@@ -57,7 +57,7 @@ the feature docs are the map, the mechanism and the traps.
     - `state.ts` - `SessionStore`: per-session LRU cache, durable storage, a
       per-session `mutate` lock, and an in-memory fallback when storage fails.
     - `view.ts` - `turnSpans`, `selectWorkingWindow`, `balanceCuts`,
-      `erodeToolResults`, `stripReasoning`, `previewOf`, `renderTurn`. The turn
+      `erodeToolResults`, `previewOf`, `renderTurn`. The turn
       arithmetic and the call/result safety live here.
     - `context.ts` - `buildPayload`: the one function that turns the record and
       the raw transcript into the outbound payload and report.

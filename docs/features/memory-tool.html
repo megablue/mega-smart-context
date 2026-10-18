@@ -68,7 +68,7 @@ hr{border:0;border-top:1px solid var(--line);margin:2rem 0}
 <section id="config-keys-ui">
 <h2>Config keys / UI</h2>
 <table><thead><tr><th>Key</th><th>Default</th><th>Effect</th></tr></thead><tbody><tr><td><code>memoryTokens</code></td><td>50000</td><td>the write cap and the reported denominator</td></tr><tr><td><code>refs</code></td><td>true</td><td>whether the <code>ref</code> action is allowed</td></tr><tr><td><code>debug</code></td><td>false</td><td>logs pass decisions, not tool writes</td></tr></tbody></table>
-<p>The ack&#39;s last line is <code>usage(record, config)</code>: <code>memory X/Y est · working X/Y est · refs N · pending N · archive N</code>.</p>
+<p>The ack&#39;s last line is <code>usage(record, config)</code>: <code>memory X/Y est · working X/Y est · refs N · pending N · archive N</code>. The <code>read</code> action with no key returns the pure memory document, which carries no numbers at all - the block the model is sent.</p>
 </section>
 <section id="tests-that-pin-it">
 <h2>Tests that pin it</h2>

@@ -38,7 +38,7 @@ hr{border:0;border-top:1px solid var(--line);margin:2rem 0}
 <p class="status">Status: shipped (v0.1) - Read when: <code>plugin:install</code>, <code>.opencode/plugin</code>, <code>~/.config/opencode/plugins</code>, <code>files[]</code>, drift, &quot;a stale install&quot;, or the plugin is not discovered.</p>
 <section id="what-it-does">
 <h2>What it does</h2>
-<ul><li>Copies the shippable set into an OpenCode plugin discovery directory.</li><li>Project scope is <code>&lt;repo&gt;/.opencode/plugin/mega-smart-context</code>; user scope is <code>~/.config/opencode/plugins/mega-smart-context</code>.</li><li>Is idempotent by content hash: an in-sync copy is left alone, a drifted copy is resynchronized.</li><li><code>--status</code> reports missing, changed and extra files; <code>--remove</code> removes the selected scope.</li><li>Needs no build step, no <code>node_modules</code> and no config entry; restart OpenCode after a change.</li></ul>
+<ul><li>Copies the shippable set into an OpenCode plugin discovery directory.</li><li>Project scope is <code>&lt;repo&gt;/.opencode/plugin/mega-smart-context</code>; user scope is <code>~/.config/opencode/plugins/mega-smart-context</code>.</li><li>Is idempotent by content hash: an in-sync copy is left alone, a drifted copy is resynchronized.</li><li><code>--status</code> reports missing, changed and extra files; <code>--remove</code> removes the selected scope.</li><li>Needs no build step, no <code>node_modules</code> and no config entry; a re-sync goes live at the next load, so no restart is needed.</li></ul>
 <p>The user-facing commands are in <code>README.md</code>; this page is the mechanism.</p>
 </section>
 <section id="map">
@@ -48,7 +48,7 @@ hr{border:0;border-top:1px solid var(--line);margin:2rem 0}
 <section id="how-why">
 <h2>How &amp; why</h2>
 <h3>Copy, not junction</h3>
-<p>The host imports the module graph once per process, so a link buys nothing: a code change needs a restart either way. A copy can be compared against the repository, so a stale install is diagnosable drift instead of a plugin that quietly runs old code, and a copy cannot break because the working tree moved.</p>
+<p>The host imports the module graph when it loads the plugin, so a link buys nothing: the files are read at load time either way. It re-reads from disk on a later load - a re-synced file went live at the next pass with no restart - so a stale copy still needs a re-sync, not a restart. A copy can be compared against the repository, so a stale install is diagnosable drift instead of a plugin that quietly runs old code, and a copy cannot break because the working tree moved.</p>
 <p>A legacy junction is removed with <code>rmSync(path)</code> <strong>without</strong> <code>recursive</code>: recursing through a junction would delete the repository it points at. A real directory is removed recursively, which is safe because nothing the user owns lives inside the install.</p>
 <h3>The manifest</h3>
 <p><code>shippableFiles</code> reads <code>package.json</code>&#39;s <code>files[]</code> and always adds <code>package.json</code> itself, because <code>&quot;type&quot;: &quot;module&quot;</code> is what makes the host load <code>.ts</code> as ESM. Every entry is checked against the working tree, so a manifest that lists a missing file fails at install time rather than producing a copy that is silently incomplete. This is why <code>README.md</code> must exist while it is in <code>files[]</code>.</p>
@@ -58,7 +58,7 @@ hr{border:0;border-top:1px solid var(--line);margin:2rem 0}
 <p><code>--status</code> prints both scopes, so a project install and a user install can be seen together. The installed copy is disposable; the source tree is the truth.</p>
 <h3>Scopes</h3>
 <table><thead><tr><th>Scope</th><th>Path</th><th>Command</th></tr></thead><tbody><tr><td>user</td><td><code>~/.config/opencode/plugins/mega-smart-context</code></td><td><code>npm run plugin:install</code></td></tr><tr><td>project</td><td><code>&lt;repo&gt;/.opencode/plugin/mega-smart-context</code></td><td><code>npm run plugin:install:project</code></td></tr></tbody></table>
-<p>The asymmetry is the host&#39;s: user is <code>plugins</code> (plural), project is <code>plugin</code> (singular). Restart OpenCode after installing or removing.</p>
+<p>The asymmetry is the host&#39;s: user is <code>plugins</code> (plural), project is <code>plugin</code> (singular). A removed install stops at the next load; a restart makes it immediate.</p>
 <h3>No dependencies</h3>
 <p>The plugin imports the host only as types; the runtime has no <code>@opencode/plugin</code> import. The copy therefore needs no <code>node_modules</code>, and the host loads the TypeScript source directly. <code>node_modules</code> is excluded from the copy by the manifest, not by a build step.</p>
 <h3>Do not run two context managers</h3>

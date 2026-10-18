@@ -13,6 +13,11 @@
  * the durable transcript may be trimmed by compaction, so the id is the user
  * message id (stable) rather than the index (which moves).
  *
+ * Byte stability: nothing here may depend on a newer turn, or a provider prefix
+ * cache above the change goes cold. `erodeToolResults` is a pure function of one
+ * message's own bytes, and reasoning is passed through exactly as the host sent
+ * it, so once a message is in the window its bytes never change.
+ *
  * @module mega-smart-context/view
  */
 
@@ -355,21 +360,6 @@ export function erodeToolResults(
     return { ...message, content }
   })
   return { messages: out, eroded }
-}
-
-/**
- * Drop reasoning from completed turns.
- *
- * The model's conclusions are in memory; replaying its private reasoning costs
- * tokens and adds nothing it cannot re-derive. The current turn keeps its
- * reasoning because the tool call that follows may depend on it.
- */
-export function stripReasoning(messages: ReadonlyArray<Message>, keepFromIdx: number): Message[] {
-  return messages.map((message, index) => {
-    if (index >= keepFromIdx) return message
-    if (!(message.content ?? []).some((part) => part.type === "reasoning")) return message
-    return { ...message, content: (message.content ?? []).filter((part) => part.type !== "reasoning") }
-  })
 }
 
 /** A one-line, mechanical preview of a turn for the pending-eviction notice. */

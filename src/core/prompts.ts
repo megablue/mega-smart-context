@@ -3,9 +3,10 @@
  * compact status the `/context` command prints.
  *
  * The policy is static so the system prefix stays stable and a provider's prefix
- * cache stays warm. The budget header carries the numbers, and it is the only
- * place a cap is restated; `docs/SPEC.md` owns the user-facing defaults, and the
- * feature pages own the mechanism.
+ * cache stays warm. The memory document carries no live numbers either: it
+ * changes only when the record does. The numbers are read on demand from
+ * `action:"stats"` or `/context`. `docs/SPEC.md` owns the user-facing defaults,
+ * and the feature pages own the mechanism.
  *
  * @module mega-smart-context/prompts
  */
@@ -44,7 +45,8 @@ the working budget (verbatim), and the current turn.
   removal of it is refused).
 - For project knowledge, prefer a feature-map reference over pasted prose when
   the reference is shorter. action:"ref" reports the gist and section costs.
-- Keep memory lean. The budget header is the truth; compact before it is over.`
+- This block carries no live numbers. Read them with action:"stats" (or the
+  /context command) and keep memory lean; compact before it is over.`
 
 export interface BudgetReport {
   readonly memoryTokens: number
@@ -117,10 +119,14 @@ function budgetLine(report: BudgetReport): string {
  * The block is data, not instructions: values are JSON-quoted so a newline or a
  * delimiter inside a model-written note cannot change the shape. The only prose
  * is the fixed labels and the mechanical pending-eviction notice.
+ *
+ * Deliberately no live numbers: a `budget:` line here would be rewritten on
+ * every pass, so nothing before it in the prefix could stay cached. The numbers
+ * live in `action:"stats"` and `/context` only.
  */
-export function renderMemory(record: SessionRecord, config: ResolvedConfig, report = budgetOf(record, config)): string {
+export function renderMemory(record: SessionRecord): string {
   const memory = record.memory
-  const lines: string[] = ["<smart-context>", `budget: ${budgetLine(report)}`]
+  const lines: string[] = ["<smart-context>"]
 
   if (memory.goal.trim().length === 0) {
     lines.push("goal: (empty — write the user's request here before it leaves the window)")
