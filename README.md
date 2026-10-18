@@ -58,7 +58,7 @@ Remove the selected scope:
 npm run plugin:uninstall
 ```
 
-Restart OpenCode after installing or removing. The install is a copy of the shippable files; editing the source tree does not change an installed copy until you reinstall.
+Installing copies the shippable files and removing deletes them; editing the source tree does not change an installed copy until you reinstall. OpenCode picks up a re-synced or removed copy at its next load, so restart it only to make that immediate — and always after a *first* install, when the host has not seen the directory yet.
 
 > **Do not run this alongside `mega-skillstate`** (or any other plugin that rewrites the context hook). Both rewrite the same request and both may own compaction. Disable the other plugin first.
 

@@ -7,11 +7,13 @@
  * no config entry for an auto-discovered directory, no build step, and no
  * dependency install - the host loads the TypeScript source directly.
  *
- * The install is a **copy**, not a junction. The host imports the module graph
- * once per process, so a link buys nothing (a code change needs a restart
- * either way). A copy can be compared against the repository, so a stale
- * install is diagnosable drift instead of a plugin that quietly runs old code,
- * and it cannot break because the working tree moved.
+ * The install is a **copy**, not a junction. The host re-reads the discovery
+ * directory on each pass, so a link buys nothing, and a copy can be compared
+ * against the repository: a stale install is diagnosable drift instead of a
+ * plugin that quietly runs old code, and it cannot break because the working
+ * tree moved. A re-synced copy at a path the host already loaded is picked up
+ * at the next load; a first install may wait for a restart, because discovery
+ * of a brand-new directory mid-run is not guaranteed.
  *
  * Modes:
  *
@@ -271,7 +273,8 @@ function printHelp(): void {
       "",
       "The install is a copy of the shippable set (package.json files[] plus package.json).",
       "No build step and no node_modules: the host resolves <root>/server before <root>/index,",
-      ".ts before .js, and loads the TypeScript source directly. A code change needs a restart.",
+      ".ts before .js, and loads the TypeScript source directly. A re-synced copy is",
+      "picked up at the next load; a first install may need a restart.",
     ].join("\n") + "\n",
   )
 }
@@ -326,8 +329,12 @@ export function run(argv: readonly string[], root: string): number {
                 ? `already installed in ${label}, in sync; nothing written`
                 : `nothing to remove from ${label}`
     process.stdout.write(`${verb}\n  ${result.path}\n`)
-    if (result.action === "installed" || result.action === "updated" || result.action === "replaced") {
+    if (result.action === "installed") {
       process.stdout.write("Restart OpenCode for the host to discover it.\n")
+    } else if (result.action === "updated" || result.action === "replaced") {
+      process.stdout.write("The host picks the new code up at its next load; a restart only makes it immediate.\n")
+    } else if (result.action === "removed") {
+      process.stdout.write("The host stops loading it at its next load; a restart only makes it immediate.\n")
     }
     return 0
   } catch (error) {
