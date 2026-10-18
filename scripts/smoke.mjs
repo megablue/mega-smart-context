@@ -27,6 +27,12 @@ import { emptyMemory } from "../src/core/schema.ts"
 import { MAX_HISTORY, SessionStore, trimHistory } from "../src/core/state.ts"
 import { deriveVersion, readVersionBase } from "../src/core/version.ts"
 import { balanceCuts, erodeToolResults, selectWorkingWindow, turnSpans } from "../src/core/view.ts"
+import {
+  DEFAULT_KEEP,
+  DEFAULT_SUMMARY,
+  calculateCeiling,
+  simulateNative,
+} from "./native-compaction.mjs"
 
 const root = resolve(process.argv[2] ?? ".")
 process.env.MEGA_SMART_CONTEXT_NO_USER_CONFIG = "1"
@@ -326,6 +332,36 @@ const trimmed = trimHistory(many)
 ok(trimmed.length === MAX_HISTORY, "history trims to MAX_HISTORY")
 ok(trimmed[0].at === 0, "the first sample is always kept")
 ok(trimmed[trimmed.length - 1].at === many[many.length - 1].at, "the newest sample is kept")
+
+// ---------------------------------------------------------------------------
+// Native compaction: the second baseline in the report
+// ---------------------------------------------------------------------------
+
+ok(calculateCeiling(200_000) === 180_000, "the ceiling leaves 10% of a 200k window")
+ok(calculateCeiling(20_000) === 18_000, "a window too small for 16k keeps 10% instead")
+ok(calculateCeiling(200_000, 30_000) === 170_000, "an explicit buffer replaces the reserve")
+
+const saw = simulateNative([50_000, 91_000], { window: 100_000 })
+ok(saw.floor === DEFAULT_KEEP + DEFAULT_SUMMARY, "the native floor is keep + summary")
+ok(saw.passes[0].native === 50_000 && saw.passes[0].compacted === false, "below the ceiling nothing compacts")
+ok(
+  saw.passes[1].native === saw.floor && saw.passes[1].compacted === true && saw.compactions === 1,
+  "crossing the ceiling resets to the floor",
+)
+
+const anchor = simulateNative([50_000, 85_000, 40_000], { window: 100_000 })
+ok(
+  anchor.passes[2].native === 40_000 && anchor.passes[2].compacted === false,
+  "an observed drop anchors native instead of resetting it",
+)
+ok(anchor.passes[2].raw === 85_000, "raw keeps the positive deltas and ignores the drop")
+
+const grown = simulateNative([50_000, 85_000, 40_000, 60_000], { window: 100_000 })
+ok(grown.passes[3].native === 60_000, "native grows again after an anchored reset")
+ok(grown.passes[3].raw === 105_000, "raw is the sum of positive deltas")
+
+const noSummary = simulateNative([10], { window: 10_000, summary: 0 })
+ok(noSummary.floor === DEFAULT_KEEP && noSummary.compactions === 0, "a summary of zero does not crash the floor")
 
 // ---------------------------------------------------------------------------
 // The tool: schema-owned merge, cap rejection, refs

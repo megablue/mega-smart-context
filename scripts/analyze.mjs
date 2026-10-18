@@ -30,6 +30,13 @@ import { join, resolve } from "node:path"
 import { DatabaseSync } from "node:sqlite"
 import { pathToFileURL } from "node:url"
 
+import {
+  DEFAULT_KEEP,
+  DEFAULT_SUMMARY,
+  UNKNOWN_WINDOW,
+  simulateNative,
+} from "./native-compaction.mjs"
+
 const DEFAULT_DB = join(homedir(), ".local", "share", "opencode", "opencode.db")
 
 /** The plugin's default `charsPerToken`; the record does not carry the resolved value. */
@@ -45,22 +52,51 @@ function usage() {
     "  --session <id>   analyze this session id (default: the newest in --dir)",
     "  --dir <path>     the directory whose newest session to analyze (default: cwd)",
     "  --db <path>      the OpenCode database (default: ~/.local/share/opencode/opencode.db)",
+    "  --context <n>    model context window for the native baseline (default: 200000)",
+    "  --keep <n>       tokens native compaction keeps verbatim (default: 15000)",
+    "  --summary <n>    tokens a native summary is assumed to occupy (default: 2000)",
+    "  --buffer <n>     reserve below the window instead of the default ~10%",
+    "  --no-native      do not simulate native compaction",
     "  --json           emit the data as an object instead of a report",
     "  --help           this text",
   ].join("\n")
 }
 
+function positive(raw, flag) {
+  const value = Number(raw)
+  if (!Number.isFinite(value) || value <= 0) {
+    throw new Error(`${flag} needs a positive number, got ${raw === undefined ? "nothing" : raw}`)
+  }
+  return value
+}
+
 function parseArgs(argv) {
-  const args = { session: undefined, dir: resolve(process.cwd()), db: DEFAULT_DB, json: false, help: false }
+  const args = {
+    session: undefined,
+    dir: resolve(process.cwd()),
+    db: DEFAULT_DB,
+    context: UNKNOWN_WINDOW,
+    keep: DEFAULT_KEEP,
+    summary: DEFAULT_SUMMARY,
+    buffer: undefined,
+    native: true,
+    json: false,
+    help: false,
+  }
   for (let index = 0; index < argv.length; index += 1) {
     const flag = argv[index]
     if (flag === "--session") args.session = argv[index + 1]
     else if (flag === "--dir") args.dir = resolve(argv[index + 1])
     else if (flag === "--db") args.db = resolve(argv[index + 1])
+    else if (flag === "--context") args.context = positive(argv[index + 1], flag)
+    else if (flag === "--keep") args.keep = positive(argv[index + 1], flag)
+    else if (flag === "--summary") args.summary = positive(argv[index + 1], flag)
+    else if (flag === "--buffer") args.buffer = positive(argv[index + 1], flag)
+    else if (flag === "--no-native") args.native = false
     else if (flag === "--json") args.json = true
     else if (flag === "--help" || flag === "-h") args.help = true
     else throw new Error(`unknown argument: ${flag}`)
-    if (flag !== "--json" && flag !== "--help" && flag !== "-h") index += 1
+    if (flag !== "--json" && flag !== "--no-native" && flag !== "--help" && flag !== "-h") index += 1
   }
   return args
 }
@@ -103,9 +139,22 @@ function formatTokens(tokens) {
   return Math.round(tokens / 1000) + "k"
 }
 
-function formatWhen(ms) {
+/** `MM-DD HH:MM` — enough to tell passes apart without a 20-column timestamp. */
+function formatClock(ms) {
   if (typeof ms !== "number" || !Number.isFinite(ms)) return "?"
-  return new Date(ms).toISOString().replace("T", " ").slice(0, 19)
+  return new Date(ms).toISOString().slice(5, 16).replace("T", " ")
+}
+
+/** A token delta: negative keeps its sign, positive is plain. */
+function formatDelta(value) {
+  const tokens = Number(value)
+  if (!Number.isFinite(tokens)) return "?"
+  return tokens < 0 ? `-${formatTokens(-tokens)}` : formatTokens(tokens)
+}
+
+function formatShare(value, base) {
+  if (!Number.isFinite(base) || base <= 0) return "n/a"
+  return `${Math.round((Number(value) / base) * 100)}%`
 }
 
 function formatBytes(bytes) {
@@ -178,8 +227,25 @@ function summarizeHistory(history) {
   return { count: history.length, peak, min, mean, crossedAt }
 }
 
+/** Join the native simulation to the measured totals: peaks and both savings. */
+function baselineOf(history, options) {
+  const series = history.map((sample) => (Number(sample.transcriptTokens) || 0) / CHARS_PER_TOKEN)
+  const simulation = simulateNative(series, options)
+  const peak = (values) => (values.length === 0 ? 0 : Math.max(...values))
+  const oursPeak = peak(history.map((sample) => Number(sample.totalTokens) || 0))
+  const rawPeak = peak(simulation.passes.map((pass) => pass.raw))
+  const nativePeak = peak(simulation.passes.map((pass) => pass.native))
+  return {
+    ...simulation,
+    rawPeak,
+    nativePeak,
+    oursPeak,
+    savings: { vsRaw: rawPeak - oursPeak, vsNative: nativePeak - oursPeak },
+  }
+}
+
 /** Read the database and return plain data — the text report is a view of it. */
-export function analyze({ session, dir, db }) {
+export function analyze({ session, dir, db, context = UNKNOWN_WINDOW, keep = DEFAULT_KEEP, summary = DEFAULT_SUMMARY, buffer, native = true }) {
   if (!existsSync(db)) throw new Error(`no database at ${db}`)
   const sqlite = new DatabaseSync(db, { readOnly: true })
   try {
@@ -197,6 +263,10 @@ export function analyze({ session, dir, db }) {
     const pending = Array.isArray(record.pending) ? record.pending : []
     const archive = Array.isArray(record.archive) ? record.archive : []
     const history = Array.isArray(record.history) ? record.history : undefined
+    const baseline =
+      history !== undefined && native
+        ? baselineOf(history, { window: context, keep, summary, buffer })
+        : null
 
     return {
       db,
@@ -226,6 +296,7 @@ export function analyze({ session, dir, db }) {
       lastReport: record.lastReport ?? null,
       history: history ?? null,
       summary: history === undefined ? null : summarizeHistory(history),
+      baseline,
       transcript: transcriptEstimate(sqlite, located.id),
     }
   } finally {
@@ -244,30 +315,40 @@ function renderPlugins(data) {
   return lines.join("\n")
 }
 
-function renderHistory(history, summary) {
+function renderHistory(history, summary, baseline) {
+  const simulated =
+    baseline !== null && baseline !== undefined && Array.isArray(baseline.passes) && baseline.passes.length === history.length
   const header = [
     "  #".padEnd(5),
-    "when".padEnd(20),
-    "turn".padEnd(14),
+    "when".padEnd(12),
+    "turn".padEnd(11),
     "memory".padStart(8),
-    "working".padStart(8),
+    "working".padStart(9),
     "policy".padStart(7),
     "total".padStart(8),
     "transcript".padStart(11),
+    ...(simulated ? ["native".padStart(8), "saved".padStart(8)] : []),
     "over".padStart(5),
   ].join("")
   const rows = history.map((sample, index) => {
     const label = index === 0 && history.length > 1 ? `0*` : String(index)
     const transcript = formatTokens((Number(sample.transcriptTokens) || 0) / CHARS_PER_TOKEN)
+    const pass = simulated ? baseline.passes[index] : undefined
     return [
       `  ${label}`.padEnd(5),
-      formatWhen(sample.at).padEnd(20),
-      oneLine(sample.turn ?? "-", 13).padEnd(14),
+      formatClock(sample.at).padEnd(12),
+      oneLine(sample.turn ?? "-", 10).padEnd(11),
       formatTokens(sample.memoryTokens).padStart(8),
-      formatTokens(sample.workingTokens).padStart(8),
+      formatTokens(sample.workingTokens).padStart(9),
       formatTokens(sample.policyTokens).padStart(7),
       formatTokens(sample.totalTokens).padStart(8),
       transcript.padStart(11),
+      ...(simulated
+        ? [
+            (pass.compacted ? `${formatTokens(pass.native)}↓` : formatTokens(pass.native)).padStart(8),
+            formatDelta(pass.raw - (Number(sample.totalTokens) || 0)).padStart(8),
+          ]
+        : []),
       (sample.overBudget === true ? "yes" : "").padStart(5),
     ].join("")
   })
@@ -276,14 +357,30 @@ function renderHistory(history, summary) {
     summary.crossedAt >= 0
       ? `  OVER CAP first at pass ${summary.crossedAt}${history[summary.crossedAt].turn ? ` (${history[summary.crossedAt].turn})` : ""}`
       : "  never over cap"
-  return [
-    `passes ${summary.count} (history)`,
-    header,
-    ...rows,
-    peak,
-    crossed,
-    "  transcript is the disabled side, in estimated tokens (recorded characters ÷ 4); * is the kept first sample",
-  ].join("\n")
+  const lines = [`passes ${summary.count} (history)`, header, ...rows, peak, crossed]
+  if (simulated) {
+    const ceilingShare = Number.isFinite(baseline.ceiling)
+      ? `${Math.round((baseline.ceiling / baseline.window) * 100)}% of ${formatTokens(baseline.window)}`
+      : "unbounded"
+    const floorParts =
+      baseline.buffer !== null
+        ? `buffer ${formatTokens(baseline.buffer)}`
+        : `${formatTokens(baseline.keep)} keep + ${formatTokens(baseline.summary)} summary`
+    const count = `${baseline.compactions} compaction${baseline.compactions === 1 ? "" : "s"}`
+    lines.push(
+      `  baselines  raw ${formatTokens(baseline.rawPeak)} append-only · native (simulated) ${formatTokens(baseline.nativePeak)} · ` +
+        `ours ${formatTokens(baseline.oursPeak)} (peaks)`,
+      `  savings    vs raw ${formatDelta(baseline.savings.vsRaw)} (${formatShare(baseline.savings.vsRaw, baseline.rawPeak)}) · ` +
+        `vs native ${formatDelta(baseline.savings.vsNative)} (${formatShare(baseline.savings.vsNative, baseline.nativePeak)})`,
+      `  native     ${formatTokens(baseline.ceiling)} ceiling = ${ceilingShare} · floor ${formatTokens(baseline.floor)} = ` +
+        `${floorParts} · ${count}`,
+      "  transcript/raw are the disabled side in tokens (recorded chars ÷ 4) · native is simulated, ↓ marks a pass it",
+      "  compacted · * is the kept first sample · the shared system prompt and tool schemas are excluded from both",
+    )
+  } else {
+    lines.push("  transcript is the disabled side, in estimated tokens (recorded characters ÷ 4); * is the kept first sample")
+  }
+  return lines.join("\n")
 }
 
 function renderFallback(data) {
@@ -309,7 +406,7 @@ export function render(data) {
     `session ${data.session}`,
     `directory ${data.directory}${data.parentID ? `  (child of ${data.parentID})` : ""}`,
     renderPlugins(data),
-    data.history !== null ? renderHistory(data.history, data.summary) : renderFallback(data),
+    data.history !== null ? renderHistory(data.history, data.summary, data.baseline) : renderFallback(data),
     `memory ${formatTokens(data.memoryChars)} chars · seenTurns ${data.seenTurns} · pending ${data.pending.length} · ` +
       `archive ${data.archive.length} · record ${formatBytes(data.recordBytes)}`,
     `goal: ${oneLine(data.goal, 100) || "(empty)"}`,

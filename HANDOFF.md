@@ -4,11 +4,11 @@ Next: `docs/features/README.md` - the feature map. Read only the page for your a
 
 **A snapshot, not a source of truth.** This file goes stale by design. If it disagrees with the code, the code is right. `AGENTS.md` is the process doc, `docs/features/` is the feature map and `docs/SPEC.md` is the behavior spec. This file is the volatile one - it exists so a new session knows *where things stand*, not *how they work*.
 
-As of `main` (the analysis commit, v0.1.5) - 2026-10-18.
+As of `main` (the native-baseline commit, v0.1.6) - 2026-10-18.
 
 ## State
 
-- **v0.1 is implemented and the gate is green.** `npm run typecheck` passes; `npm run smoke` prints `smoke: 67 assertions passed`; `npm run test:install` prints `install smoke: 17 assertions passed`; `npm run version:check` passes.
+- **v0.1 is implemented and the gate is green.** `npm run typecheck` passes; `npm run smoke` prints `smoke: 78 assertions passed`; `npm run test:install` prints `install smoke: 17 assertions passed`; `npm run version:check` passes.
 - **The live run exposed one real bug, now fixed in the source and synced to the project copy.** A tool result whose `result.type` is `content` (a multi-part result, e.g. two text blocks) was eroded by writing a string into `result.value`. OpenCode's `SessionModelRequest.prepare` maps over that array (`l.value.map`), so every continuation of that turn failed with **"session failed: l.value.map is not a function"**. `erodeToolResults` now shrinks only the text parts and keeps the array; `json` results are left untouched. Pinned by three new smoke assertions. **The running host still has the old code until OpenCode restarts.**
 - **The install routine is coded.** `scripts/install.ts` copies the shippable set into the user or project scope, reports drift, and removes a copy. `package.json` has `plugin:install`, `plugin:install:project`, `plugin:uninstall`, `plugin:status` and `test:install`. `README.md` is the user-facing install and configure guide.
 - **The package `options.json` is now a real config layer.** `src/core/config.ts` resolves defaults -> package options -> host options -> user file. The adapter reads `options.json` from the package root (`OPTIONS_PATH`).
@@ -19,6 +19,7 @@ As of `main` (the analysis commit, v0.1.5) - 2026-10-18.
 - **The README gained its packaging furniture.** A header image (`docs/assets/header.svg`), a badge strip (license, version, topic, dependencies, PayPal), a `What it does` section, `Checks`, `Where the details live`, a support section, and a linked `LICENSE` file; `.github/FUNDING.yml` carries the PayPal link. User-facing only - no implementation detail, per the `AGENTS.md` rule.
 - **The version is now derived per commit.** `src/core/version.ts` (pure) + `scripts/version.mjs` derive `MAJOR.MINOR.(git rev-list --count HEAD - countBase)`; `package.json` carries `megaSmartContext.countBase` (3) and the hook stamps the patch. `/context status` shows the loaded build's version, read from its own shipped `package.json`, and the README version badge follows the same field. The repo's `core.hooksPath=.githooks` was set for this clone; `.githooks/commit-msg` forwards to the machine-wide co-author guard. See `docs/features/version.md`.
 - **The enabled-vs-disabled analyzer ships.** `record.history` keeps one `PassSample` per context pass (constant `MAX_HISTORY` 200, first sample kept, **not** part of the payload, no version bump); `PassSample.transcriptTokens` is the *character* size of the full input at pass time - what a disabled plugin would send. `npm run analyze` (`scripts/analyze.mjs`) reads the record back **read-only** from OpenCode's database and prints the per-pass curve, or `lastReport` plus an approximate baseline for a pre-history record. See `docs/features/analysis.md`.
+- **The analyzer also simulates native compaction.** `scripts/native-compaction.mjs` mirrors the host's ceiling (`window - max(10%, 16k)`) and floor (`keep 15k + summary 2k`); the report's `native` column is that sawtooth from the observed growth, `raw` is the append-only transcript, and the footer prints savings against both. Anchoring to an observed drop deliberately biases *against* the plugin; window, keep and summary are flags, and provider-native compaction is not modelled.
 
 ## Open threads
 
@@ -41,6 +42,6 @@ As of `main` (the analysis commit, v0.1.5) - 2026-10-18.
 
 - **`node_modules/` is ignored; `package-lock.json` is tracked** (the pre-commit hook stamps its version fields too).
 - Run `npm run hooks` once per clone: it sets `core.hooksPath=.githooks`, which is what makes the pre-commit stamp and the `commit-msg` forward fire. This clone has it set.
-- The user-scope copy at `~/.config/opencode/plugins/mega-smart-context` must be re-synced (`npm run plugin:install`) after this change and OpenCode restarted; this tree ships 30 files (the analyzer adds `scripts/analyze.mjs` to the 29).
+- The user-scope copy at `~/.config/opencode/plugins/mega-smart-context` must be re-synced (`npm run plugin:install`) after this change and OpenCode restarted; this tree ships 31 files (the analyzer adds `scripts/analyze.mjs` and `scripts/native-compaction.mjs`).
 - `.opencode/plugin/` - empty; the project-scope copy was removed (the user scope is the install), and `.gitignore` covers it.
 - `.git` is present (branch `main`); no remote and no tags yet.
