@@ -22,12 +22,14 @@ import { pathToFileURL } from "node:url"
 
 import { parseLayer, resolveConfig } from "../src/core/config.ts"
 import { buildPayload } from "../src/core/context.ts"
+import { runMemoryTool } from "../src/core/memory-tool.ts"
 import { messagesChars } from "../src/core/measure.ts"
+import { NOTICE_HEADING } from "../src/core/prompts.ts"
 import { emptyMemory } from "../src/core/schema.ts"
-import { MAX_HISTORY, SessionStore, pruneOrphans, sameDirectory, trimHistory } from "../src/core/state.ts"
+import { MAX_HISTORY, MAX_NOTICES, MAX_NOTICE_CHARS, SessionStore, pruneOrphans, sameDirectory, trimHistory, upsertNotices } from "../src/core/state.ts"
 import { extractHtmlSection, extractSection, htmlToText, pageCandidates } from "../src/core/refs.ts"
 import { deriveVersion, readVersionBase } from "../src/core/version.ts"
-import { balanceCuts, erodeToolResults, selectWorkingWindow, turnSpans } from "../src/core/view.ts"
+import { balanceCuts, erodeToolResults, noticeOf, selectWorkingWindow, splitNotices, turnSpans } from "../src/core/view.ts"
 import { livenessFromError } from "../src/adapters/opencode/sessions.ts"
 import {
   DEFAULT_KEEP,
@@ -334,6 +336,119 @@ const trimmed = trimHistory(many)
 ok(trimmed.length === MAX_HISTORY, "history trims to MAX_HISTORY")
 ok(trimmed[0].at === 0, "the first sample is always kept")
 ok(trimmed[trimmed.length - 1].at === many[many.length - 1].at, "the newest sample is kept")
+
+// ---------------------------------------------------------------------------
+// Host notices: pinned into the system prompt, not replayed as turns
+// ---------------------------------------------------------------------------
+
+function noticeMsg(id, text, marker = "") {
+  return { id, role: "user", content: [{ type: "text", text: text + marker }] }
+}
+const PLAN_NOTICE = "<system-reminder>\nYou are in Plan mode. Discuss the plan.\n</system-reminder>"
+const BUILD_NOTICE = "<system-reminder>\nYou are NO LONGER in Plan mode.\n</system-reminder>"
+
+ok(noticeOf(noticeMsg("n1", PLAN_NOTICE, "\n@1@"))?.text === PLAN_NOTICE, "a notice with a trailing @n@ marker is recognised")
+ok(noticeOf(noticeMsg("n2", "You are in Plan mode.")) === undefined, "a plain user message is not a notice")
+ok(
+  noticeOf({ id: "n3", role: "user", content: [{ type: "text", text: PLAN_NOTICE }, { type: "text", text: "x" }] }) ===
+    undefined,
+  "a multi-part user message is not a notice",
+)
+ok(
+  noticeOf({ id: "n4", role: "user", content: [{ type: "text", text: PLAN_NOTICE + "\nand also do X" }] }) === undefined,
+  "a reminder with trailing prose is a real turn, not a notice",
+)
+
+const withNotices = [
+  user("u1", "First request. ".repeat(10)),
+  noticeMsg("n-plan", PLAN_NOTICE),
+  assistant("a1", "Working. ".repeat(10)),
+  noticeMsg("n-build", BUILD_NOTICE),
+  user("u2", "Continue. ".repeat(10)),
+  assistant("a2", "Done. ".repeat(10)),
+]
+ok(turnSpans(withNotices).length === 4, "left in place each notice would be a phantom turn")
+const split = splitNotices(withNotices)
+ok(split.rest.length === 4, "both notices are removed from the window")
+ok(split.notices.length === 2 && split.notices[0].id === "n-plan", "notices come back in transcript order")
+ok(turnSpans(split.rest).length === 2, "a mode switch is not a turn")
+
+const noticeStore = new SessionStore()
+const noticeConfig = resolveConfig({ options: { workingTokens: 500, memoryTokens: 3000, charsPerToken: 2 } })
+const noticeDeps = { store: noticeStore, config: noticeConfig }
+const noticePass = (sessionID, messages, system = [{ type: "text", text: "base" }]) =>
+  buildPayload({ sessionID, system, messages, model: {} }, noticeDeps)
+
+const p1 = await noticePass("n", withNotices)
+ok(p1.messages.every((message) => !JSON.stringify(message).includes("system-reminder")), "the notice is not in the payload")
+const pinned = p1.system.find((part) => part.text.startsWith(NOTICE_HEADING))
+ok(pinned !== undefined, "the notices are pinned into a system part")
+ok(pinned.text.includes("n-plan") && pinned.text.includes("n-build"), "both notices are listed")
+ok(pinned.text.indexOf("n-build") < pinned.text.indexOf("n-plan"), "the newest notice is listed first")
+const p2 = await noticePass("n", withNotices, p1.system)
+ok(
+  p2.system.filter((part) => part.text.startsWith(NOTICE_HEADING)).length === 1,
+  "a re-pass that carries the previous block adds no second copy",
+)
+const nrec = await noticeStore.load("n")
+ok(nrec.notices.length === 2, "the record pins each distinct notice once")
+const atBefore = JSON.stringify(nrec.notices)
+await noticePass("n", withNotices)
+const nrec2 = await noticeStore.load("n")
+ok(JSON.stringify(nrec2.notices) === atBefore, "a re-run leaves the pinned notices byte-identical")
+
+// A mode switch carries no user turn: it must not age a pending turn out.
+const ageStore = new SessionStore()
+const ageConfig = resolveConfig({
+  options: { workingTokens: 500, memoryTokens: 3000, charsPerToken: 2, autoArchive: true, evictionLead: 1 },
+})
+const ageDeps = { store: ageStore, config: ageConfig }
+const agePass = (messages) =>
+  buildPayload({ sessionID: "age", system: [{ type: "text", text: "base" }], messages, model: {} }, ageDeps)
+const firstTurn = [user("u1", "First. ".repeat(100)), assistant("a1", "Answer. ".repeat(100))]
+const secondTurn = [user("u2", "Second. ".repeat(100)), assistant("a2", "Again. ".repeat(100))]
+await agePass(firstTurn)
+const bReport = await agePass([...firstTurn, ...secondTurn])
+const afterB = await ageStore.load("age")
+ok(afterB.pending.some((pending) => pending.id === "u1"), "a turn that leaves the window becomes pending")
+const cReport = await agePass([...firstTurn, ...secondTurn, noticeMsg("n-mode", BUILD_NOTICE)])
+const afterC = await ageStore.load("age")
+ok(cReport.workingTurns === bReport.workingTurns, "a mode switch adds no working turn")
+ok(afterC.pending.some((pending) => pending.id === "u1"), "a mode switch does not age a pending turn")
+ok(afterC.archive.length === 0, "a mode switch does not archive a pending turn")
+
+// action:notice — list, refuse the newest, remove an older one.
+const toolDeps = { store: noticeStore, config: noticeConfig }
+await noticePass("notice-tool", [user("u1", "hi"), noticeMsg("n-old", PLAN_NOTICE), noticeMsg("n-new", BUILD_NOTICE)])
+const listOut = await runMemoryTool({ sessionID: "notice-tool", action: "notice" }, toolDeps)
+ok(listOut.ok && listOut.text.includes("n-old") && listOut.text.includes("n-new"), "action:notice lists the pinned notices")
+const refuseNewest = await runMemoryTool({ sessionID: "notice-tool", action: "notice", remove: "n-new" }, toolDeps)
+ok(!refuseNewest.ok && /newest/.test(refuseNewest.text), "the newest notice refuses removal")
+const removeOlder = await runMemoryTool({ sessionID: "notice-tool", action: "notice", remove: "n-old" }, toolDeps)
+ok(removeOlder.ok, "an older notice can be removed")
+const remaining = await noticeStore.load("notice-tool")
+ok(remaining.notices.length === 1 && remaining.notices[0].id === "n-new", "only the retired notice is gone")
+
+const manyNotices = []
+for (let index = 1; index <= 10; index += 1) {
+  manyNotices.push(noticeMsg(`nx${index}`, `<system-reminder>\nNotice ${index}\n</system-reminder>`))
+}
+await noticePass("many", [user("u1", "hi"), ...manyNotices])
+const manyRec = await noticeStore.load("many")
+ok(manyRec.notices.length === MAX_NOTICES, "the notice list is capped at MAX_NOTICES")
+ok(manyRec.notices[0].id === "nx3", "the oldest notices are dropped first")
+ok(manyRec.notices[manyRec.notices.length - 1].id === "nx10", "the newest notice always survives")
+
+const long = "<system-reminder>\n" + "z".repeat(6000) + "\n</system-reminder>"
+const headKept = upsertNotices([], [{ id: "big", text: long }], 1)
+ok(headKept[0].text.length <= MAX_NOTICE_CHARS + 40, "an over-long notice is head-kept")
+ok(headKept[0].text.startsWith("<system-reminder>"), "the head of an over-long notice is kept")
+ok(headKept[0].text.includes("truncated"), "an over-long notice gets a truncation marker")
+
+const plain = await noticePass("plain", [user("u1", "hello")])
+ok(plain.system.every((part) => !part.text.startsWith(NOTICE_HEADING)), "an empty notice list adds no system part")
+const noneOut = await runMemoryTool({ sessionID: "plain", action: "notice" }, noticeDeps)
+ok(noneOut.ok && /no pinned/.test(noneOut.text), "listing with no notices is a clean empty answer")
 
 // ---------------------------------------------------------------------------
 // Native compaction: the second baseline in the report

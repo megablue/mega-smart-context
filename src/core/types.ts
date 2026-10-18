@@ -156,6 +156,25 @@ export interface ArchivedTurn {
   messages?: Message[]
 }
 
+/**
+ * A host-injected system-mode notice, kept verbatim and pinned.
+ *
+ * The host admits a mode switch as a synthetic *user* message carrying a
+ * `<system-reminder>` block, not as a system part. Counting it as a turn inflates
+ * the working window and ages a pending turn on a mode switch the model never
+ * made. The plugin strips it from the window instead and stores the text here, so
+ * the standing instruction survives every pass and the model can retire a
+ * superseded one.
+ */
+export interface Notice {
+  /** The host message id the text arrived under; stable across passes. */
+  id: string
+  /** The notice text, verbatim up to a head-keep bound, with a truncation marker. */
+  text: string
+  /** When the plugin first recorded this text (`Date.now()`). */
+  at: number
+}
+
 /** The last context pass's measurements, so `/context` can show them later. */
 export interface LastReport {
   memoryTokens: number
@@ -189,6 +208,8 @@ export interface PassSample {
   transcriptTokens: number
   /** The POLICY part we add, in estimated tokens. */
   policyTokens: number
+  /** The pinned-notices part we add, in estimated tokens. `0` when there is none. */
+  noticeTokens?: number
   memoryTokens: number
   workingTokens: number
   /** memory + working + policy, in estimated tokens. */
@@ -209,6 +230,15 @@ export interface SessionRecord {
   lastReport?: LastReport
   /** One sample per context pass, oldest first, bounded by `MAX_HISTORY`. */
   history?: PassSample[]
+  /**
+   * Host-injected mode notices, newest last, deduped by exact text.
+   *
+   * Pinned into the request's system parts rather than the working window, so a
+   * mode switch cannot evict a turn or churn the provider prefix. Bounded by
+   * `MAX_NOTICES`, oldest non-newest dropped first. Optional: a record written
+   * before the field existed has none.
+   */
+  notices?: Notice[]
   /**
    * The plugin instance's directory when this record was last written.
    *

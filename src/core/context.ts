@@ -17,14 +17,15 @@
 import { archivePending, knows, mechanicalGist, trimArchive, turnMessages } from "./archive.ts"
 import type { ResolvedConfig } from "./config.ts"
 import { estimateTokens, memoryChars, messageChars, messagesChars } from "./measure.ts"
-import { POLICY, budgetOf, renderMemory } from "./prompts.ts"
-import { trimHistory, type SessionStore } from "./state.ts"
+import { POLICY, NOTICE_HEADING, budgetOf, renderMemory, renderNotices } from "./prompts.ts"
+import { trimHistory, upsertNotices, type SessionStore } from "./state.ts"
 import type { Message, PassSample, SessionRecord, SystemPart } from "./types.ts"
 import {
   MEMORY_MESSAGE_ID,
   erodeToolResults,
   isInjected,
   selectWorkingWindow,
+  splitNotices,
   stripReasoning,
   turnSpans,
 } from "./view.ts"
@@ -84,9 +85,12 @@ export async function buildPayload(input: ContextInput, deps: ContextDeps): Prom
   const record: SessionRecord = await deps.store.load(input.sessionID)
 
   // The host rebuilds from the durable transcript, so an injected message here
-  // would only be a stale copy. Filter defensively; the transcript itself is
-  // never edited.
-  const raw = input.messages.filter((message) => !isInjected(message))
+  // would only be a stale copy. The mode notices are pulled out of the window and
+  // pinned instead: left in place each one starts a turn, which inflates the
+  // working window and ages a pending turn on a mode switch the model never made.
+  const clean = input.messages.filter((message) => !isInjected(message))
+  const split = splitNotices(clean)
+  const raw = split.rest
   const spans = turnSpans(raw)
   const window = selectWorkingWindow(raw, {
     workingTokens: config.workingTokens,
@@ -141,6 +145,10 @@ export async function buildPayload(input: ContextInput, deps: ContextDeps): Prom
     trimArchive(record, config.archiveMaxTurns, config.archiveMaxChars)
   }
 
+  // A mode notice is a standing instruction, not a turn: keep every distinct text
+  // on the record so it survives the window it was stripped from.
+  if (split.notices.length > 0) record.notices = upsertNotices(record.notices ?? [], split.notices, now())
+
   const memoryTokens = estimateTokens(memoryChars(record.memory), config.charsPerToken)
   const workingTokens = estimateTokens(messagesChars(working), config.charsPerToken)
   const modelContext = modelContextOf(input.model)
@@ -163,11 +171,13 @@ export async function buildPayload(input: ContextInput, deps: ContextDeps): Prom
   // input we were handed is what a disabled plugin would send. `history` is not
   // part of the payload, so this appends on every pass without changing bytes.
   const policyTokens = estimateTokens(POLICY.length, config.charsPerToken)
+  const noticeChars = (record.notices ?? []).reduce((sum, notice) => sum + notice.text.length, 0)
   const sample: PassSample = {
     at: now(),
     turn: currentIds.length > 0 ? currentIds[currentIds.length - 1] : undefined,
     transcriptTokens: messagesChars(input.messages),
     policyTokens,
+    noticeTokens: estimateTokens(noticeChars, config.charsPerToken),
     memoryTokens,
     workingTokens,
     totalTokens: memoryTokens + workingTokens + policyTokens,
@@ -193,8 +203,12 @@ export async function buildPayload(input: ContextInput, deps: ContextDeps): Prom
   }
   const messages: Message[] = [memoryMessage, ...working]
 
-  const system = [...input.system]
+  // Drop a stale pinned-notices part the host may be carrying, then append the
+  // current one: the block changes when the mode does, unlike the static policy.
+  const system = input.system.filter((part) => !part.text.startsWith(NOTICE_HEADING))
   if (!system.some((part) => part.text === POLICY)) system.push({ type: "text", text: POLICY })
+  const noticesText = renderNotices(record)
+  if (noticesText !== undefined) system.push({ type: "text", text: noticesText })
 
   await deps.store.save(input.sessionID, record)
 

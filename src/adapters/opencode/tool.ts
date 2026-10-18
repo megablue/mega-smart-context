@@ -32,14 +32,15 @@ Actions:
 - archive { turn, gist, keepRaw? } — move a pending turn into the cold archive.
 - purge { turn? | query? } — delete a pending or archived turn, or matching entries.
 - recall { query, lost:true } — search the archive. Requires lost:true: use it only when a fact you need is missing.
-- expand { turn } — read an archived turn back.`
+- expand { turn } — read an archived turn back.
+- notice { remove? } — list the pinned host notices (Plan/Build mode), or retire a superseded one by id. The newest is the live instruction and is refused.`
 
 export const TOOL_INPUT = {
   type: "object",
   properties: {
     action: {
       type: "string",
-      enum: ["read", "patch", "stats", "ref", "archive", "purge", "recall", "expand"],
+      enum: ["read", "patch", "stats", "ref", "archive", "purge", "recall", "expand", "notice"],
       description: "What to do. See the tool description for each action.",
     },
     patch: {
@@ -52,6 +53,10 @@ export const TOOL_INPUT = {
     section: { type: "string", description: "For action:ref — a heading or a fragment of one." },
     gist: { type: "string", description: "For action:ref/archive — your one-line summary." },
     turn: { type: "string", description: "For action:archive/purge/expand — a turn id." },
+    remove: {
+      type: "string",
+      description: 'For action:notice — the id of a superseded notice to drop. The newest is refused.',
+    },
     query: { type: "string", description: "For action:recall/purge — a search string." },
     lost: { type: "boolean", description: "For action:recall — set true only when a needed fact is missing." },
     keepRaw: { type: "boolean", description: "For action:archive — keep the raw messages for expand." },
@@ -85,6 +90,7 @@ export function createSmartContextTool(options: {
         section: raw.section,
         gist: raw.gist,
         turn: raw.turn,
+        remove: raw.remove,
         query: raw.query,
         lost: raw.lost,
         keepRaw: raw.keepRaw,

@@ -38,6 +38,51 @@ export function isRealUser(message: Message | undefined): boolean {
   return message?.role === "user" && !isInjected(message)
 }
 
+/**
+ * A host mode notice, when this message is one.
+ *
+ * The host admits a Plan/Build switch as a synthetic *user* message whose whole
+ * text is a `<system-reminder>` block (some carry a trailing `@n@` marker). Left
+ * in place it starts a turn: it inflates the working window and ages a pending
+ * turn on a mode switch the model never made. Recognised here, it is stripped
+ * from the window and pinned into the system prompt instead.
+ */
+export function noticeOf(message: Message | undefined): { id: string; text: string } | undefined {
+  if (message?.role !== "user" || isInjected(message)) return undefined
+  if (typeof message.id !== "string" || message.id.length === 0) return undefined
+  const content = message.content ?? []
+  if (content.length !== 1) return undefined
+  const part = content[0]
+  if (part.type !== "text" || typeof (part as { text?: unknown }).text !== "string") return undefined
+  const text = (part as { text: string }).text
+    .trim()
+    .replace(/\s*@[^@\s]*@\s*$/u, "")
+    .trim()
+  if (!/^<system-reminder>[\s\S]*<\/system-reminder>$/u.test(text)) return undefined
+  return { id: message.id, text }
+}
+
+/**
+ * Pull the host's mode notices out of a payload.
+ *
+ * `rest` is the conversation the window reasons about: no notice, so no phantom
+ * turn and no eviction lead burned on a mode switch. `notices` is every notice in
+ * transcript order, for the record to pin (deduped by exact text when stored).
+ */
+export function splitNotices(messages: ReadonlyArray<Message>): {
+  rest: Message[]
+  notices: { id: string; text: string }[]
+} {
+  const rest: Message[] = []
+  const notices: { id: string; text: string }[] = []
+  for (const message of messages) {
+    const notice = noticeOf(message)
+    if (notice === undefined) rest.push(message)
+    else notices.push(notice)
+  }
+  return { rest, notices }
+}
+
 export function toolCalls(message: Message | undefined): ToolCallPart[] {
   return (message?.content ?? []).filter(
     (part): part is ToolCallPart => part.type === "tool-call" && typeof (part as ToolCallPart).id === "string",

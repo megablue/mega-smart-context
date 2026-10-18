@@ -37,6 +37,10 @@ the working budget (verbatim), and the current turn.
   mechanical gist; purge what is irrelevant.
 - Do not search the archive out of habit. \`recall\` requires \`lost:true\`: use it
   only when a fact you need is missing from memory and the working window.
+- Host notices (Plan/Build mode) are pinned, not replayed: they stay in the system
+  prompt until a newer one replaces them, so a mode switch never evicts a turn.
+  List them with action:"notice"; retire a superseded one with remove:"<id>" (the
+  newest is the live instruction and a removal of it is refused).
 - For project knowledge, prefer a feature-map reference over pasted prose when
   the reference is shorter. action:"ref" reports the gist and section costs.
 - Keep memory lean. The budget header is the truth; compact before it is over.`
@@ -173,6 +177,38 @@ export function renderMemory(record: SessionRecord, config: ResolvedConfig, repo
   return lines.join("\n")
 }
 
+/** The heading of the pinned-notices system part; also how a stale part is found. */
+export const NOTICE_HEADING = "## Pinned host notices"
+
+/** The first line of a notice, collapsed, for a one-line listing. */
+export function noticePreview(text: string): string {
+  return oneLine(text).slice(0, 100)
+}
+
+function isoDate(at: number): string {
+  if (!Number.isFinite(at) || at <= 0) return "(unknown)"
+  return new Date(at).toISOString().slice(0, 10)
+}
+
+/**
+ * Render the pinned mode notices as one system part, newest first.
+ *
+ * Deterministic: `at` moves only when a new notice id arrives, so a re-run over
+ * the same record is byte-identical and a provider prefix cache stays warm.
+ * `undefined` when there is nothing to pin, so the caller adds no part.
+ */
+export function renderNotices(record: SessionRecord): string | undefined {
+  const notices = record.notices ?? []
+  if (notices.length === 0) return undefined
+  const lines = [NOTICE_HEADING, ""]
+  for (let index = notices.length - 1; index >= 0; index -= 1) {
+    const notice = notices[index]
+    lines.push(`### ${notice.id} · seen ${isoDate(notice.at)}`, notice.text, "")
+  }
+  while (lines[lines.length - 1] === "") lines.pop()
+  return lines.join("\n")
+}
+
 /**
  * The multi-line status `/context` prints.
  *
@@ -187,6 +223,12 @@ export function renderStats(record: SessionRecord, config: ResolvedConfig, versi
     `window: ${report.workingTurns} turns kept, ${report.droppedTurns} dropped · over budget: ${report.overBudget ? "yes" : "no"}`,
     `goal: ${report.goalEmpty ? "(empty)" : q(oneLine(record.memory.goal))}`,
   ]
+  if ((record.notices ?? []).length > 0) {
+    lines.push("", NOTICE_HEADING)
+    for (const notice of [...(record.notices ?? [])].reverse()) {
+      lines.push(`- ${notice.id} · ${noticePreview(notice.text)}`)
+    }
+  }
   if (record.pending.length > 0) {
     lines.push("", "## Pending eviction")
     for (const pending of record.pending) lines.push(`- ${pending.id} · ${pending.gist}`)

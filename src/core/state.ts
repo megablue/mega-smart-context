@@ -15,7 +15,7 @@
  */
 
 import { emptyMemory, normalizeMemory } from "./schema.ts"
-import type { ArchivedTurn, PassSample, PendingTurn, SessionRecord, StoragePort } from "./types.ts"
+import type { ArchivedTurn, Notice, PassSample, PendingTurn, SessionRecord, StoragePort } from "./types.ts"
 import { isPlainObject, messageOf } from "./types.ts"
 
 /** How many sessions the store keeps before the oldest is evicted. */
@@ -29,6 +29,20 @@ export const MAX_SESSIONS = 64
  * the cheap full-arc baseline the analyzer measures growth against.
  */
 export const MAX_HISTORY = 200
+
+/**
+ * How many distinct host notices a session record pins.
+ *
+ * Not a config key: the list is a handful of short mode reminders, and a fixed
+ * cap keeps the record bounded without a second knob. The oldest non-newest
+ * entries are dropped first, so the live instruction always survives.
+ */
+export const MAX_NOTICES = 8
+
+/** A notice longer than this is head-kept, with a marker, before it is stored. */
+export const MAX_NOTICE_CHARS = 4000
+
+const NOTICE_TRUNCATION_MARKER = "\n… [truncated] …"
 
 const KEY_PREFIX = "session/"
 
@@ -105,6 +119,9 @@ function normalizeSample(value: unknown): PassSample | undefined {
     overBudget: value.overBudget === true,
   }
   if (typeof value.turn === "string") sample.turn = value.turn
+  if (typeof value.noticeTokens === "number" && Number.isFinite(value.noticeTokens)) {
+    sample.noticeTokens = value.noticeTokens
+  }
   if (typeof value.modelContext === "number" && Number.isFinite(value.modelContext)) {
     sample.modelContext = value.modelContext
   }
@@ -123,6 +140,62 @@ function normalizeHistory(value: unknown): PassSample[] | undefined {
 export function trimHistory(history: PassSample[]): PassSample[] {
   if (history.length <= MAX_HISTORY) return history
   return [history[0], ...history.slice(history.length - (MAX_HISTORY - 1))]
+}
+
+/** Keep the head of an over-long notice so one hostile row cannot bloat the record. */
+function headKeepNotice(text: string): string {
+  if (text.length <= MAX_NOTICE_CHARS) return text
+  return text.slice(0, MAX_NOTICE_CHARS) + NOTICE_TRUNCATION_MARKER
+}
+
+/** Coerce a stored notice, dropping anything without an id and usable text. */
+function normalizeNotice(value: unknown): Notice | undefined {
+  if (!isPlainObject(value)) return undefined
+  if (typeof value.id !== "string" || value.id.length === 0) return undefined
+  if (typeof value.text !== "string" || value.text.trim().length === 0) return undefined
+  return {
+    id: value.id,
+    text: value.text,
+    at: typeof value.at === "number" && Number.isFinite(value.at) ? value.at : 0,
+  }
+}
+
+/** The pinned notices, or `undefined` when the record has none (a pre-notice record). */
+function normalizeNotices(value: unknown): Notice[] | undefined {
+  if (!Array.isArray(value)) return undefined
+  const seen = new Set<string>()
+  const out: Notice[] = []
+  for (const entry of value) {
+    const notice = normalizeNotice(entry)
+    if (notice === undefined || seen.has(notice.text)) continue
+    seen.add(notice.text)
+    out.push(notice)
+  }
+  return out.length > MAX_NOTICES ? out.slice(out.length - MAX_NOTICES) : out
+}
+
+/**
+ * Fold the notices found in one pass into the record's list.
+ *
+ * Dedupe is by exact text: the host re-sends the same notice on every request
+ * while a mode is active, so a re-run must not append a second copy or move
+ * `at`. An over-long text is head-kept before it is stored. The list is capped by
+ * `MAX_NOTICES`, dropping the oldest first, which never drops the newest — the
+ * live instruction the model must still follow.
+ */
+export function upsertNotices(
+  existing: ReadonlyArray<Notice>,
+  found: ReadonlyArray<{ id: string; text: string }>,
+  at: number,
+): Notice[] {
+  const out = [...existing]
+  const known = new Set(out.map((notice) => notice.text))
+  for (const entry of found) {
+    if (known.has(entry.text)) continue
+    known.add(entry.text)
+    out.push({ id: entry.id, text: headKeepNotice(entry.text), at })
+  }
+  return out.length > MAX_NOTICES ? out.slice(out.length - MAX_NOTICES) : out
 }
 
 /**
@@ -228,6 +301,8 @@ export function normalizeRecord(value: unknown, now: number): SessionRecord {
   if (isPlainObject(value.lastReport)) record.lastReport = value.lastReport as SessionRecord["lastReport"]
   const history = normalizeHistory(value.history)
   if (history !== undefined) record.history = history
+  const notices = normalizeNotices(value.notices)
+  if (notices !== undefined) record.notices = notices
   return record
 }
 

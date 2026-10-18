@@ -19,7 +19,7 @@
 import { archivePending, findArchived, purgeQuery, purgeTurn, recall } from "./archive.ts"
 import type { ResolvedConfig } from "./config.ts"
 import { estimateTokens, formatTokens, memoryChars } from "./measure.ts"
-import { budgetOf, renderMemory, renderStats } from "./prompts.ts"
+import { budgetOf, noticePreview, renderMemory, renderStats } from "./prompts.ts"
 import { MEMORY_KEYS, applyPatch, parsePatch } from "./schema.ts"
 import type { SessionStore } from "./state.ts"
 import type { FeatureMapPort, Memory, SessionRecord } from "./types.ts"
@@ -34,6 +34,7 @@ export interface MemoryToolInput {
   section?: unknown
   gist?: unknown
   turn?: unknown
+  remove?: unknown
   query?: unknown
   lost?: unknown
   keepRaw?: unknown
@@ -65,7 +66,8 @@ export const TOOL_HELP = `smart_context actions:
 - archive { turn, gist, keepRaw? }       move a pending turn to the archive
 - purge { turn? | query? }               delete a pending/archived turn, or matching entries
 - recall { query, lost:true }            search the archive only when a fact is missing
-- expand { turn }                        read an archived turn back`
+- expand { turn }                        read an archived turn back
+- notice { remove? }                     list the pinned host notices, or drop a superseded one`
 
 function str(value: unknown): string | undefined {
   return typeof value === "string" && value.trim().length > 0 ? value.trim() : undefined
@@ -198,6 +200,44 @@ function purge(record: SessionRecord, request: MemoryToolRequest, config: Resolv
   return { text: "smart_context: purge needs turn or query", ok: false }
 }
 
+/**
+ * List the pinned host notices, or retire a superseded one.
+ *
+ * The newest notice is the live instruction and is refused: a newer notice, not
+ * the model, is what resolves a contradiction the host injected. This is the only
+ * path that removes a notice; the context pass only ever adds the distinct texts
+ * the host sent.
+ */
+function notice(record: SessionRecord, request: MemoryToolRequest, config: ResolvedConfig): MemoryToolOutcome {
+  const notices = record.notices ?? []
+  const remove = str(request.remove)
+  if (remove === undefined) {
+    if (notices.length === 0) return { text: "smart_context: no pinned host notices", ok: true }
+    const newest = notices[notices.length - 1].id
+    const lines = ["pinned host notices (newest first):"]
+    for (const entry of [...notices].reverse()) {
+      lines.push(`- ${entry.id}${entry.id === newest ? " (live, cannot be removed)" : ""} · ${noticePreview(entry.text)}`)
+    }
+    lines.push("", 'Retire a superseded notice with action:"notice" remove:"<id>".')
+    return { text: lines.join("\n"), ok: true }
+  }
+  if (remove === notices[notices.length - 1]?.id) {
+    return {
+      text:
+        `smart_context: ${remove} is the newest notice, the live instruction, and cannot be removed. ` +
+        "A newer notice retires it; until then it stays pinned.",
+      ok: false,
+    }
+  }
+  const kept = notices.filter((entry) => entry.id !== remove)
+  if (kept.length === notices.length) {
+    const ids = notices.map((entry) => entry.id).join(", ") || "none"
+    return { text: `smart_context: no pinned notice ${JSON.stringify(remove)}. Pinned: ${ids}`, ok: false }
+  }
+  record.notices = kept
+  return { text: `removed pinned notice ${remove}\n` + usage(record, config), ok: true }
+}
+
 export async function runMemoryTool(
   request: MemoryToolRequest,
   deps: MemoryToolDeps,
@@ -223,6 +263,8 @@ export async function runMemoryTool(
       return deps.store.mutate(sessionID, (record) => archive(record, request, deps))
     case "purge":
       return deps.store.mutate(sessionID, (record) => purge(record, request, deps.config))
+    case "notice":
+      return deps.store.mutate(sessionID, (record) => notice(record, request, deps.config))
     case "recall": {
       if (request.lost !== true) {
         return {
