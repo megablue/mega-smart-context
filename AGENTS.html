@@ -1,0 +1,414 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>AGENTS.md</title>
+<meta name="generator" content="html-as-doc">
+<meta name="doc-source" content="AGENTS.md">
+<style>
+:root{color-scheme:light dark;--fg:#1d2433;--muted:#5b6475;--bg:#fff;--panel:#f7f9fc;--line:#d8dee9;--accent:#0b6e99;--code:#f4f6fa;--warn:#8a5a00}
+@media (prefers-color-scheme:dark){:root{--fg:#e6eaf2;--muted:#9aa4b8;--bg:#11151c;--panel:#161c25;--line:#2b3342;--accent:#6cc4e8;--code:#1a202a;--warn:#e0b25c}}
+*{box-sizing:border-box}
+body{margin:0 auto;max-width:54rem;padding:2.5rem 1.25rem 5rem;background:var(--bg);color:var(--fg);font:16px/1.65 system-ui,-apple-system,"Segoe UI",sans-serif;-webkit-text-size-adjust:100%}
+main{display:block}
+h1,h2,h3,h4{line-height:1.25;margin:2.2rem 0 .8rem;scroll-margin-top:1rem}
+section{scroll-margin-top:1rem}
+h1{font-size:1.95rem;border-bottom:2px solid var(--line);padding-bottom:.45rem;margin-top:0}
+h2{font-size:1.4rem;border-bottom:1px solid var(--line);padding-bottom:.3rem}
+h3{font-size:1.12rem}
+h4{font-size:1rem;color:var(--muted)}
+p,ul,ol,table,pre,blockquote{margin:.8rem 0}
+a{color:var(--accent);text-decoration-thickness:.06em;text-underline-offset:.15em}
+a:hover{text-decoration-style:dotted}
+code{background:var(--code);padding:.12em .34em;border-radius:.25rem;font:0.9em/1.4 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+pre{position:relative;background:var(--code);border:1px solid var(--line);border-radius:.45rem;padding:.85rem 1rem;overflow:auto}
+pre code{background:none;padding:0;font-size:.875rem;line-height:1.55}
+pre.code[data-lang]::before{content:attr(data-lang);position:absolute;top:0;right:0;padding:.15rem .5rem;border-left:1px solid var(--line);border-bottom:1px solid var(--line);border-radius:0 .45rem 0 .45rem;background:var(--panel);color:var(--muted);font:600 .68rem/1.4 ui-monospace,monospace;text-transform:lowercase;letter-spacing:.03em}
+pre.verbatim{border-left:4px solid var(--warn)}
+pre.verbatim::before{content:"verbatim — " attr(data-why);display:block;color:var(--warn);font:600 .76rem/1.4 ui-monospace,monospace;margin-bottom:.5rem;white-space:pre-wrap}
+pre.mermaid{background:var(--bg);border:1px dashed var(--line)}
+table{border-collapse:collapse;width:100%;display:block;overflow:auto}
+th,td{border:1px solid var(--line);padding:.45rem .7rem;text-align:left;vertical-align:top}
+th{background:var(--code);font-weight:600}
+blockquote{margin-left:0;padding:.1rem 0 .1rem 1rem;border-left:3px solid var(--line);color:var(--muted)}
+blockquote>:first-child{margin-top:0}
+blockquote>:last-child{margin-bottom:0}
+hr{border:0;border-top:1px solid var(--line);margin:2.4rem 0}
+ul,ol{padding-left:1.6rem}
+li{margin:.25rem 0}
+li>ul,li>ol{margin:.25rem 0}
+li.task{list-style:none;margin-left:-1.35rem}
+li.task input{margin-right:.5rem}
+img{max-width:100%;height:auto}
+.doc-header{color:var(--muted);font-size:.82rem;margin-bottom:2rem;display:flex;flex-wrap:wrap;gap:.4rem .75rem;align-items:baseline}
+.doc-header .doc-kicker{margin:0}
+.doc-header code{font-size:.95em}
+.doc-footer{margin-top:3.5rem;padding-top:1rem;border-top:1px solid var(--line);color:var(--muted);font-size:.8rem}
+.doc-footer p{margin:.25rem 0}
+.skip-link{position:absolute;left:-999px}
+.skip-link:focus{left:1rem;top:1rem;background:var(--panel);padding:.5rem;border-radius:.3rem;z-index:9}
+@media print{:root{--bg:#fff;--fg:#000}body{max-width:none;padding:0}.doc-header,.doc-footer{color:#444}pre,table,blockquote{break-inside:avoid}}
+</style>
+</head>
+<body>
+<a class="skip-link" href="#content">Skip to content</a>
+<header class="doc-header">
+<p class="doc-kicker">Rendered from <code>AGENTS.md</code></p>
+</header>
+<main id="content">
+<h1 id="agents-md">AGENTS.md</h1>
+<p>**Before you grep, glob or open a source file: read <code>HANDOFF.md</code>, then
+<code>docs/features/index.html</code>, then only the feature page(s) for the area you are
+about to change. The feature pages name the files, functions and tests you
+would otherwise hunt for; the code comes after them, not before.**</p>
+<p>mega-smart-context is a plugin for the OpenCode 2.0 CLI (TypeScript, ESM) that
+hands context management to the model: every request is rebuilt from a
+model-authored memory document, a short verbatim working window, and the
+current turn, instead of replaying the append-only transcript.</p>
+<p>Three kinds of document, and keeping them apart is the point:</p>
+<ul>
+<li><strong><code>docs/SPEC.md</code> is product behavior</strong> - what the product does and what a
+user sees, readable without knowing the code. Behavior belongs there even
+when the code is where the reason for it lives.
+</li>
+<li><strong><code>docs/features/</code> is the feature map</strong> - one page per feature with its
+files, mechanisms, traps and pinning tests. Read the page for the area you
+are about to change; keep it true in the same commit.
+</li>
+<li><strong>This file is process and hard rules</strong> - the commands, the workflow and the
+constraints that apply across every feature.
+</li>
+</ul>
+<p>Where a rule has a behavior half and a mechanism half, the behavior half is a
+pointer to <code>docs/SPEC.md</code> and the mechanism half to its feature page rather
+than a second copy: two copies of a default value is one more thing that can be
+wrong.</p>
+<section id="read-first">
+<h2>Read first</h2>
+<p><code>HANDOFF.md</code> holds the current state; if it is missing, carry on with the
+feature map and the code. Then <code>docs/features/index.html</code> - the feature map -
+and only the feature doc(s) for what you are about to change.
+<code>docs/SPEC.md</code> is user-visible behavior; this file is process and hard rules;
+the feature docs are the map, the mechanism and the traps.</p>
+</section>
+<section id="layout">
+<h2>Layout</h2>
+<ul>
+<li><strong>The plugin package is this repo root</strong> - <code>src/</code>, <code>scripts/</code>, <code>server.ts</code>,
+<code>options.json</code>, <code>package.json</code>, <code>tsconfig.json</code> and the package documents sit
+at the top level. Its documents are kept apart on purpose: <code>README.md</code> is for
+a user installing it, <code>docs/SPEC.md</code> is user-visible behavior with no code,
+and <code>AGENTS.md</code> is the process and hard rules for whoever edits it.
+<ul>
+<li><code>server.ts</code> - the host entry. The loader resolves <code>&lt;plugin-root&gt;/server</code>
+before <code>&lt;plugin-root&gt;/index</code> (<code>.ts</code> before <code>.js</code>), so a directory install
+needs only this one re-export; it points at the adapter, not the core.
+</li>
+<li><code>src/core/</code> - the host-free core. <strong>No host import lives in here.</strong> The
+files, by area:
+<ul>
+<li><code>types.ts</code> - the message vocabulary and the ports (<code>StoragePort</code>,
+<code>FeatureMapPort</code>), plus <code>Memory</code>, <code>SessionRecord</code>, <code>PendingTurn</code>,
+<code>ArchivedTurn</code>, <code>LastReport</code>.
+</li>
+<li><code>measure.ts</code> - character counting and the <code>chars / charsPerToken</code>
+estimate. Every budget is an estimate; no real tokenizer is used.
+</li>
+<li><code>schema.ts</code> - the eight memory keys and <code>applyPatch</code>: a <code>null</code> resets a
+key or deletes one map entry, an unknown key is dropped, maps merge key by
+key, lists replace wholesale.
+</li>
+<li><code>state.ts</code> - <code>SessionStore</code>: per-session LRU cache, durable storage, a
+per-session <code>mutate</code> lock, and an in-memory fallback when storage fails.
+</li>
+<li><code>view.ts</code> - <code>turnSpans</code>, <code>selectWorkingWindow</code>, <code>balanceCuts</code>,
+<code>erodeToolResults</code>, <code>previewOf</code>, <code>renderTurn</code>. The turn
+arithmetic and the call/result safety live here.
+</li>
+<li><code>context.ts</code> - <code>buildPayload</code>: the one function that turns the record and
+the raw transcript into the outbound payload and report.
+</li>
+<li><code>archive.ts</code> - pending/archive entries, mechanical gists, recall, purge,
+archive caps.
+</li>
+<li><code>refs.ts</code> - feature-map page normalization, section extraction, and the
+gist-vs-section cost comparison.
+</li>
+<li><code>prompts.ts</code> - <code>POLICY</code>, <code>budgetOf</code>, <code>renderMemory</code>, <code>renderStats</code>.
+</li>
+<li><code>config.ts</code> - <code>ResolvedConfig</code>, <code>DEFAULT_CONFIG</code>, strict <code>parseLayer</code>,
+<code>resolveConfig</code>.
+</li>
+<li><code>memory-tool.ts</code> - <code>runMemoryTool</code>, the eight <code>smart_context</code> actions and
+the over-cap rejection.
+</li>
+<li><code>compaction.ts</code> - <code>runCompaction</code>, which returns the memory document or
+declines.
+</li>
+<li><code>command.ts</code> - <code>runContextCommand</code>, the <code>/context</code> actions.
+</li>
+</ul>
+</li>
+<li><code>src/adapters/opencode/</code> - the OpenCode adapter, the half that knows about
+the host:
+<ul>
+<li><code>index.ts</code> - <code>setup()</code> registers the <code>context</code> and <code>compaction</code> hooks, the
+<code>smart_context</code> tool, the <code>/context</code> command, and returns the disposer.
+</li>
+<li><code>context.ts</code> - <code>runContextTransform</code>, <code>isChildSession</code> (via <code>parentID</code>),
+<code>directoryOf</code>, and <code>createFsFeatureMap</code> (reads <code>docs/features/</code>).
+</li>
+<li><code>tool.ts</code> - <code>TOOL_NAME</code>, <code>TOOL_INPUT</code>, <code>TOOL_DESCRIPTION</code>,
+<code>createSmartContextTool</code>. The tool uses <code>options.codemode: false</code> and
+returns text content only.
+</li>
+<li><code>command.ts</code> - the <code>/context</code> definition; the reply is delivered through
+<code>ctx.session.prompt</code>.
+</li>
+<li><code>config.ts</code> - <code>userConfigPath</code>, <code>ensureUserConfig</code>, <code>readUserConfig</code>,
+<code>resolveHostConfig</code>.
+</li>
+<li><code>types.ts</code> - local mirrors of the host shapes, so the package has no
+runtime dependency on <code>@opencode/plugin</code>.
+</li>
+</ul>
+</li>
+<li><code>scripts/smoke.mjs</code> - the plugin&#39;s pinning test.
+</li>
+<li><code>scripts/install.ts</code> - the copy-based installer (user/project scopes,
+<code>--status</code> drift, <code>--remove</code>, <code>--help</code>). <code>scripts/install-smoke.mjs</code> pins
+the copy, drift and removal behavior.
+</li>
+</ul>
+</li>
+<li><code>options.json</code> - the package&#39;s own default layer, the same keys as
+<code>ResolvedConfig</code>.
+</li>
+<li><code>docs/features/</code> - the feature map (this workflow); its <code>index.html</code> is the
+index and every page is a <code>.html</code> file.
+</li>
+<li><code>HANDOFF.md</code> - volatile session state; refreshed at handover, allowed to lag
+the tip (its header says the code wins).
+</li>
+</ul>
+</section>
+<section id="commands">
+<h2>Commands</h2>
+<p>Everything runs from the repo root unless said otherwise.</p>
+<ul>
+<li>Install dependencies: <code>npm install</code>
+</li>
+<li>Typecheck (build gate, strict, no emit): <code>npm run typecheck</code> (<code>npx tsc --noEmit</code>)
+</li>
+<li>Smoke test (the plugin&#39;s pinning test): <code>npm run smoke</code> (<code>node scripts/smoke.mjs .</code>)
+</li>
+<li>Installer smoke: <code>npm run test:install</code> (<code>node scripts/install-smoke.mjs .</code>)
+</li>
+<li>Install into project scope (this repo only): <code>npm run plugin:install:project</code>
+</li>
+<li>Install into user scope (every project): <code>npm run plugin:install</code>
+</li>
+<li>Check or remove: <code>npm run plugin:status</code>, <code>npm run plugin:uninstall</code>
+</li>
+<li>Git hooks (once per clone): <code>npm run hooks</code> sets this repo&#39;s
+<code>core.hooksPath=.githooks</code>, so the pre-commit version stamp and the
+<code>commit-msg</code> forward run. It shadows the machine-wide
+<code>C:/Users/mega/.githooks</code>, and <code>.githooks/commit-msg</code> forwards to that guard
+rather than copying it.
+</li>
+<li>Version: <code>npm run version</code> prints what <code>HEAD</code> implies; <code>npm run version:check</code>
+asserts <code>package.json</code> already carries it. See <code>docs/features/version.html</code>.
+</li>
+<li>Load the plugin in OpenCode: the host resolves <code>&lt;plugin-root&gt;/server</code>, so
+point a discovery directory at this package. Project scope:
+<code>.opencode/plugin/mega-smart-context</code>; user scope:
+<code>C:\Users\mega\.config\opencode\plugins\mega-smart-context</code>. No build step;
+the host loads the TypeScript source directly.
+</li>
+<li>User config: <code>~/.config/opencode/mega-smart-context.json</code>, created with every
+default on first run and never overwritten. <code>MEGA_SMART_CONTEXT_CONFIG</code>
+points at another file; <code>MEGA_SMART_CONTEXT_NO_USER_CONFIG=1</code> skips it.
+</li>
+</ul>
+<p>The gate before a commit is every check, not just the tests:</p>
+<pre class="code"><code>npm run typecheck; npm run smoke; npm run test:install; npm run version:check   (from the repo root)</code></pre>
+<p>This shell is Windows PowerShell 5.1: no <code>&amp;&amp;</code> (a parser error), chain with <code>;</code>
+and check <code>$LASTEXITCODE</code>. The global <code>core.autocrlf</code> is <code>true</code>, so
+<code>.gitattributes</code> pins <code>* text=auto eol=lf</code>: index and working copy are both LF
+and <code>git add</code> stays quiet; a file that arrives with CRLF is the exception worth
+noticing, not the norm.</p>
+<p>There is no separate formatter or linter yet; <code>tsc --noEmit</code> under <code>strict: true</code>
+is the strict flag the smoke runs after. A smoke run alone will import and
+execute a module that still fails strict typecheck, so the typecheck is part of
+the gate rather than a nicety.</p>
+</section>
+<section id="workflow">
+<h2>Workflow</h2>
+<ul>
+<li><strong>The features map is part of the change, not the cleanup.</strong> Before staging a
+commit, update the feature doc(s) for whatever you changed
+(<code>docs/features/</code>), and add an index row if the doc is new. User-visible
+behavior also updates <code>docs/SPEC.md</code> in the same commit. A docs-only
+follow-up commit is the one that gets skipped. Pure refactors with no
+behavior, mechanism, config or test change need no doc edit - do not churn
+the map.
+</li>
+<li><strong>Read the map before the code, and keep the map worth reading.</strong> A feature
+page is an anti-hunting payload: the file, type, function and test names for
+one area, and the traps that cost someone an afternoon. Opening the source
+first and writing the page afterwards spends the tokens twice. If a page is
+wrong, fix it in the same commit rather than working around it - a map
+nobody trusts is worse than no map.
+</li>
+<li><strong>Search the map in the same breath as the code.</strong> A grep for a feature, a
+symbol or a behaviour runs over <code>docs/features/</code> too: the feature pages name
+the identifiers and the tests, so the page you need is usually one hop from
+the hit.
+</li>
+<li><strong><code>HANDOFF.md</code> is refreshed at the end of a session, not per commit.</strong> It
+carries what only the passing session knows - open threads, next steps, the
+last thing delivered - under an <code>As of</code> stamp. It is allowed to lag the tip:
+its header says the code wins. Refresh it before you hand the work over.
+</li>
+<li><strong>Measure, don&#39;t deduce it.</strong> Reading the code and doing the arithmetic in
+your head is how geometry, layout and formatting bugs ship. Print the real
+numbers from the real thing - a headless run, a scratch script, the actual
+command - and assert both the good and the broken case, so each test carries
+its own failure mode.
+</li>
+<li><strong>Gate on the whole check set, not just the tests.</strong> The linter catches the
+classes of defect the test run compiles straight past. Run the formatting,
+the lint with warnings denied, the tests and the build before you call
+something done.
+</li>
+<li><strong>Commit messages go through a file.</strong> Write the message to a scratch file
+(this machine uses <code>%LOCALAPPDATA%\Temp\opencode\&lt;project&gt;-commit-msg.txt</code>)
+and run <code>git commit -F &lt;path&gt;</code>; a PowerShell here-string gets its terminator
+mangled by the shell tool.
+</li>
+<li><strong>No AI attribution in a commit message, ever, without being asked.</strong> No
+<code>Co-Authored-By</code> trailer, no <code>Generated with</code> footer, nothing that reads as
+crediting a model or tool. These commits are the user&#39;s. This is enforced,
+not merely preferred: a machine-wide <code>commit-msg</code> hook
+(<code>core.hooksPath</code> = <code>C:/Users/mega/.githooks</code>) rejects the commit outright,
+and it blocks human co-authors too, so the only ways past it are <code>--no-verify</code>
+or <code>ALLOW_COAUTHOR=1</code>. <strong>Use neither without the user asking in that
+conversation.</strong> If the hook blocks something, report it and stop; do not
+reword the message to slip a trailer past the pattern.
+</li>
+<li><strong>Package after committing.</strong> If the version is derived from the commit
+(a count since a base tag, a stamped build number), packaging first yields
+the previous commit&#39;s number. Raise the minor and the base together, in the
+same commit, and keep every reader of that number reading it from one place.
+This repository stamps the patch itself: <code>.githooks/pre-commit</code> runs
+<code>node scripts/version.mjs --write --next</code>, which requires <code>npm run hooks</code> to
+have been run once (see Commands and <code>docs/features/version.html</code>).
+</li>
+<li><strong>Do not commit before the user has looked at it.</strong> Hand a visual change over
+as a build and wait for confirmation.
+</li>
+</ul>
+</section>
+<section id="where-the-working-knowledge-lives">
+<h2>Where the working knowledge lives</h2>
+<p>The per-feature working knowledge lives in <code>docs/features/</code>; its <code>index.html</code> is
+the index and each page is a <code>.html</code> file. This file keeps the process rules and
+the hard rules that apply across features; the feature pages keep the maps,
+mechanisms and traps.</p>
+</section>
+<section id="hard-rules">
+<h2>Hard rules</h2>
+<ul>
+<li><strong>The context pass never mutates the durable transcript.</strong> It only rewrites
+the outbound payload (<code>event.messages</code> / <code>event.system</code>), and re-derives it
+from the raw transcript on every request. <em>Reason:</em> mutating the transcript
+corrupts the very session the pass is managing. <em>Pinned by:</em> the smoke
+assertion &quot;the durable transcript objects were not mutated&quot;.
+</li>
+<li><strong>Never split a tool call from its result, and always keep the current turn.</strong>
+The working window cuts at turn starts; <code>balanceCuts</code> is the assertion that
+this is safe, and the current turn is included even when it alone exceeds the
+working budget. <em>Reason:</em> the host must pair every <code>tool-call</code> with its
+<code>tool-result</code>; a cut between them makes the model see two answers for one
+call, and dropping the current turn drops the results it just asked for.
+<em>Pinned by:</em> &quot;no call/result pair is split in the payload&quot; and &quot;the window
+always keeps the current turn&quot;.
+</li>
+<li><strong>The runtime owns the schema, not the model.</strong> The merge resets a key on
+<code>null</code>, deletes one map entry on a <code>null</code> value, drops keys the schema does
+not own, merges maps key by key and replaces lists wholesale. <em>Reason:</em> the
+failure modes are a model overwriting a key it did not mean to and deleting
+what it did not own; schema ownership in the deterministic runtime is what
+keeps a malformed patch from corrupting memory. <em>Pinned by:</em> &quot;unknown patch
+keys are dropped&quot; and &quot;null deletes one map entry&quot;.
+</li>
+<li><strong>An over-cap memory write is rejected, never trimmed.</strong> The tool returns the
+projected usage and writes nothing. <em>Reason:</em> a silent trim loses content the
+model believes it stored, and the model is the only one who knows what
+matters. <em>Pinned by:</em> &quot;an over-cap memory write is rejected&quot; and &quot;the
+rejected write did not land&quot;.
+</li>
+<li><strong><code>recall</code> requires <code>lost:true</code>.</strong> Without it the tool returns an instruction,
+not results. <em>Reason:</em> an archive searched out of habit is a second working
+set, and the plugin exists to keep the working set small. <em>Pinned by:</em>
+&quot;recall refuses without lost:true&quot;.
+</li>
+<li><strong>Every session has independent memory.</strong> Parent and child are keyed by
+session id; there is no inheritance in either direction. <code>subagents:false</code>
+leaves a child session untouched. <em>Reason:</em> a child&#39;s task is its own, and a
+parent&#39;s memory is not the child&#39;s context. <em>Pinned by:</em> &quot;the parent goal is
+unchanged by the child&quot;, &quot;the child has its own goal&quot;, and &quot;subagents:false
+leaves a child session alone&quot;.
+</li>
+<li><strong>Compaction returns the memory document when it is non-empty, and declines
+when it is empty.</strong> <em>Reason:</em> one document, one summary; an empty summary
+would erase the checkpoint in the name of owning it. <em>Pinned by:</em>
+&quot;compaction is owned when memory is non-empty&quot; and &quot;compaction returns the
+memory document&quot;.
+</li>
+<li><strong>A registered tool is not an offered tool.</strong> <code>smart_context</code> must carry
+<code>options.codemode: false</code> and be injected into <code>event.tools</code>; it returns text
+content only, so it declares no output schema. <em>Reason:</em> measured against
+this host, a tool without <code>codemode:false</code> is reachable only through
+<code>execute</code>, and a result that declares <code>output</code> without a schema loses the
+call. <em>Pinned by:</em> &quot;smart_context is on the wire, not only in the registry&quot;.
+</li>
+<li><strong>Two passes over the same conversation produce the same payload.</strong> The
+pass is a pure function of the raw transcript and the record; no timestamps
+or pass counters are rendered. <em>Reason:</em> a retry must not change what the
+model sees, and a drifting payload breaks provider prefix caching. *Pinned
+by:* &quot;two passes over the same conversation produce the same payload&quot;.
+</li>
+<li><strong>The install is a copy of the shippable set, never a junction.</strong> <code>files[]</code>
+plus <code>package.json</code> is the manifest; an in-sync copy is left alone; a drifted
+copy is replaced; <code>node_modules</code> is never copied. <em>Reason:</em> the host imports
+the module graph once, so a link buys nothing, and a copy can be diffed, so a
+stale install is diagnosable. <em>Pinned by:</em> <code>npm run test:install</code>.
+</li>
+<li><strong>The user config file is the user&#39;s.</strong> Defaults are written once on first
+run and never overwritten; an unknown key or a wrong type is reported and the
+plugin refuses to load rather than silently keeping a default. <em>Reason:</em> a
+setting the user believes is in force but is not is worse than a plugin that
+will not start. <em>Pinned by:</em> the <code>parseLayer</code> assertions and review.
+</li>
+<li><strong>Do not edit the installed plugins under
+<code>C:\Users\mega\.config\opencode\plugins\</code> from this repo</strong> (<code>feature-map</code>,
+<code>mega-skillstate</code>). They are live dependencies of this host and the measured
+ground truth for the plugin API; changing them silently changes both.
+<em>Pinned by:</em> review only - treat it as a review gate.
+</li>
+<li><strong>The README is for users.</strong> Implementation detail belongs in <code>docs/SPEC.md</code>
+for behavior and here for working knowledge, and the user must be consulted
+before technical detail is added to the README.
+</li>
+</ul>
+</section>
+</main>
+<footer class="doc-footer">
+<p>Generated by <code>html-as-doc</code> from <code>AGENTS.md</code>.</p>
+<p>The Markdown file is a pointer; this HTML page is the source of truth. Edit it directly and re-run <code>html-docs.mjs verify</code>.</p>
+</footer>
+
+</body>
+</html>
