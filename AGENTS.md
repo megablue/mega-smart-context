@@ -1,7 +1,7 @@
 # AGENTS.md
 
 **Before you grep, glob or open a source file: read `HANDOFF.md`, then
-`docs/features/README.md`, then only the feature page(s) for the area you are
+`docs/features/index.html`, then only the feature page(s) for the area you are
 about to change. The feature pages name the files, functions and tests you
 would otherwise hunt for; the code comes after them, not before.**
 
@@ -29,7 +29,7 @@ wrong.
 ## Read first
 
 `HANDOFF.md` holds the current state; if it is missing, carry on with the
-feature map and the code. Then `docs/features/README.md` - the feature map -
+feature map and the code. Then `docs/features/index.html` - the feature map -
 and only the feature doc(s) for what you are about to change.
 `docs/SPEC.md` is user-visible behavior; this file is process and hard rules;
 the feature docs are the map, the mechanism and the traps.
@@ -94,8 +94,8 @@ the feature docs are the map, the mechanism and the traps.
     the copy, drift and removal behavior.
 - `options.json` - the package's own default layer, the same keys as
   `ResolvedConfig`.
-- `docs/features/` - the feature map (this workflow); its `README.md` is the
-  index.
+- `docs/features/` - the feature map (this workflow); its `index.html` is the
+  index and every page is a `.html` file.
 - `HANDOFF.md` - volatile session state; refreshed at handover, allowed to lag
   the tip (its header says the code wins).
 
@@ -116,7 +116,7 @@ Everything runs from the repo root unless said otherwise.
   `C:/Users/mega/.githooks`, and `.githooks/commit-msg` forwards to that guard
   rather than copying it.
 - Version: `npm run version` prints what `HEAD` implies; `npm run version:check`
-  asserts `package.json` already carries it. See `docs/features/version.md`.
+  asserts `package.json` already carries it. See `docs/features/version.html`.
 - Load the plugin in OpenCode: the host resolves `<plugin-root>/server`, so
   point a discovery directory at this package. Project scope:
   `.opencode/plugin/mega-smart-context`; user scope:
@@ -192,15 +192,16 @@ the gate rather than a nicety.
   same commit, and keep every reader of that number reading it from one place.
   This repository stamps the patch itself: `.githooks/pre-commit` runs
   `node scripts/version.mjs --write --next`, which requires `npm run hooks` to
-  have been run once (see Commands and `docs/features/version.md`).
+  have been run once (see Commands and `docs/features/version.html`).
 - **Do not commit before the user has looked at it.** Hand a visual change over
   as a build and wait for confirmation.
 
 ## Where the working knowledge lives
 
-The per-feature working knowledge lives in `docs/features/`; its `README.md` is
-the index. This file keeps the process rules and the hard rules that apply
-across features; the feature pages keep the maps, mechanisms and traps.
+The per-feature working knowledge lives in `docs/features/`; its `index.html` is
+the index and each page is a `.html` file. This file keeps the process rules and
+the hard rules that apply across features; the feature pages keep the maps,
+mechanisms and traps.
 
 ## Hard rules
 

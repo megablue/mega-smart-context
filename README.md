@@ -119,7 +119,7 @@ npm run analyze       # read a recorded session back: enabled payload vs the dis
 ## Where the details live
 
 - [`docs/SPEC.md`](docs/SPEC.md) — the user-visible behavior in full.
-- [`docs/features/`](docs/features/README.md) — the feature map for this plugin itself: the handoff, the memory tool, the archive, subagents, refs, compaction, the install and the analyzer.
+- [`docs/features/`](docs/features/index.html) — the feature map for this plugin itself: the handoff, the memory tool, the archive, subagents, refs, compaction, the install and the analyzer.
 - [`AGENTS.md`](AGENTS.md) — how to work on the plugin.
 - [`HANDOFF.md`](HANDOFF.md) — where things currently stand.
 

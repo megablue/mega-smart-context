@@ -1,0 +1,80 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="generator" content="opencode-feature-map">
+<title>Analysis - what a session would have cost with the plugin off — feature map</title>
+<style>
+:root{color-scheme:light dark;--fg:#1d2433;--muted:#5b6475;--bg:#fff;--line:#d8dee9;--accent:#0b6e99;--warn:#8a5a00;--code:#f4f6fa}
+@media (prefers-color-scheme:dark){:root{--fg:#e6eaf2;--muted:#9aa4b8;--bg:#11151c;--line:#2b3342;--accent:#6cc4e8;--warn:#e0b25c;--code:#1a202a}}
+*{box-sizing:border-box}
+body{margin:0 auto;max-width:60rem;padding:2rem 1.25rem 4rem;background:var(--bg);color:var(--fg);font:16px/1.6 system-ui,-apple-system,Segoe UI,sans-serif}
+h1,h2,h3{line-height:1.25;margin:2rem 0 .75rem}
+h1{font-size:1.9rem;border-bottom:2px solid var(--line);padding-bottom:.4rem}
+h2{font-size:1.35rem}
+h3{font-size:1.08rem;color:var(--muted)}
+p,ul,ol,table,pre,blockquote{margin:.75rem 0}
+a{color:var(--accent)}
+code{background:var(--code);padding:.1em .3em;border-radius:.25rem;font-size:.92em}
+pre{background:var(--code);border:1px solid var(--line);border-radius:.4rem;padding:.8rem 1rem;overflow:auto}
+pre code{background:none;padding:0}
+pre.verbatim{border-left:4px solid var(--warn)}
+pre.verbatim::before{content:"verbatim — " attr(data-why);display:block;color:var(--warn);font:600 .78rem/1.4 ui-monospace,monospace;margin-bottom:.5rem;white-space:pre-wrap}
+pre.pseudo{border-left:4px solid var(--accent)}
+pre.mermaid{background:var(--bg);border:1px dashed var(--line)}
+p.status{color:var(--muted);font-size:.92rem}
+table{border-collapse:collapse;width:100%}
+th,td{border:1px solid var(--line);padding:.4rem .6rem;text-align:left;vertical-align:top}
+th{background:var(--code)}
+blockquote{margin-left:0;padding-left:1rem;border-left:3px solid var(--line);color:var(--muted)}
+hr{border:0;border-top:1px solid var(--line);margin:2rem 0}
+.lede{color:var(--muted)}
+</style>
+</head>
+<body>
+<article class="map">
+<h1>Analysis - what a session would have cost with the plugin off</h1>
+<p class="status">Status: shipped (v0.1) - Read when: <code>npm run analyze</code>, <code>scripts/analyze.mjs</code>, <code>history</code>, <code>PassSample</code>, the disabled baseline, &quot;what would this session have cost&quot;, &quot;compare enabled vs disabled&quot;.</p>
+<section id="what-it-does">
+<h2>What it does</h2>
+<ul><li>Answers &quot;what would this recorded session have cost with the plugin disabled?&quot; offline, read-only, with no host restart.</li><li>Reads the plugin&#39;s own session record out of OpenCode&#39;s SQLite database; it never rebuilds a message list from <code>session_message</code>.</li><li>With <code>history</code>: a per-pass table (memory / working / policy / total / transcript / native / saved), peak, min, mean, and where it crossed <code>OVER CAP</code>.</li><li>The <code>native</code> column simulates what the host&#39;s own <code>/compact</code> would have sent (a sawtooth from the same recorded growth); the footer prints savings against both the append-only transcript and that native baseline.</li><li>Without <code>history</code> (a record written before the feature): <code>lastReport</code> and an approximate baseline, labelled approximate.</li><li>Lists every plugin id that owns a record for the session, so a stale duplicate install is visible.</li></ul>
+</section>
+<section id="map">
+<h2>Map</h2>
+<ul><li><code>scripts/analyze.mjs</code> - <code>analyze</code>, <code>render</code>, <code>run</code>, <code>parseArgs</code>, <code>newestSession</code>, <code>sessionByID</code>, <code>pluginRecords</code>, <code>transcriptEstimate</code>, <code>summarizeHistory</code>, <code>baselineOf</code>, <code>decodePluginId</code>.</li><li><code>scripts/native-compaction.mjs</code> - <code>calculateCeiling</code>, <code>simulateNative</code>, <code>UNKNOWN_WINDOW</code>, <code>RESERVE_MIN</code>, <code>DEFAULT_KEEP</code>, <code>DEFAULT_SUMMARY</code>.</li><li><code>src/core/types.ts</code> - <code>PassSample</code>, <code>SessionRecord.history</code>, <code>LastReport</code>.</li><li><code>src/core/context.ts</code> - <code>buildPayload</code> writes one sample per pass.</li><li><code>src/core/state.ts</code> - <code>MAX_HISTORY</code>, <code>normalizeHistory</code>, <code>normalizeSample</code>, <code>trimHistory</code>.</li><li><code>package.json</code> - the <code>analyze</code> script; <code>files[]</code> already ships <code>scripts/</code>.</li><li><code>scripts/smoke.mjs</code> - the history, baseline and trim assertions.</li></ul>
+</section>
+<section id="how-why">
+<h2>How &amp; why</h2>
+<h3>The counterfactual is recorded, not rebuilt</h3>
+<p>The disabled baseline is the request payload, and the one moment both sides are known exactly is the pass itself: in <code>buildPayload</code>, <code>input.messages</code> <strong>is</strong> what a disabled plugin would send, and the payload it builds is the enabled side. So each pass appends one <code>PassSample</code> and the answer is a curve, not a snapshot.</p>
+<p>Reconstructing it later from <code>session_message</code> is not an option. Those rows are not uniform (a <code>user</code> row carries <code>text</code> with no <code>content[]</code>; an <code>assistant</code> row carries <code>content[]</code>), and the host&#39;s own row-to-message mapper is not ours to mirror. The analyzer only ever reads the record the plugin wrote, plus a byte-length estimate for the fallback.</p>
+<h3>The native-compaction baseline</h3>
+<p>The second comparison answers &quot;and with no plugin, letting the host&#39;s <code>/compact</code> manage it?&quot;. <code>scripts/native-compaction.mjs</code> mirrors the host&#39;s <code>calculateCeiling</code> and the floor it lands on:</p>
+<ul><li>The ceiling is <code>window − max(floor(window × 0.1), 16k)</code> once the window is at least 32k; a smaller window keeps 10%. <code>--buffer</code> replaces the reserve, as the host&#39;s <code>buffer</code> setting does.</li><li>Reaching the ceiling compacts, and the next request is the floor: <code>keep</code> (default 15,000) verbatim plus one checkpoint <code>summary</code> (default 2,000). Flags: <code>--keep</code>, <code>--summary</code>.</li><li>Between passes, native grows by the <strong>observed</strong> growth of the recorded transcript. When the observed series drops, the simulation anchors to the observed value instead, because that drop is a real host compaction. The alternative — letting the model keep growing — would overstate native.</li></ul>
+<p><code>raw</code> is separate: every positive step is added and nothing resets, which is the append-only baseline. <code>saved</code> per pass is <code>raw − ours</code>; the footer prints both <code>vs raw</code> and <code>vs native</code>, comparing peaks.</p>
+<p>Three assumptions stay visible rather than hidden: the summary&#39;s size, the context window (the record has no <code>modelContext</code>; <code>--context</code> defaults to 200,000), and provider-native compaction (<code>settings.compaction.type: &quot;native&quot;</code>), which is opaque and not modelled. The anchor bias is deliberate: it can only make native look smaller, so the report understates the plugin&#39;s advantage. Right after a compaction native is cheaper than we are (~17k); its cost is the climb back to the ceiling, so read the peaks and the mean, not one pass.</p>
+<h3>The disabled side is characters</h3>
+<p>A disabled plugin sends the transcript verbatim, so its size is measured exactly as characters (<code>messagesChars</code>), stored in <code>PassSample.transcriptTokens</code> despite the name. Every other field is an <em>estimated</em> token count at <code>charsPerToken</code>. To compare, divide: the analyzer&#39;s <code>transcript</code> column is <code>transcriptTokens / 4</code> (the plugin default; the record does not carry the resolved divisor), and <code>--json</code> exposes the raw character count.</p>
+<h3>Bounded history</h3>
+<p><code>MAX_HISTORY</code> is a constant (200), not a config key: the samples are diagnostics. Trimming keeps <code>history[0]</code> - the cheap full-arc baseline the curve is measured against - plus the newest <code>MAX_HISTORY - 1</code>. <code>history</code> is <strong>not part of the payload</strong>, so appending a sample leaves the bytes two passes produce identical; the smoke pins both. A record with no <code>history</code> (every record written before this feature) loads unchanged, which is why there is no version bump.</p>
+<h3>Reading the record</h3>
+<p>The record lives in OpenCode&#39;s <code>kv</code> under <code>plugin:&lt;id&gt;:session/&lt;sessionID&gt;</code>, where <code>&lt;id&gt;</code> is the plugin id as UTF-16<strong>BE</strong> hex (<code>decodePluginId</code> reverses it). The database defaults to <code>~/.local/share/opencode/opencode.db</code> and is opened <strong>read-only</strong>. With no <code>--session</code>, the newest <code>session_v2</code> row for the directory is chosen; directories are compared with separators folded and case-insensitively, because the host writes forward slashes and a Windows cwd does not.</p>
+</section>
+<section id="config-keys-ui">
+<h2>Config keys / UI</h2>
+<table><thead><tr><th>Flag</th><th>Default</th><th>Effect</th></tr></thead><tbody><tr><td><code>--session &lt;id&gt;</code></td><td>newest in <code>--dir</code></td><td>analyze this session id</td></tr><tr><td><code>--dir &lt;path&gt;</code></td><td>cwd</td><td>the directory whose newest session to analyze</td></tr><tr><td><code>--db &lt;path&gt;</code></td><td><code>~/.local/share/opencode/opencode.db</code></td><td>another database</td></tr><tr><td><code>--context &lt;n&gt;</code></td><td><code>200000</code></td><td>model window for the native baseline</td></tr><tr><td><code>--keep &lt;n&gt;</code></td><td><code>15000</code></td><td>tokens native compaction keeps verbatim</td></tr><tr><td><code>--summary &lt;n&gt;</code></td><td><code>2000</code></td><td>tokens a native checkpoint is assumed to occupy</td></tr><tr><td><code>--buffer &lt;n&gt;</code></td><td>the host&#39;s 10% / 16k reserve</td><td>reserve below the window</td></tr><tr><td><code>--no-native</code></td><td>off</td><td>skip the native baseline</td></tr><tr><td><code>--json</code></td><td>off</td><td>emit the data object instead of the report</td></tr></tbody></table>
+<p><code>npm run analyze</code> runs <code>node scripts/analyze.mjs</code>; the tool adds no runtime config key.</p>
+</section>
+<section id="tests-that-pin-it">
+<h2>Tests that pin it</h2>
+<ul><li>&quot;a pass appends one history sample&quot;</li><li>&quot;transcriptTokens is the raw input&#39;s character count&quot;</li><li>&quot;totalTokens is memory + working + policy&quot;</li><li>&quot;a repeat pass over the same transcript keeps the payload bytes&quot;</li><li>&quot;every pass appends a sample&quot;</li><li>&quot;history trims to MAX_HISTORY&quot;</li><li>&quot;the first sample is always kept&quot;</li><li>&quot;the newest sample is kept&quot;</li><li>&quot;the ceiling leaves 10% of a 200k window&quot;</li><li>&quot;a window too small for 16k keeps 10% instead&quot;</li><li>&quot;an explicit buffer replaces the reserve&quot;</li><li>&quot;the native floor is keep + summary&quot;</li><li>&quot;below the ceiling nothing compacts&quot;</li><li>&quot;crossing the ceiling resets to the floor&quot;</li><li>&quot;an observed drop anchors native instead of resetting it&quot;</li><li>&quot;raw keeps the positive deltas and ignores the drop&quot;</li><li>&quot;native grows again after an anchored reset&quot;</li><li>&quot;raw is the sum of positive deltas&quot;</li><li>&quot;a summary of zero does not crash the floor&quot;</li></ul>
+</section>
+<section id="related">
+<h2>Related</h2>
+<ul><li><code>context-handoff.md</code> - <code>buildPayload</code>, where a sample is written.</li><li><code>archive.md</code> - the pending and archive counts the report prints.</li><li><code>installation.md</code> - two install scopes are two plugin ids, which the report lists.</li></ul>
+</section>
+</article>
+
+</body>
+</html>

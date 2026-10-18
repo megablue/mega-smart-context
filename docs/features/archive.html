@@ -1,0 +1,79 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="generator" content="opencode-feature-map">
+<title>Archive - eviction, cold storage, and the lost gate — feature map</title>
+<style>
+:root{color-scheme:light dark;--fg:#1d2433;--muted:#5b6475;--bg:#fff;--line:#d8dee9;--accent:#0b6e99;--warn:#8a5a00;--code:#f4f6fa}
+@media (prefers-color-scheme:dark){:root{--fg:#e6eaf2;--muted:#9aa4b8;--bg:#11151c;--line:#2b3342;--accent:#6cc4e8;--warn:#e0b25c;--code:#1a202a}}
+*{box-sizing:border-box}
+body{margin:0 auto;max-width:60rem;padding:2rem 1.25rem 4rem;background:var(--bg);color:var(--fg);font:16px/1.6 system-ui,-apple-system,Segoe UI,sans-serif}
+h1,h2,h3{line-height:1.25;margin:2rem 0 .75rem}
+h1{font-size:1.9rem;border-bottom:2px solid var(--line);padding-bottom:.4rem}
+h2{font-size:1.35rem}
+h3{font-size:1.08rem;color:var(--muted)}
+p,ul,ol,table,pre,blockquote{margin:.75rem 0}
+a{color:var(--accent)}
+code{background:var(--code);padding:.1em .3em;border-radius:.25rem;font-size:.92em}
+pre{background:var(--code);border:1px solid var(--line);border-radius:.4rem;padding:.8rem 1rem;overflow:auto}
+pre code{background:none;padding:0}
+pre.verbatim{border-left:4px solid var(--warn)}
+pre.verbatim::before{content:"verbatim — " attr(data-why);display:block;color:var(--warn);font:600 .78rem/1.4 ui-monospace,monospace;margin-bottom:.5rem;white-space:pre-wrap}
+pre.pseudo{border-left:4px solid var(--accent)}
+pre.mermaid{background:var(--bg);border:1px dashed var(--line)}
+p.status{color:var(--muted);font-size:.92rem}
+table{border-collapse:collapse;width:100%}
+th,td{border:1px solid var(--line);padding:.4rem .6rem;text-align:left;vertical-align:top}
+th{background:var(--code)}
+blockquote{margin-left:0;padding-left:1rem;border-left:3px solid var(--line);color:var(--muted)}
+hr{border:0;border-top:1px solid var(--line);margin:2rem 0}
+.lede{color:var(--muted)}
+</style>
+</head>
+<body>
+<article class="map">
+<h1>Archive - eviction, cold storage, and the lost gate</h1>
+<p class="status">Status: shipped (v0.1) - Read when: pending eviction, <code>autoArchive</code>, <code>evictionLead</code>, <code>recall</code>, <code>lost:true</code>, <code>archivePending</code>, or &quot;a turn disappeared&quot;.</p>
+<section id="what-it-does">
+<h2>What it does</h2>
+<ul><li>Turns a turn that leaves the working window into a pending entry with a mechanical gist and its eroded raw messages.</li><li>Lets the model archive it with its own gist (optionally keeping the raw), purge it, or leave it.</li><li>With <code>autoArchive</code> on, archives an unhandled pending turn after <code>evictionLead</code> new user turns, so nothing is irrecoverably lost.</li><li>Keeps the archive cold: <code>recall</code> refuses without <code>lost:true</code>, and the results are matches, not a replayed window.</li><li>Caps the archive by turn count and characters, newest wins.</li></ul>
+<p>The user-visible behavior is in <code>docs/SPEC.md</code> under &quot;Eviction and the archive&quot;.</p>
+</section>
+<section id="map">
+<h2>Map</h2>
+<ul><li><code>src/core/archive.ts</code> - <code>mechanicalGist</code>, <code>turnMessages</code>, <code>archivePending</code>, <code>autoArchivePending</code>, <code>purgeTurn</code>, <code>purgeQuery</code>, <code>findArchived</code>, <code>recall</code>, <code>archiveChars</code>, <code>trimArchive</code>, <code>knows</code>.</li><li><code>src/core/context.ts</code> - the drop branch, the age step, and the auto-archive call.</li><li><code>src/core/memory-tool.ts</code> - the <code>archive</code>, <code>purge</code>, <code>recall</code> and <code>expand</code> actions.</li><li><code>src/core/command.ts</code> - <code>/context now</code>, <code>/context recall</code>, <code>/context purge</code>.</li><li><code>src/core/types.ts</code> - <code>PendingTurn</code>, <code>ArchivedTurn</code>.</li><li><code>scripts/smoke.mjs</code> - the pending/auto-archive/lost-gate assertions.</li></ul>
+</section>
+<section id="how-why">
+<h2>How &amp; why</h2>
+<h3>Pending is not &quot;everything old&quot;</h3>
+<p>Only a turn that was in the previous pass&#39;s working window and is not in the current one becomes pending. The first pass only seeds <code>seenTurns</code>; a plugin enabled mid-session must not archive turns it never managed. A turn the host already trimmed is skipped: it is not recoverable, and the model had the same chance to fold it.</p>
+<h3>Age is counted in user turns</h3>
+<p><code>age</code> increments only when the window&#39;s turn id list changes, which happens on a new user turn, not on a tool continuation. A ten-call turn therefore consumes one eviction lead, not ten. <code>evictionLead</code> is the number of new user turns a pending turn is shown before it is auto-archived (or dropped when <code>autoArchive</code> is off).</p>
+<h3>Manual archive</h3>
+<p><code>archive { turn, gist, keepRaw? }</code> requires a gist and a pending turn id. <code>keepRaw: true</code> keeps the messages for <code>expand</code>; the default is gist only, because the raw is the expensive half. The model&#39;s gist replaces the mechanical one.</p>
+<h3>Auto-archive</h3>
+<p>With <code>autoArchive</code> on, an unhandled pending turn is archived with its mechanical gist and its raw messages. The raw is kept deliberately: a mechanical gist alone would make <code>expand</code> useless. The model can still <code>purge</code> the entry afterwards.</p>
+<h3>Recall is gated</h3>
+<p>Without <code>lost:true</code>, <code>recall</code> returns an instruction, not results. The gate is mechanical because the policy alone is not enough: an archive searched out of habit is a second working set, and the plugin exists to keep the working set small. <code>recall</code> searches gists and, when raw exists, the rendered raw text. <code>expand</code> returns the raw turn, or the gist with a &quot;gist only&quot; note.</p>
+<h3>Caps</h3>
+<p><code>trimArchive</code> drops the oldest entries while the archive exceeds <code>archiveMaxTurns</code> or <code>archiveMaxChars</code>. It keeps at least one entry so a single huge turn does not empty the archive.</p>
+</section>
+<section id="config-keys-ui">
+<h2>Config keys / UI</h2>
+<table><thead><tr><th>Key</th><th>Default</th><th>Effect</th></tr></thead><tbody><tr><td><code>autoArchive</code></td><td>true</td><td>archive unhandled evictions instead of dropping</td></tr><tr><td><code>evictionLead</code></td><td>1</td><td>new user turns a pending turn is shown</td></tr><tr><td><code>archiveMaxTurns</code></td><td>200</td><td>per-session turn cap</td></tr><tr><td><code>archiveMaxChars</code></td><td>400000</td><td>per-session character cap</td></tr></tbody></table>
+<p><code>/context now</code> archives every pending turn; <code>/context recall &lt;query&gt;</code> searches as the user; <code>/context purge &lt;turn&gt;</code> removes one.</p>
+</section>
+<section id="tests-that-pin-it">
+<h2>Tests that pin it</h2>
+<ul><li>&quot;an evicted turn is shown as pending&quot;</li><li>&quot;the pending turn auto-archived after the lead&quot;</li><li>&quot;recall refuses without lost:true&quot;</li><li>&quot;recall returns matches when lost:true&quot;</li><li>&quot;the working window is bounded&quot;</li></ul>
+</section>
+<section id="related">
+<h2>Related</h2>
+<ul><li><code>context-handoff.md</code> - the window that decides what leaves.</li><li><code>memory-tool.md</code> - the tool actions that operate on the archive.</li><li><code>compaction.md</code> - the other way a checkpoint is written.</li></ul>
+</section>
+</article>
+
+</body>
+</html>

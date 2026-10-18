@@ -25,6 +25,7 @@ import { buildPayload } from "../src/core/context.ts"
 import { messagesChars } from "../src/core/measure.ts"
 import { emptyMemory } from "../src/core/schema.ts"
 import { MAX_HISTORY, SessionStore, pruneOrphans, sameDirectory, trimHistory } from "../src/core/state.ts"
+import { extractHtmlSection, extractSection, htmlToText, pageCandidates } from "../src/core/refs.ts"
 import { deriveVersion, readVersionBase } from "../src/core/version.ts"
 import { balanceCuts, erodeToolResults, selectWorkingWindow, turnSpans } from "../src/core/view.ts"
 import { livenessFromError } from "../src/adapters/opencode/sessions.ts"
@@ -471,6 +472,44 @@ await stampStore.save("stamped", await stampStore.load("stamped"))
 ok(stamped.get("session/stamped").directory === root, "a saved record is stamped with its directory")
 
 // ---------------------------------------------------------------------------
+// Unit: the feature-map readers (Markdown and the generated HTML)
+// ---------------------------------------------------------------------------
+
+assert.deepEqual(
+  pageCandidates("context-handoff"),
+  ["context-handoff.html", "context-handoff.md"],
+  "a bare page name prefers the HTML page",
+)
+passed += 1
+assert.deepEqual(
+  pageCandidates("docs/features\\context-handoff.md"),
+  ["context-handoff.md", "context-handoff.html"],
+  "an explicit extension keeps the named file first",
+)
+passed += 1
+assert.deepEqual(pageCandidates("../secret"), [], "a page path cannot escape docs/features")
+passed += 1
+assert.deepEqual(pageCandidates("   "), [], "an empty page has no candidates")
+passed += 1
+assert.deepEqual(pageCandidates("notes.txt"), ["notes.txt"], "an unknown extension is left alone")
+passed += 1
+
+const htmlFixture = `<h1>Title</h1>
+<section id="a"><h2>A &amp; B</h2>
+<p>line one</p><ul><li>first</li><li>second</li></ul>
+<h3>Nested</h3><p>deep</p>
+</section>
+<section id="b"><h2>B</h2><p>other</p></section>`
+
+ok(htmlToText(htmlFixture).includes("# A & B"), "an HTML entity decodes inside a heading")
+ok(htmlToText(htmlFixture).includes("\n- first"), "an HTML list item becomes a Markdown bullet")
+const htmlSection = extractHtmlSection(htmlFixture, "A & B")
+ok(htmlSection.includes("deep"), "an HTML section keeps its ### subsections")
+ok(!htmlSection.includes("other"), "an HTML section stops at the next same-level heading")
+ok(extractHtmlSection(htmlFixture, "missing") === undefined, "a missing HTML section is undefined")
+ok(extractSection("# A\nx\n# B\ny", "A") === "# A\nx", "Markdown section extraction is unchanged")
+
+// ---------------------------------------------------------------------------
 // The tool: schema-owned merge, cap rejection, refs
 // ---------------------------------------------------------------------------
 
@@ -496,6 +535,7 @@ outcome = await tool.execute(
   callContext,
 )
 ok(outcome.content[0].text.includes("stored ref"), "a feature-map ref is stored")
+ok(!outcome.content[0].text.includes("section not found"), "a ref to a real page resolves against the map")
 
 // ---------------------------------------------------------------------------
 // Eviction: pending, then auto-archive after the lead

@@ -1,0 +1,84 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="generator" content="opencode-feature-map">
+<title>Installation - copy, drift, and the two discovery scopes — feature map</title>
+<style>
+:root{color-scheme:light dark;--fg:#1d2433;--muted:#5b6475;--bg:#fff;--line:#d8dee9;--accent:#0b6e99;--warn:#8a5a00;--code:#f4f6fa}
+@media (prefers-color-scheme:dark){:root{--fg:#e6eaf2;--muted:#9aa4b8;--bg:#11151c;--line:#2b3342;--accent:#6cc4e8;--warn:#e0b25c;--code:#1a202a}}
+*{box-sizing:border-box}
+body{margin:0 auto;max-width:60rem;padding:2rem 1.25rem 4rem;background:var(--bg);color:var(--fg);font:16px/1.6 system-ui,-apple-system,Segoe UI,sans-serif}
+h1,h2,h3{line-height:1.25;margin:2rem 0 .75rem}
+h1{font-size:1.9rem;border-bottom:2px solid var(--line);padding-bottom:.4rem}
+h2{font-size:1.35rem}
+h3{font-size:1.08rem;color:var(--muted)}
+p,ul,ol,table,pre,blockquote{margin:.75rem 0}
+a{color:var(--accent)}
+code{background:var(--code);padding:.1em .3em;border-radius:.25rem;font-size:.92em}
+pre{background:var(--code);border:1px solid var(--line);border-radius:.4rem;padding:.8rem 1rem;overflow:auto}
+pre code{background:none;padding:0}
+pre.verbatim{border-left:4px solid var(--warn)}
+pre.verbatim::before{content:"verbatim — " attr(data-why);display:block;color:var(--warn);font:600 .78rem/1.4 ui-monospace,monospace;margin-bottom:.5rem;white-space:pre-wrap}
+pre.pseudo{border-left:4px solid var(--accent)}
+pre.mermaid{background:var(--bg);border:1px dashed var(--line)}
+p.status{color:var(--muted);font-size:.92rem}
+table{border-collapse:collapse;width:100%}
+th,td{border:1px solid var(--line);padding:.4rem .6rem;text-align:left;vertical-align:top}
+th{background:var(--code)}
+blockquote{margin-left:0;padding-left:1rem;border-left:3px solid var(--line);color:var(--muted)}
+hr{border:0;border-top:1px solid var(--line);margin:2rem 0}
+.lede{color:var(--muted)}
+</style>
+</head>
+<body>
+<article class="map">
+<h1>Installation - copy, drift, and the two discovery scopes</h1>
+<p class="status">Status: shipped (v0.1) - Read when: <code>plugin:install</code>, <code>.opencode/plugin</code>, <code>~/.config/opencode/plugins</code>, <code>files[]</code>, drift, &quot;a stale install&quot;, or the plugin is not discovered.</p>
+<section id="what-it-does">
+<h2>What it does</h2>
+<ul><li>Copies the shippable set into an OpenCode plugin discovery directory.</li><li>Project scope is <code>&lt;repo&gt;/.opencode/plugin/mega-smart-context</code>; user scope is <code>~/.config/opencode/plugins/mega-smart-context</code>.</li><li>Is idempotent by content hash: an in-sync copy is left alone, a drifted copy is resynchronized.</li><li><code>--status</code> reports missing, changed and extra files; <code>--remove</code> removes the selected scope.</li><li>Needs no build step, no <code>node_modules</code> and no config entry; restart OpenCode after a change.</li></ul>
+<p>The user-facing commands are in <code>README.md</code>; this page is the mechanism.</p>
+</section>
+<section id="map">
+<h2>Map</h2>
+<ul><li><code>scripts/install.ts</code> - <code>packageRoot</code>, <code>packageName</code>, <code>shippableFiles</code>, <code>driftReport</code>, <code>installInto</code>, <code>uninstallFrom</code>, <code>run</code>, <code>parseArgs</code>, <code>projectPluginDir</code>, <code>userPluginDir</code>, <code>isLink</code>, <code>statusLines</code>.</li><li><code>scripts/install-smoke.mjs</code> - the copy/drift/remove assertions.</li><li><code>package.json</code> - the <code>plugin:*</code> and <code>test:install</code> scripts; <code>files[]</code> is the manifest.</li><li><code>.gitignore</code> - ignores <code>.opencode/plugin/</code> and <code>node_modules/</code>; the install copy is disposable.</li><li><code>README.md</code> - the user-facing install and configure commands.</li></ul>
+</section>
+<section id="how-why">
+<h2>How &amp; why</h2>
+<h3>Copy, not junction</h3>
+<p>The host imports the module graph once per process, so a link buys nothing: a code change needs a restart either way. A copy can be compared against the repository, so a stale install is diagnosable drift instead of a plugin that quietly runs old code, and a copy cannot break because the working tree moved.</p>
+<p>A legacy junction is removed with <code>rmSync(path)</code> <strong>without</strong> <code>recursive</code>: recursing through a junction would delete the repository it points at. A real directory is removed recursively, which is safe because nothing the user owns lives inside the install.</p>
+<h3>The manifest</h3>
+<p><code>shippableFiles</code> reads <code>package.json</code>&#39;s <code>files[]</code> and always adds <code>package.json</code> itself, because <code>&quot;type&quot;: &quot;module&quot;</code> is what makes the host load <code>.ts</code> as ESM. Every entry is checked against the working tree, so a manifest that lists a missing file fails at install time rather than producing a copy that is silently incomplete. This is why <code>README.md</code> must exist while it is in <code>files[]</code>.</p>
+<h3>Idempotence and drift</h3>
+<p><code>driftReport</code> hashes every shipped file and returns three lists: <code>missing</code>, <code>changed</code>, <code>extra</code>. <code>installInto</code> returns:</p>
+<ul><li><code>current</code> when all three are empty (nothing written);</li><li><code>updated</code> when the copy drifted (the directory is deleted and recopied);</li><li><code>replaced</code> when a legacy junction was found;</li><li><code>installed</code> on a first run;</li><li><code>removed</code> / <code>missing</code> from <code>uninstallFrom</code>.</li></ul>
+<p><code>--status</code> prints both scopes, so a project install and a user install can be seen together. The installed copy is disposable; the source tree is the truth.</p>
+<h3>Scopes</h3>
+<table><thead><tr><th>Scope</th><th>Path</th><th>Command</th></tr></thead><tbody><tr><td>user</td><td><code>~/.config/opencode/plugins/mega-smart-context</code></td><td><code>npm run plugin:install</code></td></tr><tr><td>project</td><td><code>&lt;repo&gt;/.opencode/plugin/mega-smart-context</code></td><td><code>npm run plugin:install:project</code></td></tr></tbody></table>
+<p>The asymmetry is the host&#39;s: user is <code>plugins</code> (plural), project is <code>plugin</code> (singular). Restart OpenCode after installing or removing.</p>
+<h3>No dependencies</h3>
+<p>The plugin imports the host only as types; the runtime has no <code>@opencode/plugin</code> import. The copy therefore needs no <code>node_modules</code>, and the host loads the TypeScript source directly. <code>node_modules</code> is excluded from the copy by the manifest, not by a build step.</p>
+<h3>Do not run two context managers</h3>
+<p>Do not run this alongside <code>mega-skillstate</code> (or any other plugin that rewrites <code>context</code>). Both rewrite the same request and both may own <code>compaction</code>. Disable the other plugin first; see the README.</p>
+<p>Two scopes are two managers. The host reads both discovery roots and keys a plugin by the path it loaded it from, so a user copy and a project copy of <em>this</em> plugin are two instances in one session — the log shows <code>msg=&quot;loading plugin&quot;</code> twice with different <code>id=</code> values, both <code>role=server</code>. The payload still converges: the second pass sees the <code>megasc_memory</code> id and drops it, the policy dedupes by exact text, and <code>event.tools[TOOL_NAME]</code> is a keyed write. What does not converge is the per-request work (two window passes), <code>compaction</code> ownership and the <code>/context</code> registration, and the two copies drift independently. Install one scope; <code>--status</code> prints both so a stray copy is visible.</p>
+</section>
+<section id="config-keys-ui">
+<h2>Config keys / UI</h2>
+<table><thead><tr><th>Script</th><th>Effect</th></tr></thead><tbody><tr><td><code>npm run plugin:install</code></td><td>copy into the user scope</td></tr><tr><td><code>npm run plugin:install:project</code></td><td>copy into the project scope</td></tr><tr><td><code>npm run plugin:status</code></td><td>report both scopes and drift</td></tr><tr><td><code>npm run plugin:uninstall</code></td><td>remove the selected scope (add <code>--project</code> for project)</td></tr><tr><td><code>npm run test:install</code></td><td>the installer&#39;s pinning test</td></tr></tbody></table>
+<p>There are no runtime config keys for the installer.</p>
+</section>
+<section id="tests-that-pin-it">
+<h2>Tests that pin it</h2>
+<ul><li>&quot;the first install copies&quot;</li><li>&quot;the entry is in the copy&quot;</li><li>&quot;node_modules is never copied&quot;</li><li>&quot;the copy is in sync&quot;</li><li>&quot;drift is detected&quot;</li><li>&quot;a drifted copy is resynced&quot;</li><li>&quot;an in-sync copy is left alone&quot;</li><li>&quot;uninstall removes the copy&quot;</li></ul>
+</section>
+<section id="related">
+<h2>Related</h2>
+<ul><li><code>context-handoff.md</code> - what the installed plugin does.</li><li><code>AGENTS.md</code> Commands - the exact scripts and the gate.</li></ul>
+</section>
+</article>
+
+</body>
+</html>

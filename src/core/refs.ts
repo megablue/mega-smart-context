@@ -13,14 +13,68 @@
 
 import { estimateTokens } from "./measure.ts"
 
-/** Resolve a page argument to a path under `docs/features/`. */
-export function normalizePage(page: string): string | undefined {
+/**
+ * Resolve a page argument to candidate paths under `docs/features/`, best first.
+ *
+ * A page may be written with or without an extension. Without one, `.html` is
+ * tried before `.md`, because a map that carries both formats is read from the
+ * HTML page. With one, the named file is tried first and its sibling format
+ * second, so `refs.md` still resolves once the Markdown sources are gone.
+ * An empty path, one containing `..` or one with an unknown extension yields
+ * no candidate at all.
+ */
+export function pageCandidates(page: string): string[] {
   const cleaned = page.trim().replace(/\\/g, "/")
-  if (cleaned.length === 0) return undefined
-  if (cleaned.includes("..")) return undefined
+  if (cleaned.length === 0) return []
+  if (cleaned.includes("..")) return []
   const withoutRoot = cleaned.startsWith("docs/features/") ? cleaned.slice("docs/features/".length) : cleaned
-  if (withoutRoot.length === 0) return undefined
-  return withoutRoot.endsWith(".md") ? withoutRoot : withoutRoot + ".md"
+  if (withoutRoot.length === 0) return []
+  const lower = withoutRoot.toLowerCase()
+  if (lower.endsWith(".html")) return [withoutRoot, withoutRoot.slice(0, -".html".length) + ".md"]
+  if (lower.endsWith(".md")) return [withoutRoot, withoutRoot.slice(0, -".md".length) + ".html"]
+  if (/\.[a-z0-9]+$/i.test(lower)) return [withoutRoot]
+  return [withoutRoot + ".html", withoutRoot + ".md"]
+}
+
+function stripTags(html: string): string {
+  return html.replace(/<[^>]*>/g, "")
+}
+
+function decodeEntities(text: string): string {
+  return text
+    .replace(/&#x([0-9a-f]+);/gi, (_match, hex: string) => String.fromCodePoint(Number.parseInt(hex, 16)))
+    .replace(/&#(\d+);/g, (_match, dec: string) => String.fromCodePoint(Number.parseInt(dec, 10)))
+    .replace(/&nbsp;/g, " ")
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;|&apos;/g, "'")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&amp;/g, "&")
+}
+
+/**
+ * Turn a feature-map HTML page into Markdown-shaped text: headings come back as
+ * `#`-prefixed lines with their level, list items and block boundaries become
+ * newlines, and entities are decoded. This is what lets the same section
+ * extraction run over either format, and it keeps the cost comparison honest —
+ * markup the model never reads is not counted as section text.
+ */
+export function htmlToText(html: string): string {
+  const text = html
+    .replace(/<(script|style)\b[^>]*>[\s\S]*?<\/\1>/gi, "")
+    .replace(/<h([1-6])\b[^>]*>([\s\S]*?)<\/h\1>/gi, (_match, level: string, inner: string) => {
+      return `\n${"#".repeat(Number(level))} ${stripTags(inner)}\n`
+    })
+    .replace(/<pre\b[^>]*>/gi, "\n```\n")
+    .replace(/<\/pre>/gi, "\n```\n")
+    .replace(/<li\b[^>]*>/gi, "\n- ")
+    .replace(/<br\s*\/?>/gi, "\n")
+    .replace(/<\/(?:p|ul|ol|li|tr|table|blockquote|h[1-6]|section|div)>/gi, "\n")
+    .replace(/<[^>]*>/g, "")
+  return decodeEntities(text)
+    .replace(/[ \t]+\n/g, "\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim()
 }
 
 function headingOf(line: string): { level: number; text: string } | undefined {
@@ -67,6 +121,11 @@ export function extractSection(markdown: string, section: string): string | unde
     body.push(lines[index])
   }
   return body.join("\n").trim()
+}
+
+/** Extract a section from one of the generated feature-map HTML pages. */
+export function extractHtmlSection(html: string, section: string): string | undefined {
+  return extractSection(htmlToText(html), section)
 }
 
 export interface RefVerdict {

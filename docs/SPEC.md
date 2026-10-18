@@ -42,7 +42,7 @@ goal: "..."
 ## Open
 - "..."
 ## Refs
-- docs/features/x.md#how-why - "gist" (~38 est; feature_map page:"x.md" section:"how-why")
+- docs/features/x.html#how-why - "gist" (~38 est; feature_map page:"x.html" section:"how-why")
 ## Notes
 "..."
 ## Pending eviction
@@ -99,7 +99,7 @@ When the host asks for a checkpoint summary, the plugin returns the rendered mem
 
 ## Feature-map references
 
-`smart_context { action:"ref", page, section, gist }` stores a pointer plus the model's own one-liner. It reads the section from `docs/features/<page>.md`, reports the gist and section costs, and tells the model which is shorter. The reference counts toward `memoryTokens`. A section that cannot be read is reported, but the pointer is still stored.
+`smart_context { action:"ref", page, section, gist }` stores a pointer plus the model's own one-liner. It reads the section from `docs/features/<page>` - the HTML page first, the Markdown page as a fallback - reports the gist and section costs, and tells the model which is shorter. The reference counts toward `memoryTokens`. A section that cannot be read is reported, but the pointer is still stored.
 
 ## The model surface
 

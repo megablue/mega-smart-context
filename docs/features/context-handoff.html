@@ -1,0 +1,83 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="generator" content="opencode-feature-map">
+<title>Context handoff - the request the model actually sees — feature map</title>
+<style>
+:root{color-scheme:light dark;--fg:#1d2433;--muted:#5b6475;--bg:#fff;--line:#d8dee9;--accent:#0b6e99;--warn:#8a5a00;--code:#f4f6fa}
+@media (prefers-color-scheme:dark){:root{--fg:#e6eaf2;--muted:#9aa4b8;--bg:#11151c;--line:#2b3342;--accent:#6cc4e8;--warn:#e0b25c;--code:#1a202a}}
+*{box-sizing:border-box}
+body{margin:0 auto;max-width:60rem;padding:2rem 1.25rem 4rem;background:var(--bg);color:var(--fg);font:16px/1.6 system-ui,-apple-system,Segoe UI,sans-serif}
+h1,h2,h3{line-height:1.25;margin:2rem 0 .75rem}
+h1{font-size:1.9rem;border-bottom:2px solid var(--line);padding-bottom:.4rem}
+h2{font-size:1.35rem}
+h3{font-size:1.08rem;color:var(--muted)}
+p,ul,ol,table,pre,blockquote{margin:.75rem 0}
+a{color:var(--accent)}
+code{background:var(--code);padding:.1em .3em;border-radius:.25rem;font-size:.92em}
+pre{background:var(--code);border:1px solid var(--line);border-radius:.4rem;padding:.8rem 1rem;overflow:auto}
+pre code{background:none;padding:0}
+pre.verbatim{border-left:4px solid var(--warn)}
+pre.verbatim::before{content:"verbatim — " attr(data-why);display:block;color:var(--warn);font:600 .78rem/1.4 ui-monospace,monospace;margin-bottom:.5rem;white-space:pre-wrap}
+pre.pseudo{border-left:4px solid var(--accent)}
+pre.mermaid{background:var(--bg);border:1px dashed var(--line)}
+p.status{color:var(--muted);font-size:.92rem}
+table{border-collapse:collapse;width:100%}
+th,td{border:1px solid var(--line);padding:.4rem .6rem;text-align:left;vertical-align:top}
+th{background:var(--code)}
+blockquote{margin-left:0;padding-left:1rem;border-left:3px solid var(--line);color:var(--muted)}
+hr{border:0;border-top:1px solid var(--line);margin:2rem 0}
+.lede{color:var(--muted)}
+</style>
+</head>
+<body>
+<article class="map">
+<h1>Context handoff - the request the model actually sees</h1>
+<p class="status">Status: shipped (v0.1) - Read when: the request payload, the memory block, the working window, <code>buildPayload</code>, <code>selectWorkingWindow</code>, turn boundaries, or &quot;the model lost the conversation&quot;.</p>
+<section id="what-it-does">
+<h2>What it does</h2>
+<ul><li>Replaces <code>event.messages</code> on every request with the memory block, the newest turns that fit the working budget, and the current turn.</li><li>Pushes the standing policy into <code>event.system</code> once, deduped by exact text.</li><li>Never edits the durable transcript; every pass is re-derived from the raw transcript and the session record.</li><li>Keeps the current turn intact, including every tool call and result the model just asked for.</li><li>Reports the estimated memory/working usage in the block&#39;s first line.</li></ul>
+<p>The user-visible contract is in <code>docs/SPEC.md</code> under &quot;What the model sees&quot; and &quot;Budgets&quot;.</p>
+</section>
+<section id="map">
+<h2>Map</h2>
+<ul><li><code>src/core/context.ts</code> - <code>buildPayload</code>, <code>ContextInput</code>, <code>ContextDeps</code>, <code>ContextReport</code>, <code>ContextPlan</code>, <code>modelContextOf</code>, <code>sameTurns</code>.</li><li><code>src/core/view.ts</code> - <code>turnSpans</code>, <code>selectWorkingWindow</code>, <code>balanceCuts</code>, <code>erodeToolResults</code>, <code>stripReasoning</code>, <code>MEMORY_MESSAGE_ID</code>, <code>INJECTED_PREFIX</code>.</li><li><code>src/core/prompts.ts</code> - <code>POLICY</code>, <code>budgetOf</code>, <code>renderMemory</code>.</li><li><code>src/core/measure.ts</code> - <code>estimateTokens</code>, <code>messageChars</code>, <code>messagesChars</code>, <code>memoryChars</code>.</li><li><code>src/core/state.ts</code> - <code>MAX_HISTORY</code>, <code>normalizeHistory</code>, <code>trimHistory</code> (the record&#39;s pass history).</li><li><code>src/adapters/opencode/context.ts</code> - <code>runContextTransform</code>, <code>isChildSession</code>, <code>directoryOf</code>, <code>createFsFeatureMap</code>, <code>TransformDeps</code>.</li><li><code>scripts/smoke.mjs</code> - the payload-shape and idempotence assertions.</li></ul>
+</section>
+<section id="how-why">
+<h2>How &amp; why</h2>
+<h3>Turns and the window</h3>
+<p>A turn starts at a real user message (<code>isRealUser</code>: role <code>user</code>, not a <code>megasc_</code> injected id) and ends before the next one. The turn id is the user message id, because indices move when the host compacts and ids do not.</p>
+<p><code>selectWorkingWindow</code> walks backward from the newest turn, accumulating <code>span.chars</code>. It stops when the next whole turn would exceed <code>workingTokens * charsPerToken</code>. The current turn is always kept, even when it alone exceeds the budget; <code>overBudget</code> is reported instead of dropping the results the model just requested. A cut at a turn start cannot split a call from its result; <code>balanceCuts</code> is the assertion, and the window still checks it as a guard for a host that starts mid-turn.</p>
+<h3>What leaves, and when</h3>
+<p><code>record.seenTurns</code> is the window from the previous pass. On a new user turn, a turn in <code>seenTurns</code> that is not in the new window becomes a <code>PendingTurn</code> with a mechanical gist and its eroded raw messages. The first pass only seeds <code>seenTurns</code>: enabling the plugin mid-session is not an eviction of turns it never managed.</p>
+<p>Pending turns age by <strong>new user turns</strong>, not by requests: the age step runs only when the window&#39;s turn id list changes. A ten-call turn must not consume ten eviction leads. With <code>autoArchive</code>, a pending turn older than <code>evictionLead</code> is archived; with it off, it is dropped when the lead expires. See <code>archive.md</code>.</p>
+<h3>Erosion and reasoning</h3>
+<p><code>erodeToolResults</code> shortens one result over <code>maxResultChars</code>, keeping a head, a tail and a marker with the missing count. The call and result keep their ids and order. <code>stripReasoning</code> drops private reasoning from completed turns; the current turn keeps it, because the tool call that follows may depend on it.</p>
+<p><strong>A result&#39;s shape is part of the contract.</strong> The host hands a tool result as one of three shapes and each survives erosion: <code>text</code> (<code>value</code> is a string), <code>content</code> (<code>value</code> is an array of parts) and <code>json</code> (<code>value</code> is structured). <code>content</code> is the trap: OpenCode&#39;s <code>SessionModelRequest.prepare</code> maps over that array (<code>l.value.map</code>), so writing a string into it aborts the request and the TUI shows <strong>&quot;session failed&quot;</strong>. Only the text parts shrink; the array and its non-text parts stay. <code>json</code> is left alone because there is no text to cut without retyping the result. This bites only a multi-part result that is also over <code>maxResultChars</code>; a single-text result is typed <code>text</code> and never takes that path. <em>Pinned by:</em> &quot;a content result keeps its array shape&quot;, &quot;the durable content result was not mutated&quot; and &quot;a structured result keeps its value&quot;.</p>
+<h3>The block and the policy</h3>
+<p>The memory message is <code>{ id: &quot;megasc_memory&quot;, role: &quot;user&quot;, content: [text] }</code> and is prepended to the window. Values in it are JSON-quoted so a newline in a note cannot change the shape. The policy is a static system part; the budget line is the only dynamic cap restatement, which keeps the system prefix stable for provider caching.</p>
+<p>No timestamp or pass counter is rendered. Two passes over the same transcript and record must produce the same bytes, and the smoke asserts it.</p>
+<h3>The record keeps a pass history</h3>
+<p>Alongside <code>lastReport</code> (a single snapshot for <code>/context</code>), each pass appends one <code>PassSample</code> to <code>record.history</code>: the enabled page beside the disabled baseline, both exact at that moment. <code>history</code> is <strong>not part of the payload</strong>, so it does not affect the bytes two passes produce. It is trimmed to <code>MAX_HISTORY</code> (200), keeping the first sample and the newest; it is optional, so a record written before the feature loads unchanged. <code>analyze.md</code> reads it.</p>
+<h3><code>/context</code> arrives as a real turn</h3>
+<p>The host&#39;s command executor has no display-only channel: <code>ctx.command.transform</code> hands <code>execute</code> the session and the prompt, and the documented answer path is <code>ctx.session.prompt</code>. That is what the adapter does, so a <code>/context</code> report is a genuine user turn - visible in the TUI, counted in the working window, archivable later like any other turn. <code>ctx.session.synthetic</code> is not an escape hatch: it marks the message <code>synthetic</code> and skips prompt hooks, but it still admits an inbox item and <strong>starts a model turn</strong> (verified live). <code>prompt</code> stays: the report is short and it does not corrupt memory. If it ever crowds the window, shorten the report rather than looking for another channel.</p>
+</section>
+<section id="config-keys-ui">
+<h2>Config keys / UI</h2>
+<table><thead><tr><th>Key</th><th>Default</th><th>Effect</th></tr></thead><tbody><tr><td><code>memoryTokens</code></td><td>50000</td><td>cap used by <code>budgetOf</code> and the tool&#39;s write check</td></tr><tr><td><code>workingTokens</code></td><td>16000</td><td>cap for the verbatim tail</td></tr><tr><td><code>charsPerToken</code></td><td>4</td><td>estimate divisor</td></tr><tr><td><code>maxResultChars</code></td><td>4000</td><td>per-result erosion limit</td></tr><tr><td><code>subagents</code></td><td>true</td><td>whether a child session is transformed</td></tr></tbody></table>
+<p>The block&#39;s first line is the UI: <code>memory 12.4k/50k est · working 6.1k/16k est · refs 3 · pending 1 · archive 41</code>, plus <code>OVER CAP</code> when either side is over.</p>
+</section>
+<section id="tests-that-pin-it">
+<h2>Tests that pin it</h2>
+<ul><li>&quot;the memory block is the first message&quot;</li><li>&quot;the policy is in system&quot;</li><li>&quot;the working window is bounded&quot;</li><li>&quot;the durable transcript objects were not mutated&quot;</li><li>&quot;an oversized tool result is eroded&quot;</li><li>&quot;a content result keeps its array shape&quot;</li><li>&quot;the durable content result was not mutated&quot;</li><li>&quot;a structured result keeps its value rather than being retyped&quot;</li><li>&quot;no call/result pair is split in the payload&quot;</li><li>&quot;two passes over the same conversation produce the same payload&quot;</li><li>&quot;the window always keeps the current turn&quot;</li><li>&quot;a pass appends one history sample&quot;</li><li>&quot;a repeat pass over the same transcript keeps the payload bytes&quot;</li></ul>
+</section>
+<section id="related">
+<h2>Related</h2>
+<ul><li><code>memory-tool.md</code> - how the model writes the block.</li><li><code>archive.md</code> - what happens to turns that leave.</li><li><code>subagents.md</code> - who owns a child session&#39;s window.</li><li><code>compaction.md</code> - the checkpoint uses the same block.</li></ul>
+</section>
+</article>
+
+</body>
+</html>

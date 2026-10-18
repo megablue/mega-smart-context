@@ -1,0 +1,79 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="generator" content="opencode-feature-map">
+<title>Version stamping - one number, derived from the commit count — feature map</title>
+<style>
+:root{color-scheme:light dark;--fg:#1d2433;--muted:#5b6475;--bg:#fff;--line:#d8dee9;--accent:#0b6e99;--warn:#8a5a00;--code:#f4f6fa}
+@media (prefers-color-scheme:dark){:root{--fg:#e6eaf2;--muted:#9aa4b8;--bg:#11151c;--line:#2b3342;--accent:#6cc4e8;--warn:#e0b25c;--code:#1a202a}}
+*{box-sizing:border-box}
+body{margin:0 auto;max-width:60rem;padding:2rem 1.25rem 4rem;background:var(--bg);color:var(--fg);font:16px/1.6 system-ui,-apple-system,Segoe UI,sans-serif}
+h1,h2,h3{line-height:1.25;margin:2rem 0 .75rem}
+h1{font-size:1.9rem;border-bottom:2px solid var(--line);padding-bottom:.4rem}
+h2{font-size:1.35rem}
+h3{font-size:1.08rem;color:var(--muted)}
+p,ul,ol,table,pre,blockquote{margin:.75rem 0}
+a{color:var(--accent)}
+code{background:var(--code);padding:.1em .3em;border-radius:.25rem;font-size:.92em}
+pre{background:var(--code);border:1px solid var(--line);border-radius:.4rem;padding:.8rem 1rem;overflow:auto}
+pre code{background:none;padding:0}
+pre.verbatim{border-left:4px solid var(--warn)}
+pre.verbatim::before{content:"verbatim — " attr(data-why);display:block;color:var(--warn);font:600 .78rem/1.4 ui-monospace,monospace;margin-bottom:.5rem;white-space:pre-wrap}
+pre.pseudo{border-left:4px solid var(--accent)}
+pre.mermaid{background:var(--bg);border:1px dashed var(--line)}
+p.status{color:var(--muted);font-size:.92rem}
+table{border-collapse:collapse;width:100%}
+th,td{border:1px solid var(--line);padding:.4rem .6rem;text-align:left;vertical-align:top}
+th{background:var(--code)}
+blockquote{margin-left:0;padding-left:1rem;border-left:3px solid var(--line);color:var(--muted)}
+hr{border:0;border-top:1px solid var(--line);margin:2rem 0}
+.lede{color:var(--muted)}
+</style>
+</head>
+<body>
+<article class="map">
+<h1>Version stamping - one number, derived from the commit count</h1>
+<p class="status">Status: shipped (v0.1) - Read when: <code>scripts/version.mjs</code>, <code>countBase</code>, the version in <code>/context status</code>, the README badge, <code>npm run hooks</code>, the pre-commit stamp, &quot;the version is wrong after a rebase&quot;, or &quot;the version jumped after an amend&quot;.</p>
+<section id="what-it-does">
+<h2>What it does</h2>
+<ul><li>Derives the version as <code>MAJOR.MINOR.PATCH</code>: MAJOR.MINOR is the released line held in <code>package.json</code>; PATCH is <code>git rev-list --count HEAD - countBase</code>.</li><li>The pre-commit hook rewrites only the patch in <code>package.json</code> and <code>package-lock.json</code> and stages them, so the number lands in the commit that produced it.</li><li><code>/context status</code> prints the loaded build&#39;s own version, read from the <code>package.json</code> shipped beside it - the host never runs git.</li><li>The README version badge reads <code>package.json</code> from the default branch, so it follows the same number with no extra step.</li><li>There is no build step and no generated file: <code>package.json</code> is the one source and every reader derives from it.</li></ul>
+<p>User-visible behavior is in <code>docs/SPEC.md</code>.</p>
+</section>
+<section id="map">
+<h2>Map</h2>
+<ul><li><code>src/core/version.ts</code> - <code>VERSION_KEY</code>, <code>VersionBase</code>, <code>readVersionBase</code>, <code>deriveVersion</code>. Pure and host-free; it does no IO.</li><li><code>scripts/version.mjs</code> - <code>gitCommitCount</code>, <code>readManifest</code>, <code>expectedVersion</code>, <code>writeVersion</code>, <code>run</code>; the <code>version</code> and <code>version:check</code> npm scripts.</li><li><code>.githooks/pre-commit</code> - writes and stages the number before the commit exists.</li><li><code>.githooks/commit-msg</code> - forwards to the machine-wide guard; see &quot;The two hooks&quot; below.</li><li><code>src/adapters/opencode/version.ts</code> - <code>PACKAGE_PATH</code>, <code>readPluginVersion</code>. Read once in <code>setup</code> (<code>src/adapters/opencode/index.ts</code>) and passed through <code>createContextCommand</code> into <code>renderStats</code> (<code>src/core/prompts.ts</code>).</li><li><code>package.json</code> - <code>version</code>, <code>megaSmartContext.countBase</code>, and the <code>version</code>, <code>version:check</code> and <code>hooks</code> scripts.</li></ul>
+</section>
+<section id="how-why">
+<h2>How &amp; why</h2>
+<h3>The number is a count, not a hand bump</h3>
+<p><code>patch = commitCount - countBase</code>. MAJOR and MINOR are the released line: they change by hand, and <code>version</code> and <code>countBase</code> are raised together in the same commit so the patch restarts at 0 for the new line. <code>countBase</code> lives under the package&#39;s own <code>megaSmartContext</code> key so a private package keeps its settings together, and the <code>files[]</code>-shipped <code>package.json</code> carries the base into the installed copy without a second file.</p>
+<p><code>--next</code> counts the commit about to be made. A pre-commit hook runs while <code>HEAD</code> is still the parent, so without it the stamp would lag one commit. <code>--check</code> is the inverse gate: it compares the manifest against the plain <code>HEAD</code> count, so a run after a commit confirms the stamp matches the history.</p>
+<h3>One writer, several readers</h3>
+<p><code>src/core/version.ts</code> is pure and holds the only copy of the arithmetic; <code>scripts/version.mjs</code> adds git and the filesystem; the adapter only reads the stamped field. <code>readPluginVersion</code> is exists-guarded and returns <code>undefined</code> rather than throwing, because <code>/context</code> must print without a version rather than fail to load.</p>
+<h3>The count survives a rebase by clamping</h3>
+<p>A commit count below <code>countBase</code> yields patch 0 rather than a negative number. Rewriting the counted history (rebase, squash, amending the base) therefore cannot produce an unpublishable version, but it does not restore the old number either: after a rewrite the number is the new count, which is what &quot;commits since the base&quot; means.</p>
+<h3>An amend is stamped one patch ahead</h3>
+<p>The hook adds one because a commit is about to be created, and an amend does not create one: it replaces <code>HEAD</code>, so <code>git commit --amend</code> is stamped one patch above the count itself, and <code>npm run version:check</code> fails while that commit is the tip. The hook cannot tell the two apart - git leaves <code>GIT_REFLOG_ACTION</code> unset in <code>pre-commit</code> here (2.55), and the index, the message and the reflog all look the same at that point. It costs nothing to leave alone: the number self-corrects at the next commit, which stamps from its own count, and the sequence still rises. Make a new commit rather than an amend when the tip must pass <code>version:check</code>.</p>
+<h3>The two hooks, and why one chains</h3>
+<p><code>core.hooksPath</code> is machine-wide (<code>C:/Users/mega/.githooks</code>, the co-author guard) and is not cloned, so this repository needs its own path. <code>npm run hooks</code> sets <code>core.hooksPath=.githooks</code> in this repo only. That shadows the machine-wide directory, so <code>.githooks/commit-msg</code> does not check for a trailer itself - it forwards to <code>$(git config --global --get core.hooksPath)/commit-msg</code>. Copying the guard would make two copies that drift; forwarding keeps one.</p>
+<p>The bump runs in <code>pre-commit</code>, not <code>commit-msg</code>: <code>commit-msg</code> receives the message and cannot stage the files the bump rewrites.</p>
+</section>
+<section id="config-keys-ui">
+<h2>Config keys / UI</h2>
+<table><thead><tr><th>Key</th><th>Where</th><th>Meaning</th></tr></thead><tbody><tr><td><code>version</code></td><td><code>package.json</code></td><td><code>MAJOR.MINOR.PATCH</code>; MAJOR.MINOR is the base, the patch is stamped</td></tr><tr><td><code>megaSmartContext.countBase</code></td><td><code>package.json</code></td><td>the commit count that carries patch 0; raise it with the minor</td></tr><tr><td><code>--next</code></td><td><code>scripts/version.mjs</code></td><td>count the commit about to be made</td></tr><tr><td><code>--write</code></td><td><code>scripts/version.mjs</code></td><td>rewrite the patch into the manifest and lockfile</td></tr><tr><td><code>--check</code></td><td><code>scripts/version.mjs</code></td><td>exit 1 unless the manifest already carries the derived number</td></tr></tbody></table>
+<table><thead><tr><th>Script</th><th>Effect</th></tr></thead><tbody><tr><td><code>npm run hooks</code></td><td><code>git config core.hooksPath .githooks</code> (once per clone)</td></tr><tr><td><code>npm run version</code></td><td>print the version of <code>HEAD</code></td></tr><tr><td><code>npm run version:check</code></td><td>the gate step: manifest against the <code>HEAD</code> count</td></tr></tbody></table>
+</section>
+<section id="tests-that-pin-it">
+<h2>Tests that pin it</h2>
+<ul><li>&quot;readVersionBase reads the major&quot; / &quot;reads the minor&quot; / &quot;reads the count base&quot;</li><li>&quot;the patch counts from the base&quot;, &quot;the patch grows with the commit count&quot;</li><li>&quot;a count below the base clamps at zero&quot;, &quot;a zero base counts every commit&quot;</li><li>&quot;a missing base is rejected&quot;, &quot;a non-numeric version is rejected&quot;, &quot;a negative base is rejected&quot;</li><li>&quot;/context status shows the build&#39;s version&quot;</li><li><code>npm run version:check</code> (a gate step, not a smoke assertion)</li></ul>
+</section>
+<section id="related">
+<h2>Related</h2>
+<ul><li><code>installation.md</code> - what the install copies, and why the base ships inside <code>package.json</code>.</li><li><code>context-handoff.md</code> - <code>/context</code> arrives as a real turn.</li><li><code>AGENTS.md</code> Commands - <code>npm run hooks</code> and the gate.</li></ul>
+</section>
+</article>
+
+</body>
+</html>

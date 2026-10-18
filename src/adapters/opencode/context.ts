@@ -21,7 +21,7 @@ import { resolve, sep } from "node:path"
 
 import type { ResolvedConfig } from "../../core/config.ts"
 import { buildPayload, type ContextReport } from "../../core/context.ts"
-import { extractSection, normalizePage } from "../../core/refs.ts"
+import { extractHtmlSection, extractSection, pageCandidates } from "../../core/refs.ts"
 import type { SessionStore } from "../../core/state.ts"
 import type { FeatureMapPort } from "../../core/types.ts"
 import type { PluginContext, SessionContextEvent } from "./types.ts"
@@ -73,25 +73,32 @@ export async function directoryOf(ctx: PluginContext, sessionID: string): Promis
 }
 
 /**
- * Read `docs/features/<page>.md` under a session directory and return one
- * section. Any failure is "not found": a reference that cannot be expanded is
- * still a valid pointer, and a broken page must not break the turn.
+ * Read a page under `docs/features/` and return one section. Candidates are
+ * tried in order — `.html` before `.md` for a bare page name — and the first
+ * one that both exists and holds the section wins, so a map mid-conversion and
+ * a map that has dropped its Markdown both resolve. Any failure is "not
+ * found": a reference that cannot be expanded is still a valid pointer, and a
+ * broken page must not break the turn.
  */
 export function createFsFeatureMap(): FeatureMapPort {
   return {
     async readSection(root, page, section) {
-      const normalized = normalizePage(page)
-      if (normalized === undefined) return undefined
       const features = resolve(root, "docs", "features")
-      const file = resolve(features, normalized)
-      if (file !== features && !file.startsWith(features + sep)) return undefined
-      let text: string
-      try {
-        text = await readFile(file, "utf8")
-      } catch {
-        return undefined
+      for (const candidate of pageCandidates(page)) {
+        const file = resolve(features, candidate)
+        if (file !== features && !file.startsWith(features + sep)) continue
+        let text: string
+        try {
+          text = await readFile(file, "utf8")
+        } catch {
+          continue
+        }
+        const found = candidate.toLowerCase().endsWith(".html")
+          ? extractHtmlSection(text, section)
+          : extractSection(text, section)
+        if (found !== undefined) return found
       }
-      return extractSection(text, section)
+      return undefined
     },
   }
 }
