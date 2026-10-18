@@ -15,11 +15,20 @@
  */
 
 import { emptyMemory, normalizeMemory } from "./schema.ts"
-import type { ArchivedTurn, PendingTurn, SessionRecord, StoragePort } from "./types.ts"
+import type { ArchivedTurn, PassSample, PendingTurn, SessionRecord, StoragePort } from "./types.ts"
 import { isPlainObject, messageOf } from "./types.ts"
 
 /** How many sessions the store keeps before the oldest is evicted. */
 export const MAX_SESSIONS = 64
+
+/**
+ * How many context passes a session record keeps in `history`.
+ *
+ * Not a config key: the samples are diagnostics, and a per-session cap keeps the
+ * record bounded without a second knob. The first sample is always kept — it is
+ * the cheap full-arc baseline the analyzer measures growth against.
+ */
+export const MAX_HISTORY = 200
 
 const KEY_PREFIX = "session/"
 
@@ -61,6 +70,43 @@ function normalizeArchived(value: unknown): ArchivedTurn | undefined {
   return entry
 }
 
+/** Coerce a stored pass sample, dropping anything without a usable timestamp. */
+function normalizeSample(value: unknown): PassSample | undefined {
+  if (!isPlainObject(value)) return undefined
+  if (typeof value.at !== "number" || !Number.isFinite(value.at)) return undefined
+  const number = (field: unknown): number => (typeof field === "number" && Number.isFinite(field) ? field : 0)
+  const sample: PassSample = {
+    at: value.at,
+    transcriptTokens: number(value.transcriptTokens),
+    policyTokens: number(value.policyTokens),
+    memoryTokens: number(value.memoryTokens),
+    workingTokens: number(value.workingTokens),
+    totalTokens: number(value.totalTokens),
+    workingTurns: number(value.workingTurns),
+    droppedTurns: number(value.droppedTurns),
+    overBudget: value.overBudget === true,
+  }
+  if (typeof value.turn === "string") sample.turn = value.turn
+  if (typeof value.modelContext === "number" && Number.isFinite(value.modelContext)) {
+    sample.modelContext = value.modelContext
+  }
+  return sample
+}
+
+/** The pass history, or `undefined` when the record has none (a pre-history record). */
+function normalizeHistory(value: unknown): PassSample[] | undefined {
+  if (!Array.isArray(value)) return undefined
+  return value.map(normalizeSample).filter((entry): entry is PassSample => entry !== undefined)
+}
+
+/**
+ * Keep the first sample (the full-arc baseline) and the newest `MAX_HISTORY - 1`.
+ */
+export function trimHistory(history: PassSample[]): PassSample[] {
+  if (history.length <= MAX_HISTORY) return history
+  return [history[0], ...history.slice(history.length - (MAX_HISTORY - 1))]
+}
+
 /** Coerce anything read from storage back into a record the code can trust. */
 export function normalizeRecord(value: unknown, now: number): SessionRecord {
   const record: SessionRecord = {
@@ -84,6 +130,8 @@ export function normalizeRecord(value: unknown, now: number): SessionRecord {
   if (typeof value.createdAt === "number") record.createdAt = value.createdAt
   if (typeof value.updatedAt === "number") record.updatedAt = value.updatedAt
   if (isPlainObject(value.lastReport)) record.lastReport = value.lastReport as SessionRecord["lastReport"]
+  const history = normalizeHistory(value.history)
+  if (history !== undefined) record.history = history
   return record
 }
 

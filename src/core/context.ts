@@ -18,8 +18,8 @@ import { archivePending, knows, mechanicalGist, trimArchive, turnMessages } from
 import type { ResolvedConfig } from "./config.ts"
 import { estimateTokens, memoryChars, messageChars, messagesChars } from "./measure.ts"
 import { POLICY, budgetOf, renderMemory } from "./prompts.ts"
-import type { SessionStore } from "./state.ts"
-import type { Message, SessionRecord, SystemPart } from "./types.ts"
+import { trimHistory, type SessionStore } from "./state.ts"
+import type { Message, PassSample, SessionRecord, SystemPart } from "./types.ts"
 import {
   MEMORY_MESSAGE_ID,
   erodeToolResults,
@@ -158,6 +158,25 @@ export async function buildPayload(input: ContextInput, deps: ContextDeps): Prom
     overBudget,
     modelContext,
   }
+
+  // The counterfactual, recorded at the only moment both sides are exact: the
+  // input we were handed is what a disabled plugin would send. `history` is not
+  // part of the payload, so this appends on every pass without changing bytes.
+  const policyTokens = estimateTokens(POLICY.length, config.charsPerToken)
+  const sample: PassSample = {
+    at: now(),
+    turn: currentIds.length > 0 ? currentIds[currentIds.length - 1] : undefined,
+    transcriptTokens: messagesChars(input.messages),
+    policyTokens,
+    memoryTokens,
+    workingTokens,
+    totalTokens: memoryTokens + workingTokens + policyTokens,
+    workingTurns: window.turns.length,
+    droppedTurns: window.dropped.length,
+    overBudget,
+    modelContext,
+  }
+  record.history = trimHistory([...(record.history ?? []), sample])
 
   const report: ContextReport = {
     ...record.lastReport,

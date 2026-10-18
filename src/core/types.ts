@@ -167,6 +167,38 @@ export interface LastReport {
   modelContext?: number
 }
 
+/**
+ * One context pass's measurements, including the disabled-plugin baseline.
+ *
+ * `lastReport` is a single snapshot, overwritten on every pass. A `PassSample`
+ * is that snapshot plus the counterfactual: what the whole durable transcript
+ * would have cost with the plugin disabled, recorded at the one moment both
+ * sides are exact. The samples make the answer a curve, not a point.
+ *
+ * The transcript side is a *character* count (`messagesChars`), not tokens: a
+ * disabled plugin sends the transcript verbatim, so its size is measured exactly
+ * rather than through the estimate the other fields use. Divide by
+ * `charsPerToken` to compare it with `totalTokens`.
+ */
+export interface PassSample {
+  /** When the pass ran (`Date.now()`). */
+  at: number
+  /** The current turn's id, when the window kept one. */
+  turn?: string
+  /** `messagesChars(input.messages)` — characters a disabled plugin would send. */
+  transcriptTokens: number
+  /** The POLICY part we add, in estimated tokens. */
+  policyTokens: number
+  memoryTokens: number
+  workingTokens: number
+  /** memory + working + policy, in estimated tokens. */
+  totalTokens: number
+  workingTurns: number
+  droppedTurns: number
+  overBudget: boolean
+  modelContext?: number
+}
+
 export interface SessionRecord {
   version: 1
   memory: Memory
@@ -175,6 +207,8 @@ export interface SessionRecord {
   pending: PendingTurn[]
   archive: ArchivedTurn[]
   lastReport?: LastReport
+  /** One sample per context pass, oldest first, bounded by `MAX_HISTORY`. */
+  history?: PassSample[]
   createdAt: number
   updatedAt: number
 }

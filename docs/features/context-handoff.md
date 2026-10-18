@@ -18,6 +18,7 @@ The user-visible contract is in `docs/SPEC.md` under "What the model sees" and "
 - `src/core/view.ts` - `turnSpans`, `selectWorkingWindow`, `balanceCuts`, `erodeToolResults`, `stripReasoning`, `MEMORY_MESSAGE_ID`, `INJECTED_PREFIX`.
 - `src/core/prompts.ts` - `POLICY`, `budgetOf`, `renderMemory`.
 - `src/core/measure.ts` - `estimateTokens`, `messageChars`, `messagesChars`, `memoryChars`.
+- `src/core/state.ts` - `MAX_HISTORY`, `normalizeHistory`, `trimHistory` (the record's pass history).
 - `src/adapters/opencode/context.ts` - `runContextTransform`, `isChildSession`, `directoryOf`, `createFsFeatureMap`, `TransformDeps`.
 - `scripts/smoke.mjs` - the payload-shape and idempotence assertions.
 
@@ -46,6 +47,10 @@ Pending turns age by **new user turns**, not by requests: the age step runs only
 The memory message is `{ id: "megasc_memory", role: "user", content: [text] }` and is prepended to the window. Values in it are JSON-quoted so a newline in a note cannot change the shape. The policy is a static system part; the budget line is the only dynamic cap restatement, which keeps the system prefix stable for provider caching.
 
 No timestamp or pass counter is rendered. Two passes over the same transcript and record must produce the same bytes, and the smoke asserts it.
+
+### The record keeps a pass history
+
+Alongside `lastReport` (a single snapshot for `/context`), each pass appends one `PassSample` to `record.history`: the enabled page beside the disabled baseline, both exact at that moment. `history` is **not part of the payload**, so it does not affect the bytes two passes produce. It is trimmed to `MAX_HISTORY` (200), keeping the first sample and the newest; it is optional, so a record written before the feature loads unchanged. `analyze.md` reads it.
 
 ### `/context` arrives as a real turn
 
@@ -76,6 +81,8 @@ The block's first line is the UI: `memory 12.4k/50k est · working 6.1k/16k est 
 - "no call/result pair is split in the payload"
 - "two passes over the same conversation produce the same payload"
 - "the window always keeps the current turn"
+- "a pass appends one history sample"
+- "a repeat pass over the same transcript keeps the payload bytes"
 
 ## Related
 

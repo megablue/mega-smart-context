@@ -20,8 +20,11 @@ import assert from "node:assert/strict"
 import { resolve } from "node:path"
 import { pathToFileURL } from "node:url"
 
-import { parseLayer } from "../src/core/config.ts"
+import { parseLayer, resolveConfig } from "../src/core/config.ts"
+import { buildPayload } from "../src/core/context.ts"
+import { messagesChars } from "../src/core/measure.ts"
 import { emptyMemory } from "../src/core/schema.ts"
+import { MAX_HISTORY, SessionStore, trimHistory } from "../src/core/state.ts"
 import { deriveVersion, readVersionBase } from "../src/core/version.ts"
 import { balanceCuts, erodeToolResults, selectWorkingWindow, turnSpans } from "../src/core/view.ts"
 
@@ -284,6 +287,45 @@ const eventAgain = {
 await host.hooks.context(eventAgain)
 assert.deepEqual(eventAgain.messages, event.messages, "two passes over the same conversation produce the same payload")
 passed += 1
+
+// ---------------------------------------------------------------------------
+// Pass history: one sample per pass, the transcript baseline, bounded
+// ---------------------------------------------------------------------------
+
+const histStore = new SessionStore()
+const histConfig = resolveConfig({ options: { workingTokens: 500, memoryTokens: 3000, charsPerToken: 2 } })
+const histDeps = { store: histStore, config: histConfig }
+const passOf = (sessionID, messages) =>
+  buildPayload({ sessionID, system: [{ type: "text", text: "base" }], messages, model: {} }, histDeps)
+
+const firstPass = await passOf("hist", transcript)
+const histRecord = await histStore.load("hist")
+ok(Array.isArray(histRecord.history) && histRecord.history.length === 1, "a pass appends one history sample")
+assert.equal(
+  histRecord.history[0].transcriptTokens,
+  messagesChars(transcript),
+  "transcriptTokens is the raw input's character count",
+)
+passed += 1
+const sampleZero = histRecord.history[0]
+ok(
+  sampleZero.totalTokens === sampleZero.memoryTokens + sampleZero.workingTokens + sampleZero.policyTokens,
+  "totalTokens is memory + working + policy",
+)
+
+const firstBytes = firstPass.messages.map((message) => JSON.stringify(message)).join("\n")
+const againPass = await passOf("hist", transcript)
+ok(
+  againPass.messages.map((message) => JSON.stringify(message)).join("\n") === firstBytes,
+  "a repeat pass over the same transcript keeps the payload bytes",
+)
+ok((await histStore.load("hist")).history.length === 2, "every pass appends a sample")
+
+const many = Array.from({ length: MAX_HISTORY + 50 }, (_, index) => ({ ...sampleZero, at: index }))
+const trimmed = trimHistory(many)
+ok(trimmed.length === MAX_HISTORY, "history trims to MAX_HISTORY")
+ok(trimmed[0].at === 0, "the first sample is always kept")
+ok(trimmed[trimmed.length - 1].at === many[many.length - 1].at, "the newest sample is kept")
 
 // ---------------------------------------------------------------------------
 // The tool: schema-owned merge, cap rejection, refs

@@ -1,6 +1,6 @@
 {
   "name": "mega-smart-context",
-  "version": "0.1.4",
+  "version": "0.1.5",
   "megaSmartContext": {
     "countBase": 3
   },
@@ -32,6 +32,7 @@
     "typecheck": "tsc --noEmit",
     "smoke": "node scripts/smoke.mjs .",
     "test:install": "node scripts/install-smoke.mjs .",
+    "analyze": "node scripts/analyze.mjs",
     "version": "node scripts/version.mjs",
     "version:check": "node scripts/version.mjs --check",
     "hooks": "git config core.hooksPath .githooks",
