@@ -21,6 +21,7 @@ import type { ResolvedConfig } from "./config.ts"
 import { estimateTokens, formatTokens, memoryChars } from "./measure.ts"
 import { budgetOf, noticePreview, renderMemory, renderStats } from "./prompts.ts"
 import { MEMORY_KEYS, applyPatch, parsePatch } from "./schema.ts"
+import { retireNotice } from "./state.ts"
 import type { SessionStore } from "./state.ts"
 import type { FeatureMapPort, Memory, SessionRecord } from "./types.ts"
 import { refVerdict } from "./refs.ts"
@@ -204,9 +205,15 @@ function purge(record: SessionRecord, request: MemoryToolRequest, config: Resolv
  * List the pinned host notices, or retire a superseded one.
  *
  * The newest notice is the live instruction and is refused: a newer notice, not
- * the model, is what resolves a contradiction the host injected. This is the only
- * path that removes a notice; the context pass only ever adds the distinct texts
- * the host sent.
+ * the model, is what resolves a contradiction the host injected. "Newest" is the
+ * last entry, which the pass keeps in recency order, so the refusal lands on the
+ * text the host emitted most recently rather than on whichever text happened to
+ * arrive first in the session.
+ *
+ * Removal is a retirement: the entry is recorded in `record.retired` so the next
+ * pass skips that text while the host's window still holds a copy of it. A new
+ * emission under a new id clears the retirement, because a re-emitted instruction
+ * is live again.
  */
 function notice(record: SessionRecord, request: MemoryToolRequest, config: ResolvedConfig): MemoryToolOutcome {
   const notices = record.notices ?? []
@@ -229,13 +236,20 @@ function notice(record: SessionRecord, request: MemoryToolRequest, config: Resol
       ok: false,
     }
   }
-  const kept = notices.filter((entry) => entry.id !== remove)
-  if (kept.length === notices.length) {
-    const ids = notices.map((entry) => entry.id).join(", ") || "none"
+  const entry = notices.find((notice) => notice.id === remove)
+  if (entry === undefined) {
+    const ids = notices.map((notice) => notice.id).join(", ") || "none"
     return { text: `smart_context: no pinned notice ${JSON.stringify(remove)}. Pinned: ${ids}`, ok: false }
   }
-  record.notices = kept
-  return { text: `removed pinned notice ${remove}\n` + usage(record, config), ok: true }
+  record.notices = notices.filter((notice) => notice.id !== remove)
+  record.retired = retireNotice(record.retired ?? [], entry)
+  return {
+    text:
+      `removed pinned notice ${remove}\n` +
+      "It stays retired while its text is still in the window; the host emitting it again under a new id returns it.\n" +
+      usage(record, config),
+    ok: true,
+  }
 }
 
 export async function runMemoryTool(

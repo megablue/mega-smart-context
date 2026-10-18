@@ -167,12 +167,36 @@ export interface ArchivedTurn {
  * superseded one.
  */
 export interface Notice {
-  /** The host message id the text arrived under; stable across passes. */
+  /**
+   * The id of the *newest* host message this text arrived under.
+   *
+   * The host emits one row per mode switch but re-emits the same two texts, and
+   * a window holds every past row, so the id is refreshed on each pass to the
+   * last occurrence in the transcript — that is what tells a genuinely new
+   * emission from a stale copy still sitting in the window.
+   */
   id: string
   /** The notice text, verbatim up to a head-keep bound, with a truncation marker. */
   text: string
-  /** When the plugin first recorded this text (`Date.now()`). */
+  /** When the plugin first recorded this text (`Date.now()`); never moves. */
   at: number
+}
+
+/**
+ * A notice the model retired, kept so the pass cannot re-add it.
+ *
+ * Retiring an id is not enough on its own: the window holds every past row of
+ * the same text, so a stale occurrence would re-add it under an older id. The
+ * text is stored beside the id, and the retirement holds only while the text's
+ * newest occurrence is still that generation. A genuinely new emission of the
+ * same text arrives under a new id, which clears the retirement and lets the
+ * live instruction back in.
+ */
+export interface RetiredNotice {
+  /** The occurrence id the text was retired at. */
+  id: string
+  /** The retired text, so a stale window copy cannot resurrect it. */
+  text: string
 }
 
 /** The last context pass's measurements, so `/context` can show them later. */
@@ -231,14 +255,23 @@ export interface SessionRecord {
   /** One sample per context pass, oldest first, bounded by `MAX_HISTORY`. */
   history?: PassSample[]
   /**
-   * Host-injected mode notices, newest last, deduped by exact text.
+   * Host-injected mode notices, oldest first, deduped by exact text.
    *
    * Pinned into the request's system parts rather than the working window, so a
-   * mode switch cannot evict a turn or churn the provider prefix. Bounded by
-   * `MAX_NOTICES`, oldest non-newest dropped first. Optional: a record written
-   * before the field existed has none.
+   * mode switch cannot evict a turn or churn the provider prefix. Order is
+   * recency: a text the host re-emits moves to the end, so the last entry is the
+   * live instruction the rail refuses to remove. Bounded by `MAX_NOTICES`, oldest
+   * dropped first. Optional: a record written before the field existed has none.
    */
   notices?: Notice[]
+  /**
+   * Notices the model retired but whose text is still in the host's window.
+   *
+   * Kept so the next pass does not re-add a stale occurrence of the same text.
+   * Bounded by `MAX_RETIRED`; an entry clears itself when the text is emitted
+   * again under a new id. Optional: absent until the first retirement.
+   */
+  retired?: RetiredNotice[]
   /**
    * The plugin instance's directory when this record was last written.
    *

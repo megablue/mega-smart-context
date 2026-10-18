@@ -26,7 +26,7 @@ import { runMemoryTool } from "../src/core/memory-tool.ts"
 import { messagesChars } from "../src/core/measure.ts"
 import { NOTICE_HEADING } from "../src/core/prompts.ts"
 import { emptyMemory } from "../src/core/schema.ts"
-import { MAX_HISTORY, MAX_NOTICES, MAX_NOTICE_CHARS, SessionStore, pruneOrphans, sameDirectory, trimHistory, upsertNotices } from "../src/core/state.ts"
+import { MAX_HISTORY, MAX_NOTICES, MAX_NOTICE_CHARS, MAX_RETIRED, SessionStore, pruneOrphans, retireNotice, sameDirectory, trimHistory, upsertNotices } from "../src/core/state.ts"
 import { extractHtmlSection, extractSection, htmlToText, pageCandidates } from "../src/core/refs.ts"
 import { deriveVersion, readVersionBase } from "../src/core/version.ts"
 import { balanceCuts, erodeToolResults, noticeOf, selectWorkingWindow, splitNotices, turnSpans } from "../src/core/view.ts"
@@ -417,9 +417,10 @@ ok(cReport.workingTurns === bReport.workingTurns, "a mode switch adds no working
 ok(afterC.pending.some((pending) => pending.id === "u1"), "a mode switch does not age a pending turn")
 ok(afterC.archive.length === 0, "a mode switch does not archive a pending turn")
 
-// action:notice — list, refuse the newest, remove an older one.
+// action:notice — list, refuse the newest, retire an older one.
 const toolDeps = { store: noticeStore, config: noticeConfig }
-await noticePass("notice-tool", [user("u1", "hi"), noticeMsg("n-old", PLAN_NOTICE), noticeMsg("n-new", BUILD_NOTICE)])
+const toolWindow = [user("u1", "hi"), noticeMsg("n-old", PLAN_NOTICE), noticeMsg("n-new", BUILD_NOTICE)]
+await noticePass("notice-tool", toolWindow)
 const listOut = await runMemoryTool({ sessionID: "notice-tool", action: "notice" }, toolDeps)
 ok(listOut.ok && listOut.text.includes("n-old") && listOut.text.includes("n-new"), "action:notice lists the pinned notices")
 const refuseNewest = await runMemoryTool({ sessionID: "notice-tool", action: "notice", remove: "n-new" }, toolDeps)
@@ -428,6 +429,47 @@ const removeOlder = await runMemoryTool({ sessionID: "notice-tool", action: "not
 ok(removeOlder.ok, "an older notice can be removed")
 const remaining = await noticeStore.load("notice-tool")
 ok(remaining.notices.length === 1 && remaining.notices[0].id === "n-new", "only the retired notice is gone")
+
+// Removal is sticky: the text is still in the window, so the pass must skip it.
+await noticePass("notice-tool", toolWindow)
+const afterReadd = await noticeStore.load("notice-tool")
+ok(
+  afterReadd.notices.length === 1 && afterReadd.notices[0].id === "n-new",
+  "a retired notice is not re-added while its text is still in the window",
+)
+const reemitted = await noticePass("notice-tool", [...toolWindow, noticeMsg("n-old2", PLAN_NOTICE)])
+ok(reemitted !== undefined, "a second emission of the retired text is still a notice")
+const afterReemit = await noticeStore.load("notice-tool")
+ok(afterReemit.notices.length === 2, "the same text emitted under a new id returns")
+ok(afterReemit.notices[afterReemit.notices.length - 1].id === "n-old2", "the returning notice is the newest")
+ok((afterReemit.retired ?? []).length === 0, "the retirement clears once the text is re-emitted")
+
+// Recency: re-seeing a text moves it to the end, so the rail protects the live one.
+const recWindow = [user("u1", "hi"), noticeMsg("r-plan", PLAN_NOTICE)]
+await noticePass("recency", recWindow)
+const recWindow2 = [...recWindow, noticeMsg("r-build", BUILD_NOTICE)]
+await noticePass("recency", recWindow2)
+const recWindow3 = [...recWindow2, noticeMsg("r-plan2", PLAN_NOTICE)]
+await noticePass("recency", recWindow3)
+const recRec = await noticeStore.load("recency")
+ok(recRec.notices[recRec.notices.length - 1].id === "r-plan2", "a re-seen notice moves to the end")
+ok(recRec.notices[0].id === "r-build", "the text seen least recently is first")
+const recRefuse = await runMemoryTool({ sessionID: "recency", action: "notice", remove: "r-plan2" }, toolDeps)
+ok(!recRefuse.ok && /newest/.test(recRefuse.text), "the rail refuses the text the host emitted most recently")
+const recAllow = await runMemoryTool({ sessionID: "recency", action: "notice", remove: "r-build" }, toolDeps)
+ok(recAllow.ok, "the stale text is removable")
+
+// The fold rules, directly: skip a retired generation, return on a new one.
+const skipped = upsertNotices([], [{ id: "s1", text: PLAN_NOTICE }], 1, [{ id: "s1", text: PLAN_NOTICE }])
+ok(skipped.notices.length === 0 && skipped.retired.length === 1, "a found text whose newest occurrence is retired is skipped")
+const returns = upsertNotices([], [{ id: "s2", text: PLAN_NOTICE }], 1, [{ id: "s1", text: PLAN_NOTICE }])
+ok(returns.notices.length === 1 && returns.retired.length === 0, "a new id clears the retirement and returns the text")
+let retirements = []
+for (let index = 0; index < MAX_RETIRED + 5; index += 1) {
+  retirements = retireNotice(retirements, { id: `rt${index}`, text: `note ${index}`, at: 0 })
+}
+ok(retirements.length === MAX_RETIRED, "the retirement list is bounded")
+ok(retirements[0].id === "rt5", "the oldest retirement is dropped first")
 
 const manyNotices = []
 for (let index = 1; index <= 10; index += 1) {
@@ -441,9 +483,9 @@ ok(manyRec.notices[manyRec.notices.length - 1].id === "nx10", "the newest notice
 
 const long = "<system-reminder>\n" + "z".repeat(6000) + "\n</system-reminder>"
 const headKept = upsertNotices([], [{ id: "big", text: long }], 1)
-ok(headKept[0].text.length <= MAX_NOTICE_CHARS + 40, "an over-long notice is head-kept")
-ok(headKept[0].text.startsWith("<system-reminder>"), "the head of an over-long notice is kept")
-ok(headKept[0].text.includes("truncated"), "an over-long notice gets a truncation marker")
+ok(headKept.notices[0].text.length <= MAX_NOTICE_CHARS + 40, "an over-long notice is head-kept")
+ok(headKept.notices[0].text.startsWith("<system-reminder>"), "the head of an over-long notice is kept")
+ok(headKept.notices[0].text.includes("truncated"), "an over-long notice gets a truncation marker")
 
 const plain = await noticePass("plain", [user("u1", "hello")])
 ok(plain.system.every((part) => !part.text.startsWith(NOTICE_HEADING)), "an empty notice list adds no system part")

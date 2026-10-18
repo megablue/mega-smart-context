@@ -54,7 +54,7 @@ An empty `goal` renders an explicit warning. Values are JSON-quoted so a newline
 
 The working window follows the block, verbatim, newest turns first in budget terms. The current turn is always kept, including every tool call and result the model just asked for. Completed turns lose their private reasoning; the current turn keeps it.
 
-Host **mode notices** - the Plan/Build reminders the host injects as synthetic user messages - are not replayed as turns. The plugin strips them from the working window and pins every distinct text into the system prompt under "## Pinned host notices", newest first. A mode switch therefore cannot evict a turn, and the standing instruction survives every pass until a newer notice replaces it. The model may retire a superseded notice with `smart_context { action:"notice", remove:"<id>" }`; the newest is the live instruction and a removal of it is refused.
+Host **mode notices** - the Plan/Build reminders the host injects as synthetic user messages - are not replayed as turns. The plugin strips them from the working window and pins every distinct text into the system prompt under "## Pinned host notices", newest first. "Newest" is recency of emission: a text the host re-emits moves to the end, so the refusal lands on the instruction that is actually live. A mode switch therefore cannot evict a turn, and the standing instruction survives every pass until a newer notice replaces it. The model may retire a superseded notice with `smart_context { action:"notice", remove:"<id>" }`; the newest is the live instruction and a removal of it is refused. A retirement outlives the pass that recorded it - the text stays retired while the host's window still holds a copy - and clears when the host emits the same text again under a new id.
 
 ## The first turn and `goal`
 
@@ -93,7 +93,7 @@ Every session - top-level or child - has its own memory, working window, pending
 
 ## Stored state
 
-Each session's memory, pinned host notices, pending turns and archive live in OpenCode's plugin storage, keyed by session id, and survive a restart. Deleting a session at `/sessions` does not notify the plugin, so the record would outlive it; on the next start the plugin asks the host whether each record's session still exists and removes the ones that are gone. A lookup that fails for any other reason keeps the record, and storage is shared by every project, so a record belonging to another project is left for that project's instance. The archive and the transcript text inside it are reclaimed when the record is removed.
+Each session's memory, pinned host notices, retired notices, pending turns and archive live in OpenCode's plugin storage, keyed by session id, and survive a restart. Deleting a session at `/sessions` does not notify the plugin, so the record would outlive it; on the next start the plugin asks the host whether each record's session still exists and removes the ones that are gone. A lookup that fails for any other reason keeps the record, and storage is shared by every project, so a record belonging to another project is left for that project's instance. The archive and the transcript text inside it are reclaimed when the record is removed.
 
 ## Compaction
 
@@ -117,7 +117,7 @@ When the host asks for a checkpoint summary, the plugin returns the rendered mem
 | `purge { turn? \| query? }` | delete a pending or archived turn, or matching entries |
 | `recall { query, lost:true }` | search the cold archive; refuses without `lost:true` |
 | `expand { turn }` | read an archived turn back |
-| `notice { remove? }` | list the pinned host notices, or retire a superseded one by id; the newest is refused |
+| `notice { remove? }` | list the pinned host notices, or retire a superseded one by id; the newest is refused, and a retirement holds until the host emits that text again under a new id |
 
 The `/context` command prints the same state for the user:
 

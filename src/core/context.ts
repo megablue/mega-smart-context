@@ -146,8 +146,14 @@ export async function buildPayload(input: ContextInput, deps: ContextDeps): Prom
   }
 
   // A mode notice is a standing instruction, not a turn: keep every distinct text
-  // on the record so it survives the window it was stripped from.
-  if (split.notices.length > 0) record.notices = upsertNotices(record.notices ?? [], split.notices, now())
+  // on the record so it survives the window it was stripped from. A text the model
+  // retired is skipped while it is still in the window, so a removal sticks.
+  if (split.notices.length > 0) {
+    const folded = upsertNotices(record.notices ?? [], split.notices, now(), record.retired ?? [])
+    record.notices = folded.notices
+    if (folded.retired.length > 0) record.retired = folded.retired
+    else delete record.retired
+  }
 
   const memoryTokens = estimateTokens(memoryChars(record.memory), config.charsPerToken)
   const workingTokens = estimateTokens(messagesChars(working), config.charsPerToken)

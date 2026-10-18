@@ -15,7 +15,7 @@
  */
 
 import { emptyMemory, normalizeMemory } from "./schema.ts"
-import type { ArchivedTurn, Notice, PassSample, PendingTurn, SessionRecord, StoragePort } from "./types.ts"
+import type { ArchivedTurn, Notice, PassSample, PendingTurn, RetiredNotice, SessionRecord, StoragePort } from "./types.ts"
 import { isPlainObject, messageOf } from "./types.ts"
 
 /** How many sessions the store keeps before the oldest is evicted. */
@@ -41,6 +41,15 @@ export const MAX_NOTICES = 8
 
 /** A notice longer than this is head-kept, with a marker, before it is stored. */
 export const MAX_NOTICE_CHARS = 4000
+
+/**
+ * How many retired notices a record remembers.
+ *
+ * Not a config key: a retirement is a handful of bytes and clears itself as soon
+ * as the host emits the text again under a new id, so the cap only bounds a list
+ * that keeps growing without one.
+ */
+export const MAX_RETIRED = 32
 
 const NOTICE_TRUNCATION_MARKER = "\n… [truncated] …"
 
@@ -174,28 +183,107 @@ function normalizeNotices(value: unknown): Notice[] | undefined {
   return out.length > MAX_NOTICES ? out.slice(out.length - MAX_NOTICES) : out
 }
 
+/** A retired notice, or `undefined` when the record has none. */
+function normalizeRetired(value: unknown): RetiredNotice | undefined {
+  if (!isPlainObject(value)) return undefined
+  if (typeof value.id !== "string" || value.id.length === 0) return undefined
+  if (typeof value.text !== "string" || value.text.length === 0) return undefined
+  return { id: value.id, text: value.text }
+}
+
+/** The retirements, or `undefined` when the record has none. */
+function normalizeRetiredList(value: unknown): RetiredNotice[] | undefined {
+  if (!Array.isArray(value)) return undefined
+  const seen = new Set<string>()
+  const out: RetiredNotice[] = []
+  for (const entry of value) {
+    const retired = normalizeRetired(entry)
+    if (retired === undefined || seen.has(retired.id + "\u0000" + retired.text)) continue
+    seen.add(retired.id + "\u0000" + retired.text)
+    out.push(retired)
+  }
+  return out.length > MAX_RETIRED ? out.slice(out.length - MAX_RETIRED) : out
+}
+
+/** The result of folding one pass's notices into a record. */
+export interface NoticeFold {
+  /** The pinned notices, oldest first, bounded by `MAX_NOTICES`. */
+  notices: Notice[]
+  /** The retirements still live after the fold, bounded by `MAX_RETIRED`. */
+  retired: RetiredNotice[]
+}
+
 /**
  * Fold the notices found in one pass into the record's list.
  *
  * Dedupe is by exact text: the host re-sends the same notice on every request
- * while a mode is active, so a re-run must not append a second copy or move
- * `at`. An over-long text is head-kept before it is stored. The list is capped by
- * `MAX_NOTICES`, dropping the oldest first, which never drops the newest — the
- * live instruction the model must still follow.
+ * while a mode is active, so a re-run must not append a second copy, and `at`
+ * never moves. The id does move — to the newest occurrence in the transcript —
+ * because that is the generation a retirement is checked against.
+ *
+ * Order is recency, not first sight: the host emits the same two texts all
+ * session, so first-sight order freezes and the rail ends up protecting a stale
+ * instruction. Re-seeing a text moves it to the end, so the last entry is the
+ * one the host emitted most recently. A re-run over the same transcript processes
+ * the same `found` in the same order and lands on the same list.
+ *
+ * A found text whose newest occurrence is retired is skipped outright, which is
+ * what makes a removal stick while the text is still in the window. The
+ * retirement is dropped once a new emission of the same text carries a new id,
+ * so a genuinely live instruction still returns.
  */
 export function upsertNotices(
   existing: ReadonlyArray<Notice>,
   found: ReadonlyArray<{ id: string; text: string }>,
   at: number,
-): Notice[] {
-  const out = [...existing]
-  const known = new Set(out.map((notice) => notice.text))
-  for (const entry of found) {
-    if (known.has(entry.text)) continue
-    known.add(entry.text)
-    out.push({ id: entry.id, text: headKeepNotice(entry.text), at })
+  retired: ReadonlyArray<RetiredNotice> = [],
+): NoticeFold {
+  const newestId = new Map<string, string>()
+  for (const entry of found) newestId.set(entry.text, entry.id)
+  const nextRetired = retired.filter((entry) => newestId.get(entry.text) === entry.id)
+  const retiredText = new Set(nextRetired.map((entry) => entry.text))
+
+  const order: string[] = []
+  const byText = new Map<string, Notice>()
+  const drop = (text: string): void => {
+    if (!byText.delete(text)) return
+    const index = order.indexOf(text)
+    if (index >= 0) order.splice(index, 1)
   }
-  return out.length > MAX_NOTICES ? out.slice(out.length - MAX_NOTICES) : out
+  for (const notice of existing) {
+    if (byText.has(notice.text)) continue
+    byText.set(notice.text, notice)
+    order.push(notice.text)
+  }
+
+  for (const entry of found) {
+    if (retiredText.has(entry.text)) {
+      drop(entry.text)
+      continue
+    }
+    const previous = byText.get(entry.text)
+    drop(entry.text)
+    byText.set(entry.text, { id: entry.id, text: previous?.text ?? headKeepNotice(entry.text), at: previous?.at ?? at })
+    order.push(entry.text)
+  }
+
+  const notices = order.map((text) => byText.get(text)).filter((notice): notice is Notice => notice !== undefined)
+  return {
+    notices: notices.length > MAX_NOTICES ? notices.slice(notices.length - MAX_NOTICES) : notices,
+    retired: nextRetired,
+  }
+}
+
+/**
+ * Record that the model retired a notice, so the pass cannot re-add its text.
+ *
+ * Called with the pinned entry, not just its id: the text is what keeps a stale
+ * occurrence in the window from resurrecting it.
+ */
+export function retireNotice(retired: ReadonlyArray<RetiredNotice>, entry: Notice): RetiredNotice[] {
+  const next = retired.filter((candidate) => !(candidate.id === entry.id && candidate.text === entry.text))
+  next.push({ id: entry.id, text: entry.text })
+  return next.length > MAX_RETIRED ? next.slice(next.length - MAX_RETIRED) : next
 }
 
 /**
@@ -303,6 +391,8 @@ export function normalizeRecord(value: unknown, now: number): SessionRecord {
   if (history !== undefined) record.history = history
   const notices = normalizeNotices(value.notices)
   if (notices !== undefined) record.notices = notices
+  const retired = normalizeRetiredList(value.retired)
+  if (retired !== undefined) record.retired = retired
   return record
 }
 
