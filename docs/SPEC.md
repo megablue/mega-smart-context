@@ -89,6 +89,10 @@ Every session - top-level or child - has its own memory, working window, pending
 
 `subagents: true` (the default) applies the same transform to child sessions. `subagents: false` leaves child sessions untouched and passes their requests through unchanged.
 
+## Stored state
+
+Each session's memory, pending turns and archive live in OpenCode's plugin storage, keyed by session id, and survive a restart. Deleting a session at `/sessions` does not notify the plugin, so the record would outlive it; on the next start the plugin asks the host whether each record's session still exists and removes the ones that are gone. A lookup that fails for any other reason keeps the record, and storage is shared by every project, so a record belonging to another project is left for that project's instance. The archive and the transcript text inside it are reclaimed when the record is removed.
+
 ## Compaction
 
 When the host asks for a checkpoint summary, the plugin returns the rendered memory document and skips the host's summarizer. If memory is empty, it declines and lets the host summarize; returning an empty block would erase the checkpoint in the name of owning it.

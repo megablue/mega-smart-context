@@ -26,6 +26,7 @@ import { createFsFeatureMap, runContextTransform } from "./context.ts"
 import { SessionStore } from "../../core/state.ts"
 import { createSmartContextTool } from "./tool.ts"
 import { readPluginVersion } from "./version.ts"
+import { sweepOrphanedSessions } from "./sessions.ts"
 import type { PluginContext, Registration } from "./types.ts"
 
 export const id = "mega-smart-context"
@@ -44,7 +45,7 @@ export async function setup(ctx: PluginContext): Promise<() => Promise<void>> {
   const config = resolveHostConfig(ctx, warn)
   if (!config.enabled) return async () => {}
 
-  const store = new SessionStore(ctx.storage, { warn })
+  const store = new SessionStore(ctx.storage, { warn, directory: ctx.location.directory })
   const featureMap = createFsFeatureMap()
   const childCache = new Map<string, boolean>()
   const registrations: Registration[] = []
@@ -105,6 +106,11 @@ export async function setup(ctx: PluginContext): Promise<() => Promise<void>> {
       warn("the /context command could not be registered: " + messageOf(error))
     }
   }
+
+  // Records outlive the sessions they belong to: the host deletes the row, not
+  // the plugin's KV entry. The sweep is deliberately after registration and not
+  // awaited, so a slow host lookup never delays the plugin loading.
+  void sweepOrphanedSessions(ctx, warn)
 
   return async () => {
     for (const registration of [...registrations].reverse()) {

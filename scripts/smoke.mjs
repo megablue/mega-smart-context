@@ -24,9 +24,10 @@ import { parseLayer, resolveConfig } from "../src/core/config.ts"
 import { buildPayload } from "../src/core/context.ts"
 import { messagesChars } from "../src/core/measure.ts"
 import { emptyMemory } from "../src/core/schema.ts"
-import { MAX_HISTORY, SessionStore, trimHistory } from "../src/core/state.ts"
+import { MAX_HISTORY, SessionStore, pruneOrphans, sameDirectory, trimHistory } from "../src/core/state.ts"
 import { deriveVersion, readVersionBase } from "../src/core/version.ts"
 import { balanceCuts, erodeToolResults, selectWorkingWindow, turnSpans } from "../src/core/view.ts"
+import { livenessFromError } from "../src/adapters/opencode/sessions.ts"
 import {
   DEFAULT_KEEP,
   DEFAULT_SUMMARY,
@@ -362,6 +363,112 @@ ok(grown.passes[3].raw === 105_000, "raw is the sum of positive deltas")
 
 const noSummary = simulateNative([10], { window: 10_000, summary: 0 })
 ok(noSummary.floor === DEFAULT_KEEP && noSummary.compactions === 0, "a summary of zero does not crash the floor")
+
+// ---------------------------------------------------------------------------
+// Startup sweep: only a session the host says is gone loses its record
+// ---------------------------------------------------------------------------
+
+ok(sameDirectory("C:\\Users\\me\\project\\", "C:/Users/me/project"), "directories compare across slash styles")
+ok(!sameDirectory("C:/a/b", "C:/a/bc"), "a sibling directory is not the same directory")
+ok(
+  livenessFromError({ _tag: "SessionNotFoundError", message: "Session not found" }) === "gone",
+  "the host's not-found tag means gone",
+)
+ok(livenessFromError(new Error("session not found")) === "gone", "a not-found message means gone")
+ok(livenessFromError(new Error("network down")) === "unknown", "any other error is not proof")
+
+const sweepStorage = new Map([
+  ["session/alive", { directory: root }],
+  ["session/dead", { directory: root }],
+  ["session/unknown", { directory: root }],
+  ["session/other-project", { directory: "C:/somewhere/else" }],
+  ["session/legacy", { updatedAt: 1 }],
+])
+const sweepStore = {
+  async scan({ prefix, after, limit = 100 }) {
+    const keys = [...sweepStorage.keys()].filter((key) => key.startsWith(prefix)).sort()
+    const start = after === undefined ? 0 : keys.indexOf(after) + 1
+    const page = keys.slice(start, start + limit)
+    return {
+      entries: page.map((key) => ({ key, value: sweepStorage.get(key) })),
+      next: start + limit < keys.length ? page.at(-1) : undefined,
+    }
+  },
+  async remove(key) {
+    sweepStorage.delete(key)
+  },
+}
+const liveness = {
+  alive: "alive",
+  dead: "gone",
+  unknown: "unknown",
+  "other-project": "gone",
+  legacy: "gone",
+}
+const sweepReport = await pruneOrphans({
+  storage: sweepStore,
+  directory: root,
+  isAlive: async (sessionID) => liveness[sessionID] ?? "unknown",
+})
+ok(
+  sweepReport.removed === 2 && !sweepStorage.has("session/dead") && !sweepStorage.has("session/legacy"),
+  "the sweep removes gone sessions, including unstamped legacy records",
+)
+ok(sweepStorage.has("session/alive"), "an alive session keeps its record")
+ok(sweepStorage.has("session/unknown"), "an unclassifiable lookup keeps the record")
+ok(sweepStorage.has("session/other-project"), "a record stamped for another project is left for that instance")
+
+const paged = new Map([
+  ["session/dead-1", { directory: root }],
+  ["session/dead-2", { directory: root }],
+])
+let scanCalls = 0
+const pagedStore = {
+  async scan({ after }) {
+    scanCalls += 1
+    if (after === undefined) {
+      return { entries: [{ key: "session/dead-1", value: paged.get("session/dead-1") }], next: "session/dead-1" }
+    }
+    return { entries: [{ key: "session/dead-2", value: paged.get("session/dead-2") }] }
+  },
+  async remove(key) {
+    paged.delete(key)
+  },
+}
+const pagedReport = await pruneOrphans({ storage: pagedStore, directory: root, isAlive: async () => "gone" })
+ok(pagedReport.removed === 2 && paged.size === 0 && scanCalls === 2, "the sweep follows the scan cursor")
+
+const brokenReport = await pruneOrphans({
+  storage: {
+    async scan() {
+      throw new Error("no database")
+    },
+  },
+  directory: root,
+  isAlive: async () => "gone",
+})
+ok(brokenReport.removed === 0, "a scan failure removes nothing")
+
+const stamped = new Map()
+const stampStore = new SessionStore(
+  {
+    async get(key) {
+      return stamped.get(key)
+    },
+    async set(key, value) {
+      stamped.set(key, value)
+    },
+    async remove(key) {
+      stamped.delete(key)
+    },
+    async scan() {
+      return { entries: [] }
+    },
+  },
+  { directory: root },
+)
+await stampStore.save("stamped", await stampStore.load("stamped"))
+ok(stamped.get("session/stamped").directory === root, "a saved record is stamped with its directory")
 
 // ---------------------------------------------------------------------------
 // The tool: schema-owned merge, cap rejection, refs

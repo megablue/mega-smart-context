@@ -209,6 +209,16 @@ export interface SessionRecord {
   lastReport?: LastReport
   /** One sample per context pass, oldest first, bounded by `MAX_HISTORY`. */
   history?: PassSample[]
+  /**
+   * The plugin instance's directory when this record was last written.
+   *
+   * The KV is shared by every project the host has opened, so the startup
+   * sweep needs this to tell "mine" from "another project's". Records written
+   * before the field existed have none; they are still swept, because a
+   * not-found answer from the host is proof the session is gone regardless of
+   * where it lived.
+   */
+  directory?: string
   createdAt: number
   updatedAt: number
 }

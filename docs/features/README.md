@@ -11,7 +11,7 @@ Read order: `HANDOFF.md` (current state) -> this index -> **the page for your ar
 | Context handoff | [context-handoff.md](context-handoff.md) | the request payload, the memory block, the working window, `buildPayload`, `selectWorkingWindow`, turn boundaries, "the model lost the conversation" |
 | Memory tool | [memory-tool.md](memory-tool.md) | `smart_context`, `applyPatch`, the memory schema, an over-cap write, a patch that did not land |
 | Archive | [archive.md](archive.md) | pending eviction, `autoArchive`, `evictionLead`, `recall`, `lost:true`, "a turn disappeared" |
-| Subagents | [subagents.md](subagents.md) | a child session, `parentID`, `subagents`, the per-session store, "the subagent lost its task" |
+| Subagents | [subagents.md](subagents.md) | a child session, `parentID`, `subagents`, the per-session store, a deleted session's record, "the subagent lost its task" |
 | Feature refs | [feature-refs.md](feature-refs.md) | the `ref` action, `extractSection`, gist vs section, `docs/features`, "pointer or paste" |
 | Compaction | [compaction.md](compaction.md) | the `compaction` hook, `runCompaction`, a checkpoint, "the summary and memory disagree" |
 | Installation | [installation.md](installation.md) | `plugin:install`, `.opencode/plugin`, `~/.config/opencode/plugins`, drift, `files[]`, "a stale install" |

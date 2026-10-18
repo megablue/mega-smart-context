@@ -35,10 +35,28 @@ const KEY_PREFIX = "session/"
 export interface StoreOptions {
   readonly warn?: (line: string) => void
   readonly now?: () => number
+  /** Stamped onto records this instance writes, for the startup sweep. */
+  readonly directory?: string
+}
+
+/** What the host's `session.get` proved about a record's session. */
+export type SessionLiveness = "alive" | "gone" | "unknown"
+
+export interface PruneReport {
+  removed: number
+  kept: number
+  skipped: number
+  failed: number
 }
 
 function keyOf(sessionID: string): string {
   return KEY_PREFIX + sessionID
+}
+
+/** Compare two directory spellings the host may report with either slash. */
+export function sameDirectory(left: string, right: string): boolean {
+  const fold = (value: string): string => value.replaceAll("\\", "/").replace(/\/+$/u, "")
+  return fold(left) === fold(right)
 }
 
 function normalizePending(value: unknown): PendingTurn | undefined {
@@ -107,6 +125,83 @@ export function trimHistory(history: PassSample[]): PassSample[] {
   return [history[0], ...history.slice(history.length - (MAX_HISTORY - 1))]
 }
 
+/**
+ * Remove records for sessions the host no longer has.
+ *
+ * Deleting a session at `/sessions` removes the host's rows but not the
+ * plugin's KV entry: the host emits no event and the tables have no foreign
+ * key between them. The record would otherwise keep the memory, the pending
+ * turns and the raw archive on disk for good.
+ *
+ * Safety is the whole design. The KV is shared by every project this host has
+ * opened, so a record stamped with a different directory is left alone. Only a
+ * `"gone"` answer from `session.get` deletes anything; an error the caller
+ * cannot classify is `"unknown"` and keeps the record. A record with no
+ * directory predates the stamp and is still swept, because a not-found answer
+ * is proof the session is gone wherever it lived.
+ */
+export async function pruneOrphans(options: {
+  readonly storage: StoragePort
+  readonly directory: string
+  readonly isAlive: (sessionID: string) => Promise<SessionLiveness>
+  readonly warn?: (line: string) => void
+}): Promise<PruneReport> {
+  const report: PruneReport = { removed: 0, kept: 0, skipped: 0, failed: 0 }
+  const warn = options.warn ?? (() => {})
+  let after: string | undefined
+  for (;;) {
+    let page: Awaited<ReturnType<StoragePort["scan"]>>
+    try {
+      page = await options.storage.scan({
+        prefix: KEY_PREFIX,
+        ...(after === undefined ? {} : { after }),
+        limit: 100,
+      })
+    } catch (error) {
+      warn("storage scan failed; no records were removed: " + messageOf(error))
+      return report
+    }
+    for (const entry of page.entries) {
+      const sessionID = entry.key.startsWith(KEY_PREFIX) ? entry.key.slice(KEY_PREFIX.length) : ""
+      if (sessionID.length === 0) {
+        report.skipped += 1
+        continue
+      }
+      const stamped =
+        isPlainObject(entry.value) && typeof entry.value.directory === "string" ? entry.value.directory : undefined
+      if (stamped !== undefined && !sameDirectory(stamped, options.directory)) {
+        report.skipped += 1
+        continue
+      }
+      let liveness: SessionLiveness
+      try {
+        liveness = await options.isAlive(sessionID)
+      } catch {
+        liveness = "unknown"
+      }
+      if (liveness === "alive") {
+        report.kept += 1
+        continue
+      }
+      if (liveness !== "gone") {
+        report.skipped += 1
+        continue
+      }
+      try {
+        await options.storage.remove(entry.key)
+        report.removed += 1
+      } catch (error) {
+        report.failed += 1
+        warn("orphaned record remove failed: " + messageOf(error))
+      }
+    }
+    const next = page.next
+    if (next === undefined || next === after) break
+    after = next
+  }
+  return report
+}
+
 /** Coerce anything read from storage back into a record the code can trust. */
 export function normalizeRecord(value: unknown, now: number): SessionRecord {
   const record: SessionRecord = {
@@ -129,6 +224,7 @@ export function normalizeRecord(value: unknown, now: number): SessionRecord {
   }
   if (typeof value.createdAt === "number") record.createdAt = value.createdAt
   if (typeof value.updatedAt === "number") record.updatedAt = value.updatedAt
+  if (typeof value.directory === "string" && value.directory.length > 0) record.directory = value.directory
   if (isPlainObject(value.lastReport)) record.lastReport = value.lastReport as SessionRecord["lastReport"]
   const history = normalizeHistory(value.history)
   if (history !== undefined) record.history = history
@@ -149,11 +245,13 @@ export class SessionStore {
   private readonly storage?: StoragePort
   private readonly warn: (line: string) => void
   private readonly now: () => number
+  private readonly directory?: string
 
   constructor(storage?: StoragePort, options: StoreOptions = {}) {
     this.storage = storage
     this.warn = options.warn ?? (() => {})
     this.now = options.now ?? (() => Date.now())
+    this.directory = options.directory
   }
 
   /** Load a record, or an empty one when this session has never been seen. */
@@ -181,6 +279,7 @@ export class SessionStore {
   /** Persist a record and touch its LRU position. */
   async save(sessionID: string, record: SessionRecord): Promise<void> {
     record.updatedAt = this.now()
+    if (record.directory === undefined && this.directory !== undefined) record.directory = this.directory
     this.cache.delete(sessionID)
     this.cache.set(sessionID, record)
     if (this.storage !== undefined) {
