@@ -1,6 +1,6 @@
 {
   "name": "mega-smart-context",
-  "version": "0.1.16",
+  "version": "0.1.17",
   "megaSmartContext": {
     "countBase": 3
   },
@@ -28,6 +28,14 @@
   ],
   "license": "MIT",
   "author": "Evert Chin (https://github.com/megablue)",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/megablue/mega-smart-context.git"
+  },
+  "homepage": "https://github.com/megablue/mega-smart-context#readme",
+  "bugs": {
+    "url": "https://github.com/megablue/mega-smart-context/issues"
+  },
   "scripts": {
     "typecheck": "tsc --noEmit",
     "smoke": "node scripts/smoke.mjs .",
