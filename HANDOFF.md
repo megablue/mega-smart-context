@@ -4,7 +4,7 @@ Next: `docs/features/index.html` - the feature map. Read only the page for your 
 
 **A snapshot, not a source of truth.** This file goes stale by design. If it disagrees with the code, the code is right. The process doc is `AGENTS.html`, the feature map is `docs/features/` and the behavior spec is `docs/SPEC.html`. This file is the volatile one - it exists so a new session knows *where things stand*, not *how they work*.
 
-As of `main` (20 commits, v0.1.17 - the interruption cue is classified) - 2026-10-20.
+As of `main` (21 commits, v0.1.18 - the interruption cue is classified) - 2026-10-21.
 
 ## State
 
@@ -40,7 +40,7 @@ As of `main` (20 commits, v0.1.17 - the interruption cue is classified) - 2026-1
 - **`/context` delivers through `ctx.session.prompt`.** That creates a user message, which the next context pass treats as a real turn. It does not corrupt memory, but the command's report can become part of the conversation it is reporting on. There is no display-only channel: `ctx.session.synthetic` still starts a model turn (probed live), so `prompt` is the honest choice.
 - **A child's archive survives until the store's LRU evicts it** (`MAX_SESSIONS` 64). There is no per-child cleanup on session end. The startup sweep only removes records whose session the host no longer has; records for sessions that still exist are never capped on disk.
 - **The archive caps are per session** (`archiveMaxTurns`, `archiveMaxChars`); there is no global storage budget.
-- **The ref reader uses the session directory's `docs/features/`.** A bare page name tries `<name>.html` then `<name>.md`; an explicit extension tries that file first and its sibling second. An HTML page is flattened to Markdown-shaped text (`htmlToText`), so `extractSection` runs over either format; `refs.md` written by an old session still finds `refs.html`. The loaded build now contains it (v0.1.10), but no ref has been taken since the restart, so the HTML path is still unexercised live. A worktree without that directory reports "section not found" but still stores the pointer.
+- **The ref reader uses the session directory's `docs/features/`.** A bare page name tries `<name>.html` then `<name>.md`; an explicit extension tries that file first and its sibling second. An HTML page is flattened to Markdown-shaped text (`htmlToText`), so `extractSection` runs over either format; `refs.md` written by an old session still finds `refs.html`. The loaded build contains it (v0.1.18) and it is exercised live (10/21): a ref against a `###` chunk of `context-handoff.html` resolved (153 est against a 29-est gist). A ref taken while the page is being written fails the same way and expands when re-stored. A worktree without that directory reports "section not found" but still stores the pointer.
 - **The install is a copy.** Editing the source tree does not update an installed copy; run `plugin:install` again, and the host picks it up at the next pass. `plugin:status` reports the drift.
 - Environment note: this shell is Windows PowerShell 5.1 - no `&&` (a parser error), chain with `;` and check `$LASTEXITCODE`. `Get-Content` can render UTF-8 punctuation as mojibake, so verify a written `.md` with a `node -e` UTF-8 read rather than trusting the console.
 
@@ -50,4 +50,4 @@ As of `main` (20 commits, v0.1.17 - the interruption cue is classified) - 2026-1
 - Run `npm run hooks` once per clone: it sets `core.hooksPath=.githooks`, which is what makes the pre-commit stamp and the `commit-msg` forward fire. This clone has it set.
 - The user-scope copy at `~/.config/opencode/plugins/mega-smart-context` holds the shippable set (32 files, `sessions.ts` joins the analyzer scripts) and is kept in sync by `npm run plugin:install` after any edit (no restart needed - the host re-imports from disk at the next pass).
 - `.opencode/plugin/` - empty; the project-scope copy was removed (the user scope is the install), and `.gitignore` covers it.
-- `.git` is present (branch `main`); no remote and no tags yet.
+- `.git` is present (branch `main`); `origin` is https://github.com/megablue/mega-smart-context.git (pushed, default `main`); no tags.
