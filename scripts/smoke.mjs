@@ -29,7 +29,7 @@ import { emptyMemory } from "../src/core/schema.ts"
 import { MAX_HISTORY, MAX_NOTICES, MAX_NOTICE_CHARS, MAX_RETIRED, SessionStore, pruneOrphans, retireNotice, sameDirectory, trimHistory, upsertNotices } from "../src/core/state.ts"
 import { extractHtmlSection, extractSection, htmlToText, pageCandidates } from "../src/core/refs.ts"
 import { deriveVersion, readVersionBase } from "../src/core/version.ts"
-import { balanceCuts, erodeToolResults, hostMessageOf, isHostJob, isHostMessage, isRealUser, noticeOf, selectWorkingWindow, splitNotices, turnSpans } from "../src/core/view.ts"
+import { balanceCuts, erodeToolResults, hostMessageOf, isHostCue, isHostJob, isHostMessage, isHostTail, isRealUser, noticeOf, selectWorkingWindow, splitNotices, turnSpans } from "../src/core/view.ts"
 import { livenessFromError } from "../src/adapters/opencode/sessions.ts"
 import {
   DEFAULT_KEEP,
@@ -575,6 +575,24 @@ ok(isRealUser(noticeMsg("j1", SHELL_JOB)) === false, "a job does not start a tur
 ok(isRealUser(user("ur", "a real request")) === true, "a plain user message still starts a turn")
 ok(hostMessageOf(user("ur", "a real request")) === undefined, "a real message is not a host message")
 
+// The host's "previous response was interrupted" sentence is a cue: a tail of the
+// running turn, never pinned.
+const INTERRUPTED =
+  "The previous response was interrupted. Continue from where you left off without repeating completed content."
+ok(hostMessageOf(noticeMsg("c1", INTERRUPTED))?.kind === "cue", "the interrupted-response continuation is a cue")
+ok(noticeOf(noticeMsg("c1", INTERRUPTED)) === undefined, "a cue is never pinned on the notice rail")
+ok(
+  isHostMessage(noticeMsg("c1", INTERRUPTED)) && isHostCue(noticeMsg("c1", INTERRUPTED)),
+  "a cue is a host message",
+)
+ok(isHostTail(noticeMsg("c1", INTERRUPTED)) && !isHostTail(noticeMsg("o1", OUTPUT_NUDGE)), "a cue is a turn tail, a notice is not")
+ok(isRealUser(noticeMsg("c1", INTERRUPTED)) === false, "a cue does not start a turn")
+ok(hostMessageOf(noticeMsg("c2", INTERRUPTED, "\n@4@"))?.kind === "cue", "the cue is recognised with a trailing @n@ marker")
+ok(
+  hostMessageOf(noticeMsg("c3", "The previous response was interrupted.")) === undefined,
+  "a shortened interruption is not the cue, so it stays a real turn",
+)
+
 const withJob = [
   user("u1", "Run it. ".repeat(20)),
   assistant("a1", "Calling. ".repeat(10)),
@@ -626,6 +644,48 @@ ok(
 )
 ok(jobRecord.pending.some((pending) => pending.id === "u1"), "a job completion does not age a pending turn")
 ok(jobRecord.archive.length === 0, "a job completion does not archive a pending turn")
+
+const withCue = [
+  user("u1", "Run it. ".repeat(20)),
+  assistant("a1", "Partial. ".repeat(10)),
+  noticeMsg("c-resume", INTERRUPTED),
+  assistant("a2", "Done. ".repeat(20)),
+]
+ok(turnSpans(withCue).length === 1, "a resume cue annexes to the turn it continues")
+ok(
+  turnSpans(withCue)[0].chars === withCue.reduce((sum, message) => sum + messageChars(message), 0),
+  "the cue's bytes stay in the turn that owns it",
+)
+
+// A cue is a tail, not a notice: in the window, out of the turn count, never pinned.
+const cueStore = new SessionStore()
+const cueDeps = {
+  store: cueStore,
+  config: resolveConfig({
+    options: { workingTokens: 500, memoryTokens: 3000, charsPerToken: 2, autoArchive: true, evictionLead: 1 },
+  }),
+}
+const cuePass = (messages) =>
+  buildPayload({ sessionID: "cue", system: [{ type: "text", text: "base" }], messages, model: {} }, cueDeps)
+await cuePass(firstTurn)
+const cueBefore = await cuePass([...firstTurn, ...secondTurn])
+const cueAfter = await cuePass([...firstTurn, ...secondTurn, noticeMsg("c-late", INTERRUPTED)])
+const cueRecord = await cueStore.load("cue")
+ok(cueAfter.report.workingTurns === cueBefore.report.workingTurns, "a resume cue adds no working turn")
+ok(
+  cueAfter.report.workingTokens > cueBefore.report.workingTokens,
+  "the cue's bytes are still counted in the working window",
+)
+ok(cueRecord.pending.some((pending) => pending.id === "u1"), "a resume cue does not age a pending turn")
+ok(cueRecord.archive.length === 0, "a resume cue does not archive a pending turn")
+ok(
+  cueAfter.system.every((part) => !part.text.includes("previous response was interrupted")),
+  "a resume cue never reaches the notice rail",
+)
+ok(
+  cueAfter.messages.some((message) => message.id === "c-late"),
+  "the cue itself is still in the payload",
+)
 
 // The host's own system parts are measured for display, never for a budget.
 const sysStore = new SessionStore()

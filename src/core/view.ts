@@ -39,9 +39,9 @@ export function isMemoryMessage(message: Message | undefined): boolean {
 }
 
 /** Which kind of message the host injected as a *user* turn. */
-export type HostMessageKind = "notice" | "job"
+export type HostMessageKind = "notice" | "job" | "cue"
 
-/** A message the host injected as a user turn: a standing notice, or a job's completion. */
+/** A message the host injected as a user turn: a standing notice, a job's completion, or a resume cue. */
 export interface HostMessage {
   readonly kind: HostMessageKind
   readonly id: string
@@ -52,13 +52,23 @@ export interface HostMessage {
 const OUTPUT_LIMIT_PREFIX = "Your last response hit the output token limit"
 
 /**
+ * The host's one fixed sentence after a response was interrupted, asking the model to resume.
+ *
+ * Matched whole: all 23 live rows are byte-identical. A reworded variant falls
+ * back to being a turn, which is the old behaviour rather than a new mistake.
+ */
+const INTERRUPTED_TEXT =
+  "The previous response was interrupted. Continue from where you left off without repeating completed content."
+
+/**
  * Classify a host-injected user message; `undefined` for a message a person wrote.
  *
- * The host admits three things as a *user* message that no one typed: a Plan/Build
+ * The host admits four things as a *user* message that no one typed: a Plan/Build
  * mode notice (a `<system-reminder>` block, sometimes with a trailing `@n@`
- * marker), the output-token-limit nudge, and a background job's completion (a
- * `<shell>` or `<subagent>` block). All three are one text part under an
- * unprefixed id, so the shape is the only tell.
+ * marker), the output-token-limit nudge, a background job's completion (a
+ * `<shell>` or `<subagent>` block), and the "previous response was interrupted"
+ * resume cue. All four are one text part under an unprefixed id, so the shape is
+ * the only tell.
  *
  * - A *notice* is a standing instruction. Left in place it starts a turn: it
  *   inflates the working window and ages a pending turn on a mode switch the
@@ -66,6 +76,11 @@ const OUTPUT_LIMIT_PREFIX = "Your last response hit the output token limit"
  * - A *job* is the tail of the turn that started it. It stays in the window but
  *   starts no turn, so it annexes to the newest span rather than ageing a pending
  *   eviction on work the model already asked for.
+ * - A *cue* is the same shape of tail, but not a job's result: one transient
+ *   sentence that must reach the model once. It stays in the window and starts no
+ *   turn, and it is never pinned - replaying "continue from where you left off"
+ *   on every later pass would be a stale instruction, and pinning it would hand
+ *   the newest-refusal rail to a nudge instead of the live mode notice.
  */
 export function hostMessageOf(message: Message | undefined): HostMessage | undefined {
   if (message?.role !== "user" || isInjected(message)) return undefined
@@ -81,6 +96,7 @@ export function hostMessageOf(message: Message | undefined): HostMessage | undef
   const id = message.id
   if (/^<system-reminder>[\s\S]*<\/system-reminder>$/u.test(text)) return { kind: "notice", id, text }
   if (text.startsWith(OUTPUT_LIMIT_PREFIX)) return { kind: "notice", id, text }
+  if (text === INTERRUPTED_TEXT) return { kind: "cue", id, text }
   if (/^<shell\b[\s\S]*<\/shell>$/u.test(text) || /^<subagent\b[\s\S]*<\/subagent>$/u.test(text)) {
     return { kind: "job", id, text }
   }
@@ -97,15 +113,26 @@ export function isHostJob(message: Message | undefined): boolean {
   return hostMessageOf(message)?.kind === "job"
 }
 
+/** A host resume cue: kept in the window like a job, but it reports no result. */
+export function isHostCue(message: Message | undefined): boolean {
+  return hostMessageOf(message)?.kind === "cue"
+}
+
+/** Is this host message the tail of the turn that started it, rather than a turn of its own? */
+export function isHostTail(message: Message | undefined): boolean {
+  return isHostJob(message) || isHostCue(message)
+}
+
 /**
  * Is this a user message the conversation actually started a turn with?
  *
- * A job completion is excluded: it belongs to the turn that launched it. A notice
- * is not excluded here because `splitNotices` removes it before the spans are
- * taken; leaving it a boundary keeps that split the thing that matters.
+ * A job completion and a resume cue are excluded: both belong to the turn that
+ * was already running. A notice is not excluded here because `splitNotices`
+ * removes it before the spans are taken; leaving it a boundary keeps that split
+ * the thing that matters.
  */
 export function isRealUser(message: Message | undefined): boolean {
-  return message?.role === "user" && !isInjected(message) && !isHostJob(message)
+  return message?.role === "user" && !isInjected(message) && !isHostTail(message)
 }
 
 /** A host notice (a mode reminder, or the output-limit nudge), when this message is one. */
@@ -120,8 +147,9 @@ export function noticeOf(message: Message | undefined): { id: string; text: stri
  * `rest` is the conversation the window reasons about: no notice, so no phantom
  * turn and no eviction lead burned on a mode switch. `notices` is every notice in
  * transcript order — the mode reminders and the output-token-limit nudge — for the
- * record to pin (deduped by exact text when stored). Job completions are not
- * pulled: they stay in the window and are kept out of the turn count instead.
+ * record to pin (deduped by exact text when stored). Job completions and resume
+ * cues are not pulled: they stay in the window and are kept out of the turn count
+ * instead.
  */
 export function splitNotices(messages: ReadonlyArray<Message>): {
   rest: Message[]
