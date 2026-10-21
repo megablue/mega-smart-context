@@ -84,6 +84,8 @@ The settings a user normally touches:
 | `workingTokens` | `16000` | cap on the verbatim working window, estimated |
 | `autoArchive` | `true` | archive unhandled evictions instead of dropping them |
 | `evictionLead` | `1` | new user turns a pending turn is shown before archiving |
+| `parentArchive` | `true` | let a subagent search its spawning session's archive (`from:"parent"`) |
+| `expandDigestChars` | `8000` | expansion length above which the tool asks the reader to summarize |
 | `subagents` | `true` | manage child sessions independently |
 | `refs` | `true` | allow feature-map references |
 | `debug` | `false` | log pass decisions to stderr |
@@ -93,6 +95,7 @@ The source repository's `docs/SPEC.md` has the full table and the behavior.
 ## Use
 
 - The model writes memory with the `smart_context` tool: `patch`, `read`, `stats`, `ref`, `archive`, `purge`, `recall`, `expand`.
+- A subagent can read its spawning session's archive without importing it: `recall`/`expand` with `from:"parent"`. The field is read-only and never reaches a writing action.
 - `/context` prints the current memory and archive. `/context now` archives pending turns.
 
 Every request starts with a `<smart-context>` block. If `goal` is empty, the model is told to write the request there before the raw first message leaves the working window.

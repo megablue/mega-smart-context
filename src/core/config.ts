@@ -32,6 +32,10 @@ export interface ResolvedConfig {
   archiveMaxTurns: number
   /** Keep the archive under this many characters per session. */
   archiveMaxChars: number
+  /** Let `recall`/`expand` reach the spawning session's archive with from:"parent". */
+  parentArchive: boolean
+  /** On `expand`, say "summarize this" above this many characters instead of quoting. */
+  expandDigestChars: number
   /** Offer the feature-map `ref` action. */
   refs: boolean
   /** Erode one tool result larger than this many characters. */
@@ -52,6 +56,8 @@ export const DEFAULT_CONFIG: ResolvedConfig = {
   autoArchive: true,
   archiveMaxTurns: 200,
   archiveMaxChars: 400_000,
+  parentArchive: true,
+  expandDigestChars: 8_000,
   refs: true,
   maxResultChars: 4_000,
   manualCommand: true,
@@ -68,6 +74,7 @@ const BOOLEAN_KEYS = new Set([
   "enabled",
   "subagents",
   "autoArchive",
+  "parentArchive",
   "refs",
   "manualCommand",
   "debug",
@@ -80,6 +87,7 @@ const NUMBER_KEYS = new Set([
   "evictionLead",
   "archiveMaxTurns",
   "archiveMaxChars",
+  "expandDigestChars",
   "maxResultChars",
 ])
 
@@ -131,6 +139,9 @@ export function parseLayer(value: unknown, source: string): Partial<ResolvedConf
         break
       case "archiveMaxChars":
         out[key] = Math.max(10_000, Math.round(raw))
+        break
+      case "expandDigestChars":
+        out[key] = Math.max(500, Math.round(raw))
         break
       case "maxResultChars":
         out[key] = Math.max(200, Math.round(raw))

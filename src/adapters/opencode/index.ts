@@ -81,7 +81,24 @@ export async function setup(ctx: PluginContext): Promise<() => Promise<void>> {
 
   registrations.push(
     await ctx.tool.transform((editor) => {
-      editor.add(createSmartContextTool({ store, config, featureMap, root: ctx.location.directory }))
+      editor.add(
+        createSmartContextTool({
+          store,
+          config,
+          featureMap,
+          root: ctx.location.directory,
+          // The parent question is a host fact; a host that will not answer
+          // simply has no delegation surface.
+          parentOf: async (sessionID) => {
+            try {
+              const info = await ctx.session.get({ sessionID })
+              return typeof info?.parentID === "string" && info.parentID.length > 0 ? info.parentID : undefined
+            } catch {
+              return undefined
+            }
+          },
+        }),
+      )
     }),
   )
 

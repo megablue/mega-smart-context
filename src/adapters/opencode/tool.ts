@@ -31,8 +31,8 @@ Actions:
 - ref { page, section, gist } — store a feature-map pointer and report the gist vs section cost.
 - archive { turn, gist, keepRaw? } — move a pending turn into the cold archive.
 - purge { turn? | query? } — delete a pending or archived turn, or matching entries.
-- recall { query, lost:true } — search the archive. Requires lost:true: use it only when a fact you need is missing.
-- expand { turn } — read an archived turn back.
+- recall { query, lost:true } — search the archive. Requires lost:true: use it only when a fact you need is missing. A subagent may add from:"parent" to search the session that spawned it, so a delegated archive lookup never pulls the raw turns into its caller's window.
+- expand { turn, from? } — read an archived turn back; from:"parent" reads the spawning session's archive. A result over the digest limit tells you to summarize it rather than quote it.
 - notice { remove? } — list the pinned host notices (a mode switch or an output-limit nudge), or retire a superseded one by id. The newest is the live instruction and is refused.`
 
 export const TOOL_INPUT = {
@@ -61,6 +61,11 @@ export const TOOL_INPUT = {
     lost: { type: "boolean", description: "For action:recall — set true only when a needed fact is missing." },
     keepRaw: { type: "boolean", description: "For action:archive — keep the raw messages for expand." },
     limit: { type: "number", description: "For action:recall — maximum matches (default 5)." },
+    from: {
+      type: "string",
+      enum: ["parent"],
+      description: 'For action:recall/expand — read the spawning session\'s archive instead of this session\'s.',
+    },
   },
   required: ["action"],
   additionalProperties: false,
@@ -71,6 +76,7 @@ export function createSmartContextTool(options: {
   readonly config: ResolvedConfig
   readonly featureMap?: FeatureMapPort
   readonly root: string
+  readonly parentOf?: (sessionID: string) => Promise<string | undefined>
 }): ToolDefinition {
   return {
     name: TOOL_NAME,
@@ -95,6 +101,7 @@ export function createSmartContextTool(options: {
         lost: raw.lost,
         keepRaw: raw.keepRaw,
         limit: raw.limit,
+        from: raw.from,
       }
       const outcome = await runMemoryTool(request, options)
       return { content: [{ type: "text", text: outcome.text }] }

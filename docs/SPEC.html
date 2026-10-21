@@ -171,10 +171,11 @@ img{max-width:100%;height:auto}
 </ul>
 <p>With <code>autoArchive</code> on (the default), an unhandled pending turn is archived after <code>evictionLead</code> new user turns, under a mechanical gist (the first line of its user message and its tools) and with its raw messages kept. The model can purge it later. With <code>autoArchive</code> off, an unhandled turn is dropped when the lead expires.</p>
 <p>The archive is cold storage, not a second working set. <code>smart_context</code> with <code>action:&quot;recall&quot;</code> refuses unless the call includes <code>lost:true</code>; without it, the tool returns an instruction instead of results. <code>expand { turn }</code> returns the raw turn, or the gist when no raw was kept. The archive is capped by <code>archiveMaxTurns</code> and <code>archiveMaxChars</code>, newest wins.</p>
+<p>A delegate can read the archive of the session that spawned it: <code>recall</code> and <code>expand</code> accept <code>from:&quot;parent&quot;</code> (on by default, <code>parentArchive:false</code> turns it off). The field is read-only - every writing action refuses it - and the schema offers no other value. Above <code>expandDigestChars</code> characters an expansion also tells the reader to answer from the turn or summarize it rather than quote it whole.</p>
 </section>
 <section id="subagents">
 <h2>Subagents</h2>
-<p>Every session - top-level or child - has its own memory, working window, pending turns and archive, keyed by session id. A child is detected by <code>parentID</code>. There is no inheritance in either direction; the only bridge is the normal tool result when the child finishes, which the parent can fold into its own memory.</p>
+<p>Every session - top-level or child - has its own memory, working window, pending turns and archive, keyed by session id. A child is detected by <code>parentID</code>. There is no inheritance in either direction; the only write bridge is the normal tool result when the child finishes, which the parent can fold into its own memory. The one read bridge is explicit: a child may pass <code>from:&quot;parent&quot;</code> to <code>recall</code> or <code>expand</code> to search the spawning session&#39;s archive, which it cannot write.</p>
 <p><code>subagents: true</code> (the default) applies the same transform to child sessions. <code>subagents: false</code> leaves child sessions untouched and passes their requests through unchanged.</p>
 </section>
 <section id="stored-state">
@@ -225,12 +226,12 @@ img{max-width:100%;height:auto}
 <td>delete a pending or archived turn, or matching entries</td>
 </tr>
 <tr>
-<td><code>recall { query, lost:true }</code></td>
-<td>search the cold archive; refuses without <code>lost:true</code></td>
+<td><code>recall { query, lost:true, from? }</code></td>
+<td>search the cold archive; refuses without <code>lost:true</code>. <code>from:&quot;parent&quot;</code> searches the spawning session&#39;s archive instead, read-only</td>
 </tr>
 <tr>
-<td><code>expand { turn }</code></td>
-<td>read an archived turn back</td>
+<td><code>expand { turn, from? }</code></td>
+<td>read an archived turn back; <code>from:&quot;parent&quot;</code> reads the spawning session&#39;s, and an oversized turn carries a summarization push</td>
 </tr>
 <tr>
 <td><code>notice { remove? }</code></td>
@@ -336,6 +337,18 @@ img{max-width:100%;height:auto}
 <td><code>archiveMaxChars</code></td>
 <td><code>400000</code></td>
 <td>&gt;= 10000 - archived characters per session</td>
+<td>config file</td>
+</tr>
+<tr>
+<td><code>parentArchive</code></td>
+<td><code>true</code></td>
+<td>bool - allow <code>from:&quot;parent&quot;</code> on <code>recall</code>/<code>expand</code></td>
+<td>config file</td>
+</tr>
+<tr>
+<td><code>expandDigestChars</code></td>
+<td><code>8000</code></td>
+<td>&gt;= 500 - expansion length above which the result asks for a summary</td>
 <td>config file</td>
 </tr>
 <tr>

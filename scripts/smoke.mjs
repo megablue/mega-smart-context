@@ -970,9 +970,131 @@ ok(parentGoal.content[0].text.includes("ship v0.1"), "the parent goal is unchang
 ok(childGoal.content[0].text.includes("child goal"), "the child has its own goal")
 
 // ---------------------------------------------------------------------------
-// Compaction and the command
+// Delegated reads: recall/expand from the spawning session's archive
 // ---------------------------------------------------------------------------
 
+// The core path: a child session with parentOf wired, a parent record holding one
+// archived turn with raw messages, and a config that pins both switches.
+const parentStore = new SessionStore()
+const parentDeps = {
+  store: parentStore,
+  config: resolveConfig({ options: { memoryTokens: 100_000 } }),
+  parentOf: async (sessionID) => (sessionID.startsWith("child") ? "parent-9" : undefined),
+}
+const parentSeed = [
+  user("p1", "The exports live in src/index.ts. ".repeat(3)),
+  assistant("pa1", "Noted. ".repeat(3)),
+]
+await buildPayload({ sessionID: "parent-9", system: [{ type: "text", text: "base" }], messages: parentSeed, model: {} }, parentDeps)
+const seeded = await parentStore.load("parent-9")
+seeded.pending = [] // start from a clean slate; the seats are taken below
+seeded.archive.push({
+  id: "p1",
+  gist: "answer: the exports live in src/index.ts",
+  chars: 500,
+  createdAt: 0,
+  messages: parentSeed.map((message) => ({ ...message })),
+})
+ok(seeded.archive.length === 1, "the parent fixture owns one archived turn")
+
+outcome = await runMemoryTool({ sessionID: "child-9", action: "recall", query: "exports", lost: true, from: "parent" }, parentDeps)
+ok(outcome.ok && outcome.text.includes("spawning session's archive"), "recall from a child searches the parent's archive")
+ok(outcome.text.includes('turn:"p1" from:"parent"'), "the delegated match hints how to expand it")
+ok(outcome.text.includes("Noted.") === false, "the match line keeps the raw turn out of it")
+outcome = await runMemoryTool({ sessionID: "child-9", action: "recall", query: "zzz", lost: true, from: "parent" }, parentDeps)
+ok(outcome.text.includes("in the spawning session's archive"), "a delegated no-match names the archive it searched")
+outcome = await runMemoryTool({ sessionID: "child-9", action: "expand", turn: "p1", from: "parent" }, parentDeps)
+ok(outcome.ok && outcome.text.includes("Noted."), "expand from a child reads the parent's raw turn")
+
+// The way in is narrow: bad value, disabled config, host without the answer, top level.
+outcome = await runMemoryTool({ sessionID: "child-9", action: "recall", query: "x", lost: true, from: "sibling" }, parentDeps)
+ok(!outcome.ok && outcome.text.includes('from must be "parent"'), "a non-parent from is refused")
+outcome = await runMemoryTool(
+  { sessionID: "child-9", action: "expand", turn: "p1", from: "parent" },
+  { ...parentDeps, config: resolveConfig({ options: { parentArchive: false } }) },
+)
+ok(!outcome.ok && outcome.text.includes("parentArchive:false"), "the disabled config refuses the parent read")
+outcome = await runMemoryTool({ sessionID: "child-9", action: "expand", turn: "p1", from: "parent" }, {
+  store: parentStore,
+  config: resolveConfig({}),
+  // no parentOf at all: the host never explained parentage
+})
+ok(!outcome.ok && outcome.text.includes("cannot look up"), "a host without parent facts refuses the parent read")
+outcome = await runMemoryTool({ sessionID: "parent-9", action: "expand", turn: "p1", from: "parent" }, parentDeps)
+ok(!outcome.ok && outcome.text.includes("no parent"), "a top-level session has no parent to read from")
+
+// Writes stay local even when the reader is a delegate: from cannot move them.
+const childRecordBeforePurge = (await parentStore.load("parent-9")).archive.length
+outcome = await runMemoryTool({ sessionID: "child-9", action: "purge", query: "exports", from: "parent" }, parentDeps)
+ok(!outcome.ok && outcome.text.includes("only recall and expand"), "purge refuses to act from")
+ok((await parentStore.load("parent-9")).archive.length === childRecordBeforePurge, "the refused purge left the parent alone")
+outcome = await runMemoryTool({ sessionID: "child-9", action: "recall", query: "x", lost: true, from: true }, parentDeps)
+ok(!outcome.ok && !outcome.text.startsWith("no archived turn"), "a non-string from is refused, not resolved")
+
+// The digest instruction: an oversized expansion says so and pushes summarizing.
+const longTurn = [user("p2", "Long. ".repeat(2200)), assistant("pa2", "Reply. ".repeat(2200))]
+await parentStore.mutate("parent-9", (record) => {
+  record.archive.push({ id: "p2", gist: "long turn", chars: 10_000, createdAt: 0, messages: longTurn })
+})
+const smallExpand = await runMemoryTool({ sessionID: "child-9", action: "expand", turn: "p1", from: "parent" }, parentDeps)
+ok(!smallExpand.text.includes("digest limit"), "a small expansion carries no summarization push")
+const bigExpand = await runMemoryTool({ sessionID: "child-9", action: "expand", turn: "p2", from: "parent" }, parentDeps)
+ok(bigExpand.text.includes("over the 8000-char digest limit"), "an oversized expansion is flagged against the limit")
+ok(bigExpand.text.includes("summarize"), "the flag tells the reader to summarize rather than quote")
+ok(longTurn[0].content[0].text.length === "Long. ".length * 2200, "the oversized fixture is really oversized")
+await parentStore.mutate("parent-9", (record) => {
+  record.archive.push({
+    id: "p3",
+    gist: "mid turn",
+    chars: 3_000,
+    createdAt: 0,
+    messages: [user("p3", "Mid. ".repeat(200)), assistant("pa3", "Still. ".repeat(200))],
+  })
+})
+outcome = await runMemoryTool({ sessionID: "child-9", action: "expand", turn: "p3", from: "parent" }, parentDeps)
+ok(!outcome.text.includes("digest limit"), "a mid-size expansion stays under the default limit")
+outcome = await runMemoryTool(
+  { sessionID: "child-9", action: "expand", turn: "p3", from: "parent" },
+  { ...parentDeps, config: resolveConfig({ options: { expandDigestChars: 1_500 } }) },
+)
+ok(outcome.text.includes("over the 1500-char digest limit"), "the threshold follows the configured number")
+
+// The host path: the fixture gives every "child*" session the parent "parent-1".
+// Give that parent a real archive: four passes over a growing transcript — one to
+// bootstrap the seen turns, one to evict them into pending, one to age them past
+// the lead, one to confirm the archive the delegate will read.
+const parentEvent = () => ({ sessionID: "parent-1", system: [{ type: "text", text: "base" }], messages: [], tools: {}, model: {} })
+const parentGrow = [
+  ...transcript3,
+  user("u7", "One more. ".repeat(20)),
+  assistant("a8", "More. ".repeat(20)),
+]
+const parentGrow2 = [
+  ...parentGrow,
+  user("u8", "Again. ".repeat(20)),
+  assistant("a9", "Ok. ".repeat(20)),
+]
+for (const messages of [[...transcript2], [...transcript3], parentGrow, parentGrow2]) {
+  await host.hooks.context({ ...parentEvent(), messages })
+}
+const parentStats = (await tool.execute({ action: "stats" }, { ...callContext, sessionID: "parent-1" })).content[0].text
+ok(/archive [1-9]/.test(parentStats), "the parent fixture owns archived turns")
+
+outcome = await tool.execute({ action: "recall", query: "New turn", lost: true, from: "parent" }, childContext)
+ok(outcome.content[0].text.includes("spawning session's archive"), "the host-wired tool delegates recall to the parent")
+outcome = await tool.execute({ action: "expand", turn: "u4", from: "parent" }, childContext)
+ok(outcome.content[0].text.includes("Done."), "the host-wired tool expands the parent's turn")
+outcome = await tool.execute({ action: "archive", turn: "u4", gist: "moving in", from: "parent" }, childContext)
+ok(outcome.content[0].text.includes("only recall and expand"), "the host-wired tool refuses a delegated write")
+const fromSchema = tool.input?.properties?.from
+ok(
+  JSON.stringify(fromSchema?.enum) === '["parent"]' && /recall\/expand/.test(String(fromSchema?.description ?? "")),
+  "the schema exposes from only as parent",
+)
+
+// ---------------------------------------------------------------------------
+// Compaction and the command
+// ---------------------------------------------------------------------------
 const compaction = { sessionID: "s1", system: [], messages: [], tools: {} }
 const compactionOutcome = await host.hooks.compaction(compaction)
 ok(compactionOutcome?.owned === true, "compaction is owned when memory is non-empty")

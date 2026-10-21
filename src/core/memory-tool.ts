@@ -40,6 +40,7 @@ export interface MemoryToolInput {
   lost?: unknown
   keepRaw?: unknown
   limit?: unknown
+  from?: unknown
 }
 
 export interface MemoryToolRequest extends MemoryToolInput {
@@ -51,6 +52,8 @@ export interface MemoryToolDeps {
   readonly config: ResolvedConfig
   readonly featureMap?: FeatureMapPort
   readonly root?: string
+  /** The spawning session of the given session, when the host tracks one. */
+  readonly parentOf?: (sessionID: string) => Promise<string | undefined>
   readonly now?: () => number
 }
 
@@ -59,19 +62,78 @@ export interface MemoryToolOutcome {
   readonly ok: boolean
 }
 
+/** Actions that cannot take from: they write, and writes act on this session. */
+const MUTATING_ACTIONS = new Set(["read", "patch", "stats", "ref", "archive", "purge", "notice"])
+
 export const TOOL_HELP = `smart_context actions:
-- read { key? }                          print one memory key, or the whole document
+- read { key? }                           print one memory key, or the whole document
 - patch { patch: { ... } }               merge a patch (maps merge, lists replace, null resets)
 - stats                                 memory/working/archive usage
 - ref { page, section, gist }            store a feature-map pointer and compare costs
 - archive { turn, gist, keepRaw? }       move a pending turn to the archive
 - purge { turn? | query? }               delete a pending/archived turn, or matching entries
-- recall { query, lost:true }            search the archive only when a fact is missing
-- expand { turn }                        read an archived turn back
+- recall { query, lost:true, from? }     search the archive only when a fact is missing; from:"parent" searches the spawning session's archive
+- expand { turn, from? }                 read an archived turn back
 - notice { remove? }                     list the pinned host notices, or drop a superseded one`
 
 function str(value: unknown): string | undefined {
   return typeof value === "string" && value.trim().length > 0 ? value.trim() : undefined
+}
+
+/**
+ * The record recall and expand act on.
+ *
+ * `from: "parent"` points them at the session that spawned this one, so a
+ * delegate can search its caller's archive without the raw turns landing in
+ * the caller's window. Only these two actions take the field: every mutating
+ * one (patch, ref, archive, purge, notice) keeps writing to the caller's own
+ * record, so delegation reads a parent's past but can never rewrite it.
+ *
+ * The parent lookup is a host fact, so a host that cannot answer, a top-level
+ * session and a disabled config each get their own refusal.
+ */
+async function targetRecord(
+  deps: MemoryToolDeps,
+  request: MemoryToolRequest,
+  sessionID: string,
+): Promise<SessionRecord | MemoryToolOutcome> {
+  if (request.from === undefined || request.from === null) return deps.store.load(sessionID)
+  if (request.from !== "parent") {
+    return { text: `smart_context: from must be "parent", not ${JSON.stringify(request.from)}`, ok: false }
+  }
+  if (deps.config.parentArchive !== true) {
+    return { text: "smart_context: cross-session archive reads are off (config parentArchive:false)", ok: false }
+  }
+  if (deps.parentOf === undefined) {
+    return { text: "smart_context: this host cannot look up a session's parent", ok: false }
+  }
+  const parent = await deps.parentOf(sessionID)
+  if (parent === undefined || parent === sessionID) {
+    return { text: 'smart_context: this session has no parent, so from:"parent" has nothing to read', ok: false }
+  }
+  return deps.store.load(parent)
+}
+
+function isOutcome(value: SessionRecord | MemoryToolOutcome): value is MemoryToolOutcome {
+  return "text" in value
+}
+
+/**
+ * The line that follows an oversized expansion, in place of nothing.
+ *
+ * A raw turn can run to thousands of characters, and a reader quoting it
+ * wholesale pays for every one of them twice — once in its own window and once
+ * in whatever it replies to. Above `expandDigestChars` the result itself tells
+ * the reader to digest instead, which is what makes the delegation contract
+ * self-enforcing: the subagent that expands the parent's turn sees the
+ * instruction exactly when it is about to reply.
+ */
+function digestHint(text: string, config: ResolvedConfig): string {
+  if (text.length <= config.expandDigestChars) return ""
+  return (
+    `\n(the turn runs to ~${text.length} chars, over the ${config.expandDigestChars}-char digest limit: ` +
+    "answer from it or summarize it rather than quoting it whole)"
+  )
 }
 
 function usage(record: SessionRecord, config: ResolvedConfig): string {
@@ -259,6 +321,12 @@ export async function runMemoryTool(
   const sessionID = request.sessionID
   if (sessionID.length === 0) return { text: "smart_context: no session id", ok: false }
   const action = typeof request.action === "string" ? request.action : ""
+  if (MUTATING_ACTIONS.has(action) && request.from !== undefined) {
+    return {
+      text: 'smart_context: from is read-only and only recall and expand take it; writes act on this session',
+      ok: false,
+    }
+  }
 
   switch (action) {
     case "read": {
@@ -290,33 +358,41 @@ export async function runMemoryTool(
       }
       const query = str(request.query)
       if (query === undefined) return { text: "smart_context: recall needs a query", ok: false }
-      const record = await deps.store.load(sessionID)
+      const target = await targetRecord(deps, request, sessionID)
+      if (isOutcome(target)) return target
+      const fromParent = request.from === "parent"
       const limit = typeof request.limit === "number" && Number.isFinite(request.limit) ? request.limit : 5
-      const found = recall(record, query, limit)
-      if (found.length === 0) return { text: `no archived turn matches ${JSON.stringify(query)}`, ok: true }
+      const found = recall(target, query, limit)
+      if (found.length === 0) {
+        return { text: `no archived turn matches ${JSON.stringify(query)}${fromParent ? " in the spawning session's archive" : ""}`, ok: true }
+      }
+      const hint = fromParent ? ' from:"parent"' : ""
       return {
         text:
-          "archive matches:\n" +
+          `archive matches${fromParent ? " in the spawning session's archive" : ""}:\n` +
           found
             .map(
               (entry) =>
                 `- ${entry.id} · ${entry.gist}` +
-                (entry.messages === undefined ? " (gist only)" : ` (expand: action:"expand" turn:"${entry.id}")`),
+                (entry.messages === undefined ? " (gist only)" : ` (expand: action:"expand" turn:"${entry.id}"${hint})`),
             )
-            .join("\n"),
+            .join("\n") +
+          (fromParent ? "\n(delegating: report the substance of what you found, not the raw turns)" : ""),
         ok: true,
       }
     }
     case "expand": {
       const turn = str(request.turn)
       if (turn === undefined) return { text: "smart_context: expand needs turn", ok: false }
-      const record = await deps.store.load(sessionID)
-      const entry = findArchived(record, turn)
+      const target = await targetRecord(deps, request, sessionID)
+      if (isOutcome(target)) return target
+      const entry = findArchived(target, turn)
       if (entry === undefined) return { text: `smart_context: no archived turn ${JSON.stringify(turn)}`, ok: false }
       if (entry.messages === undefined) {
         return { text: `${entry.gist}\n(gist only; no raw messages were kept)`, ok: true }
       }
-      return { text: renderTurn(entry.messages, 20_000), ok: true }
+      const text = renderTurn(entry.messages, 20_000)
+      return { text: text + digestHint(text, deps.config), ok: true }
     }
     default:
       return { text: TOOL_HELP, ok: false }
