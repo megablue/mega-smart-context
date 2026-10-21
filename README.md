@@ -88,9 +88,12 @@ The settings a user normally touches:
 | `expandDigestChars` | `4000` | characters per `expand` page, clamped by `maxResultChars` |
 | `subagents` | `true` | manage child sessions independently |
 | `refs` | `true` | allow feature-map references |
+| `updateCheck` | `true` | ask GitHub once a day for a newer version (one TUI toast per release) |
 | `debug` | `false` | log pass decisions to stderr |
 
 The source repository's `docs/SPEC.md` has the full table and the behavior.
+
+The update check is the only network call the plugin makes, and it runs in the TUI, not in a request: at most one `GET` of this repository's `package.json` per 24 hours, then a toast when the published version is newer than the loaded one. Nothing about it is sent to the model. `"updateCheck": false` in the user file switches it off.
 
 ## Use
 

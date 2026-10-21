@@ -42,6 +42,8 @@ export interface ResolvedConfig {
   maxResultChars: number
   /** Register the `/context` command. */
   manualCommand: boolean
+  /** Let the TUI half ask GitHub once a day for a newer version. */
+  updateCheck: boolean
   /** Log pass decisions to stderr. */
   debug: boolean
 }
@@ -61,6 +63,7 @@ export const DEFAULT_CONFIG: ResolvedConfig = {
   refs: true,
   maxResultChars: 4_000,
   manualCommand: true,
+  updateCheck: true,
   debug: false,
 }
 
@@ -77,6 +80,7 @@ const BOOLEAN_KEYS = new Set([
   "parentArchive",
   "refs",
   "manualCommand",
+  "updateCheck",
   "debug",
 ])
 

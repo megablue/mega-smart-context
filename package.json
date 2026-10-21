@@ -1,6 +1,6 @@
 {
   "name": "mega-smart-context",
-  "version": "0.1.21",
+  "version": "0.1.22",
   "megaSmartContext": {
     "countBase": 3
   },
@@ -11,10 +11,12 @@
   "exports": {
     ".": "./server.ts",
     "./server": "./server.ts",
+    "./tui": "./tui.ts",
     "./package.json": "./package.json"
   },
   "files": [
     "server.ts",
+    "tui.ts",
     "src",
     "scripts",
     "options.json",

@@ -13,5 +13,6 @@
   "refs": true,
   "maxResultChars": 4000,
   "manualCommand": true,
+  "updateCheck": true,
   "debug": false
 }

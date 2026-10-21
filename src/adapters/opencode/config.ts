@@ -78,13 +78,17 @@ export function readUserConfig(file = userConfigPath()): unknown {
 }
 
 /**
- * Resolve the config for one host context.
+ * Resolve the three layers for a given `options` layer.
  *
- * A write failure is reported and does not stop the plugin; an unknown key or a
- * wrong type throws, because a setting the user believes is in force but is not
- * is worse than a plugin that refuses to start.
+ * Split out from {@link resolveHostConfig} because the TUI half resolves the
+ * same files in a different process and must honour the same
+ * `mega-smart-context.json` - a switch that stopped one half but not the other
+ * would be a trap. `warn` is optional there: a toast is not worth a console.
  */
-export function resolveHostConfig(ctx: PluginContext, warn: (line: string) => void): ResolvedConfig {
+export function resolveLayeredConfig(
+  options: unknown,
+  warn: (line: string) => void = () => {},
+): ResolvedConfig {
   let user: unknown
   if (process.env[NO_USER_CONFIG_ENV] !== "1") {
     const file = userConfigPath()
@@ -99,5 +103,16 @@ export function resolveHostConfig(ctx: PluginContext, warn: (line: string) => vo
       warn("user config unreadable: " + messageOf(error))
     }
   }
-  return resolveConfig({ package: readPackageOptions(), options: ctx.options, user })
+  return resolveConfig({ package: readPackageOptions(), options, user })
+}
+
+/**
+ * Resolve the config for one host context.
+ *
+ * A write failure is reported and does not stop the plugin; an unknown key or a
+ * wrong type throws, because a setting the user believes is in force but is not
+ * is worse than a plugin that refuses to start.
+ */
+export function resolveHostConfig(ctx: PluginContext, warn: (line: string) => void): ResolvedConfig {
+  return resolveLayeredConfig(ctx.options, warn)
 }

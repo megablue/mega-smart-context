@@ -31,6 +31,17 @@ import { extractHtmlSection, extractSection, htmlToText, pageCandidates } from "
 import { deriveVersion, readVersionBase } from "../src/core/version.ts"
 import { balanceCuts, erodeToolResults, hostMessageOf, isHostCue, isHostJob, isHostMessage, isHostTail, isRealUser, noticeOf, selectWorkingWindow, splitNotices, turnSpans } from "../src/core/view.ts"
 import { livenessFromError } from "../src/adapters/opencode/sessions.ts"
+import { readPluginVersion } from "../src/adapters/opencode/version.ts"
+import {
+  CHECK_INTERVAL_MS,
+  announceVersion,
+  compareVersions,
+  dueForCheck,
+  parseManifestVersion,
+  updateAvailable,
+  updateMessage,
+} from "../src/core/update.ts"
+import { setup as setupTui } from "../tui.ts"
 import {
   DEFAULT_KEEP,
   DEFAULT_SUMMARY,
@@ -1175,6 +1186,124 @@ const childPassThrough = {
 const before = childPassThrough.messages.length
 await host2.hooks.context(childPassThrough)
 ok(childPassThrough.messages.length === before, "subagents:false leaves a child session alone")
+
+// ---------------------------------------------------------------------------
+// The update check: pure arithmetic, then the TUI half over a fake context
+// ---------------------------------------------------------------------------
+ok(compareVersions("0.1.9", "0.1.10") < 0, "versions compare per segment, not as text")
+ok(compareVersions("0.1.21", "0.1.21") === 0, "equal versions compare equal")
+ok(compareVersions("1.0.0", "0.9.9") > 0, "the major segment decides first")
+ok(compareVersions("v0.2", "0.1.9") > 0, "a leading v and a missing patch are tolerated")
+ok(updateAvailable("0.1.21", "0.1.22"), "a newer published version is available")
+ok(!updateAvailable("0.1.22", "0.1.22"), "the same version is not an update")
+ok(!updateAvailable("0.2.0", "0.1.99"), "a regression is not an update")
+ok(!updateAvailable("0.1.21", "not-a-version"), "a malformed manifest never looks newer")
+ok(dueForCheck(0, 1_000_000), "a check that never ran is due")
+ok(!dueForCheck(1_000_000, 1_000_000), "a check just made is not due")
+ok(dueForCheck(1_000_000, 1_000_000 + CHECK_INTERVAL_MS), "a check is due after the interval")
+ok(
+  !dueForCheck(1_000_000, 1_000_000 + CHECK_INTERVAL_MS - 1),
+  "the interval is not shortened by a millisecond",
+)
+ok(CHECK_INTERVAL_MS === 24 * 60 * 60 * 1000, "the check is daily")
+ok(parseManifestVersion('{"version":"0.1.23"}') === "0.1.23", "the manifest's version is read")
+ok(parseManifestVersion("not json") === undefined, "a non-JSON body has no version")
+ok(parseManifestVersion('{"version":23}') === undefined, "a non-string version is ignored")
+ok(announceVersion("0.1.21", "0.1.22", "") === "0.1.22", "a newer version is announced once")
+ok(
+  announceVersion("0.1.21", "0.1.22", "0.1.22") === undefined,
+  "an already announced version stays quiet",
+)
+ok(announceVersion("0.1.21", "0.1.21", "") === undefined, "up-to-date is silent")
+ok(announceVersion(undefined, "0.1.22", "") === undefined, "an unknown installed version is silent")
+ok(
+  updateMessage("0.1.21", "0.1.22").includes("0.1.22") &&
+    updateMessage("0.1.21", "0.1.22").includes("0.1.21") &&
+    updateMessage("0.1.21", "0.1.22").includes("npm run plugin:install"),
+  "the toast names both versions and the update step",
+)
+
+/** A TUI context just real enough for `tui.ts`: no renderer, no host. */
+function makeTui(options, state) {
+  const toasts = []
+  const seen = { fetches: 0, listeners: 0 }
+  const context = {
+    options,
+    storage: {
+      store: () => [
+        state,
+        async (mutation) => {
+          mutation(state)
+        },
+      ],
+    },
+    ui: { toast: { show: (toast) => toasts.push(toast) } },
+    data: {
+      on: () => {
+        seen.listeners += 1
+        return () => {}
+      },
+    },
+  }
+  return { context, toasts, seen }
+}
+
+async function settle(predicate) {
+  for (let attempt = 0; attempt < 200; attempt += 1) {
+    if (predicate()) return
+    await new Promise((done) => setTimeout(done, 5))
+  }
+  assert.ok(predicate(), "the update check did not settle")
+}
+
+const realFetch = globalThis.fetch
+let published = "0.1.99"
+let fetchCount = 0
+globalThis.fetch = async () => {
+  fetchCount += 1
+  return new Response(JSON.stringify({ version: published }), { status: 200 })
+}
+
+const updateState = { checkedAt: 0, latest: "", notified: "" }
+const tuiOne = makeTui({}, updateState)
+const stopTui = await setupTui(tuiOne.context)
+await settle(() => tuiOne.toasts.length === 1)
+ok(tuiOne.toasts.length === 1, "the TUI half toasts once for a newer version")
+ok(
+  tuiOne.toasts[0].message.includes("0.1.99 is available"),
+  "the toast names the published version",
+)
+ok(
+  tuiOne.toasts[0].message.includes(readPluginVersion()),
+  "the toast names the loaded version",
+)
+ok(updateState.notified === "0.1.99" && updateState.checkedAt > 0, "the check records what it said")
+ok(tuiOne.seen.listeners === 1, "the check wakes on session.idle")
+
+const fetchesAfterFirst = fetchCount
+const tuiTwo = makeTui({}, updateState)
+await setupTui(tuiTwo.context)
+await new Promise((done) => setTimeout(done, 50))
+ok(fetchCount === fetchesAfterFirst, "a second start inside 24h makes no request")
+ok(tuiTwo.toasts.length === 0, "a second start inside 24h does not toast")
+
+updateState.checkedAt = 0
+const tuiThree = makeTui({}, updateState)
+await setupTui(tuiThree.context)
+await settle(() => fetchCount > fetchesAfterFirst)
+await new Promise((done) => setTimeout(done, 50))
+ok(tuiThree.toasts.length === 0, "a version already announced is not announced again")
+
+const fetchesBeforeOptOut = fetchCount
+const quietState = { checkedAt: 0, latest: "", notified: "" }
+const tuiFour = makeTui({ updateCheck: false }, quietState)
+await setupTui(tuiFour.context)
+await new Promise((done) => setTimeout(done, 50))
+ok(fetchCount === fetchesBeforeOptOut, "updateCheck:false performs no request")
+ok(tuiFour.toasts.length === 0, "updateCheck:false says nothing")
+
+stopTui()
+globalThis.fetch = realFetch
 
 await dispose()
 console.log(`smoke: ${passed} assertions passed`)

@@ -190,6 +190,10 @@ img{max-width:100%;height:auto}
 <h2>Feature-map references</h2>
 <p><code>smart_context { action:&quot;ref&quot;, page, section, gist }</code> stores a pointer plus the model&#39;s own one-liner. It reads the section from <code>docs/features/&lt;page&gt;</code> - the HTML page first, the Markdown page as a fallback - reports the gist and section costs, and tells the model which is shorter. The reference counts toward <code>memoryTokens</code>. A section that cannot be read is reported, but the pointer is still stored.</p>
 </section>
+<section id="the-update-check">
+<h2>The update check</h2>
+<p>At most once every 24 hours the terminal half of the plugin compares the version it loaded with this repository&#39;s published <code>package.json</code>. When the published number is newer it shows one toast - <code>0.1.22 is available (installed 0.1.21) - git pull &amp;&amp; npm run plugin:install</code> - and stays quiet about that release until a newer one exists. Nothing about the check reaches the model: it adds no request part, no policy and no tokens, and every failure is silent. <code>updateCheck: false</code> in the config file stops both the request and the toast. A <em>first</em> install may need a restart before the terminal half is loaded.</p>
+</section>
 <section id="the-model-surface">
 <h2>The model surface</h2>
 <p><code>smart_context</code> actions:</p>
@@ -367,6 +371,12 @@ img{max-width:100%;height:auto}
 <td><code>manualCommand</code></td>
 <td><code>true</code></td>
 <td>bool - register <code>/context</code></td>
+<td>config file</td>
+</tr>
+<tr>
+<td><code>updateCheck</code></td>
+<td><code>true</code></td>
+<td>bool - ask GitHub once a day for a newer published version and toast once per release; no request and no toast when false</td>
 <td>config file</td>
 </tr>
 <tr>
