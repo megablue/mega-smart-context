@@ -34,7 +34,7 @@ export interface ResolvedConfig {
   archiveMaxChars: number
   /** Let `recall`/`expand` reach the spawning session's archive with from:"parent". */
   parentArchive: boolean
-  /** On `expand`, say "summarize this" above this many characters instead of quoting. */
+  /** Characters per `expand` page, clamped by `maxResultChars` when used. */
   expandDigestChars: number
   /** Offer the feature-map `ref` action. */
   refs: boolean
@@ -57,7 +57,7 @@ export const DEFAULT_CONFIG: ResolvedConfig = {
   archiveMaxTurns: 200,
   archiveMaxChars: 400_000,
   parentArchive: true,
-  expandDigestChars: 8_000,
+  expandDigestChars: 4_000,
   refs: true,
   maxResultChars: 4_000,
   manualCommand: true,

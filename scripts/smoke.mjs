@@ -1000,11 +1000,17 @@ ok(seeded.archive.length === 1, "the parent fixture owns one archived turn")
 outcome = await runMemoryTool({ sessionID: "child-9", action: "recall", query: "exports", lost: true, from: "parent" }, parentDeps)
 ok(outcome.ok && outcome.text.includes("spawning session's archive"), "recall from a child searches the parent's archive")
 ok(outcome.text.includes('turn:"p1" from:"parent"'), "the delegated match hints how to expand it")
-ok(outcome.text.includes("Noted.") === false, "the match line keeps the raw turn out of it")
+ok(outcome.text.includes("exports") && outcome.text.length < 1_200, "a match carries a snippet, not a replay of the turn")
 outcome = await runMemoryTool({ sessionID: "child-9", action: "recall", query: "zzz", lost: true, from: "parent" }, parentDeps)
 ok(outcome.text.includes("in the spawning session's archive"), "a delegated no-match names the archive it searched")
 outcome = await runMemoryTool({ sessionID: "child-9", action: "expand", turn: "p1", from: "parent" }, parentDeps)
 ok(outcome.ok && outcome.text.includes("Noted."), "expand from a child reads the parent's raw turn")
+
+// Recall matches terms, not one contiguous phrase: "exports index.ts" is not a
+// substring of the turn, but every word is in it.
+outcome = await runMemoryTool({ sessionID: "child-9", action: "recall", query: "exports index.ts", lost: true, from: "parent" }, parentDeps)
+ok(outcome.ok && outcome.text.includes('turn:"p1"'), "recall matches terms that are not adjacent")
+ok(/@\d+ /.test(outcome.text), "a snippet reports the offset it sits at")
 
 // The way in is narrow: bad value, disabled config, host without the answer, top level.
 outcome = await runMemoryTool({ sessionID: "child-9", action: "recall", query: "x", lost: true, from: "sibling" }, parentDeps)
@@ -1031,33 +1037,76 @@ ok((await parentStore.load("parent-9")).archive.length === childRecordBeforePurg
 outcome = await runMemoryTool({ sessionID: "child-9", action: "recall", query: "x", lost: true, from: true }, parentDeps)
 ok(!outcome.ok && !outcome.text.startsWith("no archived turn"), "a non-string from is refused, not resolved")
 
-// The digest instruction: an oversized expansion says so and pushes summarizing.
+// Paging: a long turn comes back in honest pages sized under the compression
+// limit, so the next pass cannot cut a page in the middle.
 const longTurn = [user("p2", "Long. ".repeat(2200)), assistant("pa2", "Reply. ".repeat(2200))]
+const deepTurn = [user("p4", "Head. "), assistant("pa4", "filler ".repeat(8000) + " zebra")]
 await parentStore.mutate("parent-9", (record) => {
   record.archive.push({ id: "p2", gist: "long turn", chars: 10_000, createdAt: 0, messages: longTurn })
+  record.archive.push({ id: "p4", gist: "a deep turn", chars: 60_000, createdAt: 0, messages: deepTurn })
 })
-const smallExpand = await runMemoryTool({ sessionID: "child-9", action: "expand", turn: "p1", from: "parent" }, parentDeps)
-ok(!smallExpand.text.includes("digest limit"), "a small expansion carries no summarization push")
-const bigExpand = await runMemoryTool({ sessionID: "child-9", action: "expand", turn: "p2", from: "parent" }, parentDeps)
-ok(bigExpand.text.includes("over the 8000-char digest limit"), "an oversized expansion is flagged against the limit")
-ok(bigExpand.text.includes("summarize"), "the flag tells the reader to summarize rather than quote")
-ok(longTurn[0].content[0].text.length === "Long. ".length * 2200, "the oversized fixture is really oversized")
-await parentStore.mutate("parent-9", (record) => {
-  record.archive.push({
-    id: "p3",
-    gist: "mid turn",
-    chars: 3_000,
-    createdAt: 0,
-    messages: [user("p3", "Mid. ".repeat(200)), assistant("pa3", "Still. ".repeat(200))],
-  })
-})
-outcome = await runMemoryTool({ sessionID: "child-9", action: "expand", turn: "p3", from: "parent" }, parentDeps)
-ok(!outcome.text.includes("digest limit"), "a mid-size expansion stays under the default limit")
-outcome = await runMemoryTool(
-  { sessionID: "child-9", action: "expand", turn: "p3", from: "parent" },
+const first = await runMemoryTool({ sessionID: "child-9", action: "expand", turn: "p2", from: "parent" }, parentDeps)
+ok(first.ok && first.text.includes("continue with offset:"), "a long expansion is paged, not truncated")
+const footer = /\(chars (\d+)–(\d+) of (\d+); (continue with offset:(\d+)|end of turn)\)/.exec(first.text)
+ok(footer !== null, "a page footer reports its own range and the turn's size")
+const total = Number(footer?.[3] ?? 0)
+ok(total > 20_000, "the footer reports the whole turn, not the page")
+ok(first.text.length <= parentDeps.config.maxResultChars, "a page plus its footer stays under the compression limit")
+
+const next = await runMemoryTool(
+  { sessionID: "child-9", action: "expand", turn: "p2", offset: Number(footer?.[5]), from: "parent" },
+  parentDeps,
+)
+const secondFooter = /\(chars (\d+)–(\d+) of (\d+);/.exec(next.text)
+ok(secondFooter?.[1] === footer?.[2], "the next page starts where the last one ended")
+ok(Number(secondFooter?.[3] ?? 0) === total, "every page reports the same total")
+
+const tail = await runMemoryTool(
+  { sessionID: "child-9", action: "expand", turn: "p2", offset: total - 100, from: "parent" },
+  parentDeps,
+)
+ok(tail.ok && tail.text.includes("end of turn"), "the last page says end of turn")
+const fromEnd = await runMemoryTool(
+  { sessionID: "child-9", action: "expand", turn: "p2", offset: -100, from: "parent" },
+  parentDeps,
+)
+ok(fromEnd.ok && fromEnd.text.includes("end of turn"), "a negative offset counts from the end")
+const pastEnd = await runMemoryTool(
+  { sessionID: "child-9", action: "expand", turn: "p2", offset: 10_000_000, from: "parent" },
+  parentDeps,
+)
+ok(pastEnd.ok && pastEnd.text.startsWith(`(chars ${total}–${total} of ${total}; end of turn)`), "an offset past the end is an empty end page")
+
+// A turn that fits is one page, and says so rather than pushing a summary.
+const whole = await runMemoryTool({ sessionID: "child-9", action: "expand", turn: "p1", from: "parent" }, parentDeps)
+ok(whole.text.includes("end of turn") && !whole.text.includes("continue with offset:"), "a turn that fits is one page")
+const sized = await runMemoryTool(
+  { sessionID: "child-9", action: "expand", turn: "p2", from: "parent" },
   { ...parentDeps, config: resolveConfig({ options: { expandDigestChars: 1_500 } }) },
 )
-ok(outcome.text.includes("over the 1500-char digest limit"), "the threshold follows the configured number")
+ok(sized.text.length <= 1_500, "the page size follows the configured number")
+
+// The outline is the map: one line per part, its offset and its size in one page.
+const outline = await runMemoryTool({ sessionID: "child-9", action: "expand", turn: "p2", mode: "outline", from: "parent" }, parentDeps)
+ok(outline.ok && outline.text.includes("@0 [user]") && outline.text.includes("@13208 [assistant]"), "the outline names where each part sits")
+ok(/\+\d+ chars\]/.test(outline.text) && outline.text.includes(`${total} chars`), "the outline names the elided size and the total")
+ok(outline.text.length <= parentDeps.config.maxResultChars, "the outline fits one result")
+const badMode = await runMemoryTool({ sessionID: "child-9", action: "expand", turn: "p2", mode: "digest", from: "parent" }, parentDeps)
+ok(!badMode.ok && badMode.text.includes('"page"') && badMode.text.includes('"outline"'), "expand mode must be page or outline")
+
+// A delegated read names the reply budget, because the caller's next pass erodes
+// the child's answer to maxResultChars no matter how long it wrote.
+ok(first.text.includes("your caller keeps at most 4000 chars of your reply"), "a delegated expand names the reply budget")
+const delegatedRecall = await runMemoryTool({ sessionID: "child-9", action: "recall", query: "exports", lost: true, from: "parent" }, parentDeps)
+ok(delegatedRecall.text.includes("your caller keeps at most 4000 chars"), "a delegated recall names the reply budget")
+const localRecall = await runMemoryTool({ sessionID: "child-9", action: "recall", query: "exports", lost: true }, parentDeps)
+ok(!localRecall.text.includes("delegating:"), "a local recall carries no delegation note")
+
+// Search covers the whole turn: the old 40,000-char render stopped well short.
+const deep = await runMemoryTool({ sessionID: "child-9", action: "recall", query: "zebra", lost: true, from: "parent" }, parentDeps)
+ok(deep.ok && deep.text.includes('turn:"p4"'), "recall finds a term past the old forty-thousand cap")
+const deepAt = /@(\d+) /.exec(deep.text)
+ok(Number(deepAt?.[1] ?? 0) > 40_000, "a deep snippet reports its real offset")
 
 // The host path: the fixture gives every "child*" session the parent "parent-1".
 // Give that parent a real archive: four passes over a growing transcript — one to

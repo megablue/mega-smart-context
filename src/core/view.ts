@@ -398,33 +398,167 @@ export function previewOf(span: TurnSpan, charsPerToken: number): string {
   return `user: ${JSON.stringify(user)} · tools: ${tools} · ~${tokens} est`
 }
 
-/** Render archived messages back to text, for `expand`. */
-export function renderTurn(messages: ReadonlyArray<Message>, maxChars = 20_000): string {
-  const lines: string[] = []
-  let used = 0
+/** One rendered part: its text, and where that text starts in the full render. */
+interface RenderLine {
+  readonly offset: number
+  readonly text: string
+}
+
+/**
+ * One line per content part, in order, with the offset each line starts at.
+ *
+ * A part is exactly one line, so a line boundary is a safe cut: text, a tool
+ * call and a tool result are never split, and an offset reported by a page or a
+ * snippet points at the same character `expand offset:` will resume from.
+ */
+function renderLines(messages: ReadonlyArray<Message>): RenderLine[] {
+  const lines: RenderLine[] = []
+  let offset = 0
   for (const message of messages) {
     for (const part of message.content ?? []) {
       if (part.type === "reasoning") continue
+      let text: string
       if (part.type === "text") {
-        const line = `[${message.role}] ${(part as any).text}`
-        lines.push(line)
-        used += line.length
+        text = `[${message.role}] ${(part as any).text}`
       } else if (part.type === "tool-call") {
         const call = part as ToolCallPart
-        const line = `[tool-call ${call.name}] ${JSON.stringify(call.input)}`
-        lines.push(line)
-        used += line.length
+        text = `[tool-call ${call.name}] ${JSON.stringify(call.input)}`
       } else if (part.type === "tool-result") {
         const result = part as ToolResultPart
-        const line = `[tool-result ${result.name}] ${valueText(result)}`
-        lines.push(line)
-        used += line.length
+        text = `[tool-result ${result.name}] ${valueText(result)}`
+      } else {
+        continue
       }
-      if (used >= maxChars) {
-        lines.push(`[… ${maxChars} chars shown …]`)
-        return lines.join("\n")
-      }
+      lines.push({ offset, text })
+      offset += text.length + 1
     }
   }
-  return lines.join("\n")
+  return lines
+}
+
+/** The whole turn as text, nothing elided. */
+export function renderTurnFull(messages: ReadonlyArray<Message>): string {
+  return renderLines(messages)
+    .map((line) => line.text)
+    .join("\n")
+}
+
+/** Render archived messages back to text, shortened to `maxChars` at a part boundary. */
+export function renderTurn(messages: ReadonlyArray<Message>, maxChars = 20_000): string {
+  const lines = renderLines(messages)
+  const out: string[] = []
+  let used = 0
+  for (const line of lines) {
+    if (used >= maxChars) {
+      out.push(`[… ${maxChars} chars shown …]`)
+      return out.join("\n")
+    }
+    out.push(line.text)
+    used += line.text.length + 1
+  }
+  return out.join("\n")
+}
+
+/** Room a page footer needs; the body is cut short by this so the whole result fits. */
+const FOOTER_RESERVE = 140
+
+/** The page size `expand` assumes when nothing says otherwise. */
+export const DEFAULT_EXPAND_BUDGET = 4_000
+
+/** One page of a turn, with the honest totals the reader needs to continue. */
+export interface TurnPage {
+  /** Body and footer together; at most the requested budget. */
+  readonly text: string
+  /** Offset of the first character shown. */
+  readonly from: number
+  /** Offset just past the last character shown. */
+  readonly to: number
+  /** The full turn's length, which the footer reports rather than the page's. */
+  readonly total: number
+  /** True when this page reaches the end of the turn. */
+  readonly done: boolean
+}
+
+/**
+ * Page the full render of a turn.
+ *
+ * `expand` used to hand back the first 20,000 characters and claim that was the
+ * turn, which told a reader to summarize a prefix as if it were the whole thing.
+ * A page instead reports `from`/`to`/`total` and how to continue, so nothing is
+ * unreachable and no length is ever misreported.
+ *
+ * The result is sized to `budget` because the caller's own pass erodes a tool
+ * result over `maxResultChars`: a page larger than that would be cut again, in
+ * the middle, by `erodeToolResults`.
+ *
+ * A page starts exactly at `offset` (so continuing is seamless and the footer's
+ * `from` is the truth) and ends on a line boundary when the page holds one, so
+ * whole parts stay whole. A single part longer than a page is cut at the page
+ * edge; its remainder is one `offset:to` away, so nothing is unreachable.
+ */
+export function turnPage(
+  messages: ReadonlyArray<Message>,
+  options: { offset?: number; limit?: number; budget?: number } = {},
+): TurnPage {
+  const full = renderTurnFull(messages)
+  const total = full.length
+  const budget = Math.max(400, Math.trunc(options.budget ?? DEFAULT_EXPAND_BUDGET))
+
+  let from = Math.trunc(options.offset ?? 0)
+  if (from < 0) from = Math.max(0, total + from)
+  from = Math.min(Math.max(0, from), total)
+
+  const requested = Math.max(200, Math.min(20_000, Math.trunc(options.limit ?? budget)))
+  const room = Math.max(200, Math.min(requested, budget) - FOOTER_RESERVE)
+  let to = Math.min(total, from + room)
+  if (to < total) {
+    const newline = full.lastIndexOf("\n", to)
+    if (newline > from) to = newline
+  }
+
+  const done = to >= total
+  const body = full.slice(from, to)
+  const footer =
+    (body.length > 0 ? "\n" : "") +
+    (done
+      ? `(chars ${from}–${to} of ${total}; end of turn)`
+      : `(chars ${from}–${to} of ${total}; continue with offset:${to})`)
+  return { text: body + footer, from, to, total, done }
+}
+
+/** One line per part: where it sits, what it is, and how long it runs. */
+export function turnOutline(
+  messages: ReadonlyArray<Message>,
+  options: { headChars?: number; budget?: number } = {},
+): string {
+  const lines = renderLines(messages)
+  const headChars = Math.max(40, Math.trunc(options.headChars ?? 120))
+  const budget = Math.max(400, Math.trunc(options.budget ?? DEFAULT_EXPAND_BUDGET))
+  const last = lines.length === 0 ? undefined : lines[lines.length - 1]
+  const total = last === undefined ? 0 : last.offset + last.text.length
+
+  const rows = lines.map((line) => {
+    const match = /^\[([^\]]*)\] ([\s\S]*)$/.exec(line.text)
+    const label = match?.[1] ?? "part"
+    const body = match?.[2] ?? line.text
+    const flat = body.replace(/\s+/g, " ").trim()
+    const head = flat.slice(0, headChars).trimEnd()
+    const rest = Math.max(0, flat.length - Math.min(flat.length, headChars))
+    return `@${line.offset} [${label}] ${head}${rest > 0 ? ` [+${rest} chars]` : ""}`
+  })
+
+  const room = Math.max(200, budget - 200)
+  const out: string[] = []
+  let used = 0
+  for (let index = 0; index < rows.length; index += 1) {
+    const row = rows[index]
+    if (used + row.length + 1 > room) {
+      out.push(`[… ${rows.length - index} more parts, first at offset:${lines[index].offset}]`)
+      break
+    }
+    out.push(row)
+    used += row.length + 1
+  }
+  out.push(`(outline: ${lines.length} parts, ${total} chars; read one with offset:<n>)`)
+  return out.join("\n")
 }

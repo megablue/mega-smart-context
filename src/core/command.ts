@@ -70,7 +70,7 @@ export async function runContextCommand(sessionID: string, args: string, deps: C
       found.length === 0
         ? `no archived turn matches ${JSON.stringify(query)}`
         : found
-            .map((entry) => `- ${entry.id} · ${entry.gist}${entry.messages === undefined ? " (gist only)" : ""}`)
+            .map((hit) => `- ${hit.entry.id} · ${hit.entry.gist}${hit.entry.messages === undefined ? " (gist only)" : ""}`)
             .join("\n"),
     )
     return

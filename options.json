@@ -9,7 +9,7 @@
   "archiveMaxTurns": 200,
   "archiveMaxChars": 400000,
   "parentArchive": true,
-  "expandDigestChars": 8000,
+  "expandDigestChars": 4000,
   "refs": true,
   "maxResultChars": 4000,
   "manualCommand": true,

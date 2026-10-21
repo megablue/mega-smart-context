@@ -17,7 +17,7 @@
 import { estimateTokens, messageChars } from "./measure.ts"
 import type { ArchivedTurn, Message, PendingTurn, SessionRecord } from "./types.ts"
 import type { TurnSpan } from "./view.ts"
-import { renderTurn } from "./view.ts"
+import { renderTurnFull } from "./view.ts"
 
 export const DEFAULT_ARCHIVE_MAX_TURNS = 200
 export const DEFAULT_ARCHIVE_MAX_CHARS = 400_000
@@ -118,35 +118,113 @@ export function purgeTurn(record: SessionRecord, id: string): boolean {
   return removed
 }
 
-function matches(entry: ArchivedTurn, query: string): boolean {
-  if (entry.gist.toLowerCase().includes(query)) return true
-  if (entry.messages === undefined) return false
-  return renderTurn(entry.messages, 40_000).toLowerCase().includes(query)
+/**
+ * Split a recall query into search terms, longest first.
+ *
+ * Matching a whole query as one contiguous string is a phrase search, and a
+ * model that writes `"UnityPy sprite card texture"` about a turn that says
+ * "UnityPy" in one place and "texture" in another gets nothing. Every term must
+ * match (AND); the order and the gaps do not. Capped so a pasted paragraph does
+ * not become a scan.
+ */
+export function recallTerms(query: string): string[] {
+  const terms = [
+    ...new Set(
+      query
+        .toLowerCase()
+        .split(/\s+/)
+        .map((term) => term.trim())
+        .filter((term) => term.length > 0),
+    ),
+  ]
+  return terms.sort((a: string, b: string) => b.length - a.length).slice(0, 8)
 }
 
-/** Remove every archived turn whose gist or raw text matches the query. */
+/** Does every term occur in the gist, or every term in the full render? */
+function matchesTerms(entry: ArchivedTurn, terms: ReadonlyArray<string>): boolean {
+  if (terms.length === 0) return false
+  const gist = entry.gist.toLowerCase()
+  if (terms.every((term) => gist.includes(term))) return true
+  if (entry.messages === undefined) return false
+  const text = renderTurnFull(entry.messages).toLowerCase()
+  return terms.every((term) => text.includes(term))
+}
+
+/** Where a hit was found: a snippet, and the render offset `expand offset:` resumes from. */
+export interface RecallSnippet {
+  /** Char offset into `expand`'s render; absent when the hit is the gist. */
+  readonly offset?: number
+  readonly text: string
+}
+
+/** One archived turn that matched, with the evidence that made it match. */
+export interface RecallHit {
+  readonly entry: ArchivedTurn
+  readonly snippets: ReadonlyArray<RecallSnippet>
+}
+
+/**
+ * Up to `max` windows of `radius` characters around the first occurrences of the
+ * terms, so a reader can tell whether the turn is worth expanding.
+ *
+ * The window is raw turn text, not a replay: two non-overlapping windows per
+ * match, and the offset is what turns "maybe this one" into one targeted
+ * `expand offset:` instead of reading the whole turn.
+ */
+function snippetsOf(text: string, terms: ReadonlyArray<string>, radius = 120, max = 2): RecallSnippet[] {
+  const lower = text.toLowerCase()
+  const out: RecallSnippet[] = []
+  const taken: Array<readonly [number, number]> = []
+  for (const term of terms) {
+    let at = lower.indexOf(term)
+    while (at >= 0 && out.length < max) {
+      const from = Math.max(0, at - radius)
+      const to = Math.min(text.length, at + term.length + radius)
+      if (taken.some(([start, end]) => from < end && start < to)) {
+        at = lower.indexOf(term, at + term.length)
+        continue
+      }
+      taken.push([from, to])
+      const window = text.slice(from, to).replace(/\s+/g, " ").trim()
+      out.push({ offset: from, text: `${from > 0 ? "…" : ""}${window}${to < text.length ? "…" : ""}` })
+      at = lower.indexOf(term, to)
+    }
+    if (out.length >= max) break
+  }
+  return out
+}
+
+/** Newest-first matches. `limit` is clamped to 1..20. */
+export function recall(record: SessionRecord, query: string, limit = 5): RecallHit[] {
+  const terms = recallTerms(query)
+  if (terms.length === 0) return []
+  const max = Math.min(20, Math.max(1, Math.trunc(limit)))
+  const found: RecallHit[] = []
+  for (let index = record.archive.length - 1; index >= 0 && found.length < max; index -= 1) {
+    const entry = record.archive[index]
+    if (!matchesTerms(entry, terms)) continue
+    const snippets = entry.messages === undefined ? [] : snippetsOf(renderTurnFull(entry.messages), terms)
+    found.push({ entry, snippets: snippets.length > 0 ? snippets : [{ text: entry.gist }] })
+  }
+  return found
+}
+
+/**
+ * Remove every archived turn whose gist or raw text contains the query phrase.
+ *
+ * Exact, unlike `recall`: a destructive action must not broaden because a term
+ * happened to be common somewhere in a turn.
+ */
 export function purgeQuery(record: SessionRecord, query: string): number {
   const needle = query.trim().toLowerCase()
   if (needle.length === 0) return 0
   const before = record.archive.length
-  record.archive = record.archive.filter((entry) => !matches(entry, needle))
+  record.archive = record.archive.filter((entry) => !matchesTerms(entry, [needle]))
   return before - record.archive.length
 }
 
 export function findArchived(record: SessionRecord, id: string): ArchivedTurn | undefined {
   return record.archive.find((entry) => entry.id === id)
-}
-
-/** Newest-first matches. `limit` is clamped to 1..20. */
-export function recall(record: SessionRecord, query: string, limit = 5): ArchivedTurn[] {
-  const needle = query.trim().toLowerCase()
-  if (needle.length === 0) return []
-  const max = Math.min(20, Math.max(1, Math.trunc(limit)))
-  const found: ArchivedTurn[] = []
-  for (let index = record.archive.length - 1; index >= 0 && found.length < max; index -= 1) {
-    if (matches(record.archive[index], needle)) found.push(record.archive[index])
-  }
-  return found
 }
 
 export function archiveChars(record: SessionRecord): number {

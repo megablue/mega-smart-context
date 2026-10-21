@@ -25,7 +25,7 @@ import { retireNotice } from "./state.ts"
 import type { SessionStore } from "./state.ts"
 import type { FeatureMapPort, Memory, SessionRecord } from "./types.ts"
 import { refVerdict } from "./refs.ts"
-import { renderTurn } from "./view.ts"
+import { turnOutline, turnPage } from "./view.ts"
 
 export interface MemoryToolInput {
   action?: unknown
@@ -40,6 +40,8 @@ export interface MemoryToolInput {
   lost?: unknown
   keepRaw?: unknown
   limit?: unknown
+  offset?: unknown
+  mode?: unknown
   from?: unknown
 }
 
@@ -66,15 +68,15 @@ export interface MemoryToolOutcome {
 const MUTATING_ACTIONS = new Set(["read", "patch", "stats", "ref", "archive", "purge", "notice"])
 
 export const TOOL_HELP = `smart_context actions:
-- read { key? }                           print one memory key, or the whole document
-- patch { patch: { ... } }               merge a patch (maps merge, lists replace, null resets)
-- stats                                 memory/working/archive usage
-- ref { page, section, gist }            store a feature-map pointer and compare costs
-- archive { turn, gist, keepRaw? }       move a pending turn to the archive
-- purge { turn? | query? }               delete a pending/archived turn, or matching entries
-- recall { query, lost:true, from? }     search the archive only when a fact is missing; from:"parent" searches the spawning session's archive
-- expand { turn, from? }                 read an archived turn back
-- notice { remove? }                     list the pinned host notices, or drop a superseded one`
+- read { key? } - print one memory key, or the whole document
+- patch { patch } - merge a patch (maps merge, lists replace, null resets)
+- stats - memory/working/archive usage
+- ref { page, section, gist } - store a feature-map pointer and compare costs
+- archive { turn, gist, keepRaw? } - move a pending turn to the archive
+- purge { turn? | query? } - delete a pending/archived turn, or matching entries
+- recall { query, lost:true, limit?, from? } - search the archive only when a fact is missing; from:"parent" searches the spawning session's archive
+- expand { turn, mode?, offset?, limit?, from? } - read an archived turn: one honest page, or mode:"outline" for its map
+- notice { remove? } - list the pinned host notices, or drop a superseded one`
 
 function str(value: unknown): string | undefined {
   return typeof value === "string" && value.trim().length > 0 ? value.trim() : undefined
@@ -119,21 +121,32 @@ function isOutcome(value: SessionRecord | MemoryToolOutcome): value is MemoryToo
 }
 
 /**
- * The line that follows an oversized expansion, in place of nothing.
+ * The note a delegated read ends with: what the caller can actually keep.
  *
- * A raw turn can run to thousands of characters, and a reader quoting it
- * wholesale pays for every one of them twice — once in its own window and once
- * in whatever it replies to. Above `expandDigestChars` the result itself tells
- * the reader to digest instead, which is what makes the delegation contract
- * self-enforcing: the subagent that expands the parent's turn sees the
- * instruction exactly when it is about to reply.
+ * A result over `maxResultChars` is re-eroded on the caller's next pass - 60%
+ * head and 40% tail - so a child that writes a 19,000-character report has
+ * roughly 4,000 delivered. Saying so up front is the only way the delegation
+ * contract can hold: the child is the party that must digest, and it has to
+ * know the budget before it writes.
  */
-function digestHint(text: string, config: ResolvedConfig): string {
-  if (text.length <= config.expandDigestChars) return ""
+function delegatingNote(config: ResolvedConfig): string {
   return (
-    `\n(the turn runs to ~${text.length} chars, over the ${config.expandDigestChars}-char digest limit: ` +
-    "answer from it or summarize it rather than quoting it whole)"
+    `\n(delegating: your caller keeps at most ${config.maxResultChars} chars of your reply; ` +
+    "return a digest under that, or write the long version to a file and cite the path)"
   )
+}
+
+/**
+ * What one `expand` result may spend, including its own footer and that note.
+ *
+ * `expandDigestChars` is the page size and `maxResultChars` is the hard ceiling:
+ * a page over the ceiling would be cut again, in the middle, by the pass that
+ * carries it. `turnPage` reserves room for the footer inside this budget.
+ */
+function expandBudget(config: ResolvedConfig, fromParent: boolean): { budget: number; hint: string } {
+  const hint = fromParent ? delegatingNote(config) : ""
+  const ceiling = Math.min(config.expandDigestChars, config.maxResultChars) - hint.length
+  return { budget: Math.max(400, ceiling), hint }
 }
 
 function usage(record: SessionRecord, config: ResolvedConfig): string {
@@ -366,20 +379,31 @@ export async function runMemoryTool(
       if (found.length === 0) {
         return { text: `no archived turn matches ${JSON.stringify(query)}${fromParent ? " in the spawning session's archive" : ""}`, ok: true }
       }
-      const hint = fromParent ? ' from:"parent"' : ""
-      return {
-        text:
-          `archive matches${fromParent ? " in the spawning session's archive" : ""}:\n` +
-          found
-            .map(
-              (entry) =>
-                `- ${entry.id} · ${entry.gist}` +
-                (entry.messages === undefined ? " (gist only)" : ` (expand: action:"expand" turn:"${entry.id}"${hint})`),
-            )
-            .join("\n") +
-          (fromParent ? "\n(delegating: report the substance of what you found, not the raw turns)" : ""),
-        ok: true,
+      const hint = fromParent ? delegatingNote(deps.config) : ""
+      const budget = Math.max(200, deps.config.maxResultChars - hint.length)
+      const lines: string[] = [`archive matches${fromParent ? " in the spawning session's archive" : ""}:`]
+      let used = lines[0].length
+      outer: for (const hit of found) {
+        const entry = hit.entry
+        const expandHint = entry.messages === undefined ? " (gist only)" : ` (expand: action:"expand" turn:"${entry.id}"${fromParent ? ' from:"parent"' : ""})`
+        const head = `- ${entry.id} · ${entry.gist}${expandHint}`
+        if (used + head.length + 1 > budget) {
+          lines.push("[… more matches; narrow the query or raise limit only if you must]")
+          break
+        }
+        lines.push(head)
+        used += head.length + 1
+        for (const snippet of hit.snippets) {
+          const line = `    ${snippet.offset === undefined ? "" : `@${snippet.offset} `}${snippet.text}`
+          if (used + line.length + 1 > budget) {
+            lines.push("    [… snippets elided]")
+            break outer
+          }
+          lines.push(line)
+          used += line.length + 1
+        }
       }
+      return { text: lines.join("\n") + hint, ok: true }
     }
     case "expand": {
       const turn = str(request.turn)
@@ -391,8 +415,21 @@ export async function runMemoryTool(
       if (entry.messages === undefined) {
         return { text: `${entry.gist}\n(gist only; no raw messages were kept)`, ok: true }
       }
-      const text = renderTurn(entry.messages, 20_000)
-      return { text: text + digestHint(text, deps.config), ok: true }
+      const mode = str(request.mode) ?? "page"
+      if (mode !== "page" && mode !== "outline") {
+        return {
+          text: `smart_context: expand mode must be "page" or "outline", not ${JSON.stringify(mode)}`,
+          ok: false,
+        }
+      }
+      const { budget, hint } = expandBudget(deps.config, request.from === "parent")
+      const offset = typeof request.offset === "number" && Number.isFinite(request.offset) ? request.offset : undefined
+      const limit = typeof request.limit === "number" && Number.isFinite(request.limit) ? request.limit : undefined
+      const text =
+        mode === "outline"
+          ? turnOutline(entry.messages, { budget })
+          : turnPage(entry.messages, { offset, limit, budget }).text
+      return { text: text + hint, ok: true }
     }
     default:
       return { text: TOOL_HELP, ok: false }

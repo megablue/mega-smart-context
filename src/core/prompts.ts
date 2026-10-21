@@ -38,9 +38,10 @@ the working budget (verbatim), and the current turn.
   mechanical gist; purge what is irrelevant.
 - Do not search the archive out of habit. \`recall\` requires \`lost:true\`: use it
   only when a fact you need is missing from memory and the working window.
-- A deep archive search is delegable: task a subagent with the query and have it
-  run \`recall\`/\`expand\` with from:"parent"; the raw turns stay out of this
-  window and only its summary comes back.
+- A deep archive search is delegable: task a subagent to run \`recall\`/\`expand\`
+  with from:"parent". Delegate only when the turn will not fit here - a child is
+  minutes, not seconds - and ask for a digest: only the head and tail of a long
+  answer survive into this window.
 - Host notices (a Plan/Build switch, an output-limit nudge) are pinned, not
   replayed: they stay in the system prompt until a newer one replaces them, so a
   mode switch never evicts a turn. List them with action:"notice"; retire a

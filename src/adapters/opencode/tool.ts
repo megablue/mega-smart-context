@@ -31,8 +31,8 @@ Actions:
 - ref { page, section, gist } — store a feature-map pointer and report the gist vs section cost.
 - archive { turn, gist, keepRaw? } — move a pending turn into the cold archive.
 - purge { turn? | query? } — delete a pending or archived turn, or matching entries.
-- recall { query, lost:true } — search the archive. Requires lost:true: use it only when a fact you need is missing. A subagent may add from:"parent" to search the session that spawned it, so a delegated archive lookup never pulls the raw turns into its caller's window.
-- expand { turn, from? } — read an archived turn back; from:"parent" reads the spawning session's archive. A result over the digest limit tells you to summarize it rather than quote it.
+- recall { query, lost:true, from? } — search the archive. Every term must match, so a phrase with gaps still works. Requires lost:true: use it only when a fact you need is missing. Matches come with a short snippet and its char offset. A subagent may add from:"parent" to search the session that spawned it, so a delegated archive lookup never pulls the raw turns into its caller's window.
+- expand { turn, mode?, offset?, limit?, from? } — read an archived turn. It comes back as one honest page sized under the compression limit, ending with "(chars 8000–11980 of 171432; continue with offset:11980)". mode:"outline" lists each part with its offset and size, which is how you find the two pages that matter instead of reading forty. from:"parent" reads the spawning session's archive and names the reply budget your caller can keep.
 - notice { remove? } — list the pinned host notices (a mode switch or an output-limit nudge), or retire a superseded one by id. The newest is the live instruction and is refused.`
 
 export const TOOL_INPUT = {
@@ -57,10 +57,19 @@ export const TOOL_INPUT = {
       type: "string",
       description: 'For action:notice — the id of a superseded notice to drop. The newest is refused.',
     },
-    query: { type: "string", description: "For action:recall/purge — a search string." },
+    query: { type: "string", description: "For action:recall/purge — a search string. recall matches every term; purge matches the exact phrase." },
     lost: { type: "boolean", description: "For action:recall — set true only when a needed fact is missing." },
     keepRaw: { type: "boolean", description: "For action:archive — keep the raw messages for expand." },
-    limit: { type: "number", description: "For action:recall — maximum matches (default 5)." },
+    limit: { type: "number", description: "For action:recall — maximum matches (default 5). For action:expand — characters on this page (200..20000, default the page setting)." },
+    offset: {
+      type: "number",
+      description: "For action:expand — where the page starts, in characters. Negative counts from the end. Use the offset the footer reports to continue.",
+    },
+    mode: {
+      type: "string",
+      enum: ["page", "outline"],
+      description: 'For action:expand — "page" (default) reads the turn in pages; "outline" lists each part with its offset and size.',
+    },
     from: {
       type: "string",
       enum: ["parent"],
@@ -101,6 +110,8 @@ export function createSmartContextTool(options: {
         lost: raw.lost,
         keepRaw: raw.keepRaw,
         limit: raw.limit,
+        offset: raw.offset,
+        mode: raw.mode,
         from: raw.from,
       }
       const outcome = await runMemoryTool(request, options)

@@ -170,8 +170,8 @@ img{max-width:100%;height:auto}
 </li>
 </ul>
 <p>With <code>autoArchive</code> on (the default), an unhandled pending turn is archived after <code>evictionLead</code> new user turns, under a mechanical gist (the first line of its user message and its tools) and with its raw messages kept. The model can purge it later. With <code>autoArchive</code> off, an unhandled turn is dropped when the lead expires.</p>
-<p>The archive is cold storage, not a second working set. <code>smart_context</code> with <code>action:&quot;recall&quot;</code> refuses unless the call includes <code>lost:true</code>; without it, the tool returns an instruction instead of results. <code>expand { turn }</code> returns the raw turn, or the gist when no raw was kept. The archive is capped by <code>archiveMaxTurns</code> and <code>archiveMaxChars</code>, newest wins.</p>
-<p>A delegate can read the archive of the session that spawned it: <code>recall</code> and <code>expand</code> accept <code>from:&quot;parent&quot;</code> (on by default, <code>parentArchive:false</code> turns it off). The field is read-only - every writing action refuses it - and the schema offers no other value. Above <code>expandDigestChars</code> characters an expansion also tells the reader to answer from the turn or summarize it rather than quote it whole.</p>
+<p>The archive is cold storage, not a second working set. <code>smart_context</code> with <code>action:&quot;recall&quot;</code> refuses unless the call includes <code>lost:true</code>; without it, the tool returns an instruction instead of results. <code>recall</code> matches every term of the query against the gist and the whole rendered turn, and each match carries short snippets with the character offset they sit at. <code>expand { turn }</code> returns the raw turn in pages of <code>expandDigestChars</code> characters (clamped by <code>maxResultChars</code>), ending with the exact range and <code>continue with offset:N</code> or <code>end of turn</code>; a negative <code>offset</code> counts from the end. <code>mode:&quot;outline&quot;</code> lists each part of the turn with its offset and size instead, which is how a reader finds the page worth opening. Without raw messages, <code>expand</code> returns the gist and says it is gist only. The archive is capped by <code>archiveMaxTurns</code> and <code>archiveMaxChars</code>, newest wins.</p>
+<p>A delegate can read the archive of the session that spawned it: <code>recall</code> and <code>expand</code> accept <code>from:&quot;parent&quot;</code> (on by default, <code>parentArchive:false</code> turns it off). The field is read-only - every writing action refuses it - and the schema offers no other value. A delegated read ends by naming the reply budget: the caller keeps at most <code>maxResultChars</code> characters of the child&#39;s reply, so a long report must be written to a file and cited rather than returned.</p>
 </section>
 <section id="subagents">
 <h2>Subagents</h2>
@@ -226,12 +226,12 @@ img{max-width:100%;height:auto}
 <td>delete a pending or archived turn, or matching entries</td>
 </tr>
 <tr>
-<td><code>recall { query, lost:true, from? }</code></td>
-<td>search the cold archive; refuses without <code>lost:true</code>. <code>from:&quot;parent&quot;</code> searches the spawning session&#39;s archive instead, read-only</td>
+<td><code>recall { query, lost:true, limit?, from? }</code></td>
+<td>search the cold archive; refuses without <code>lost:true</code>. Every term must match, and each match carries snippets with their char offsets. <code>from:&quot;parent&quot;</code> searches the spawning session&#39;s archive instead, read-only, and names the caller&#39;s reply budget</td>
 </tr>
 <tr>
-<td><code>expand { turn, from? }</code></td>
-<td>read an archived turn back; <code>from:&quot;parent&quot;</code> reads the spawning session&#39;s, and an oversized turn carries a summarization push</td>
+<td><code>expand { turn, mode?, offset?, limit?, from? }</code></td>
+<td>read an archived turn back as one honest page ending in its char range and how to continue; <code>mode:&quot;outline&quot;</code> lists each part with its offset and size. <code>from:&quot;parent&quot;</code> reads the spawning session&#39;s</td>
 </tr>
 <tr>
 <td><code>notice { remove? }</code></td>
@@ -347,8 +347,8 @@ img{max-width:100%;height:auto}
 </tr>
 <tr>
 <td><code>expandDigestChars</code></td>
-<td><code>8000</code></td>
-<td>&gt;= 500 - expansion length above which the result asks for a summary</td>
+<td><code>4000</code></td>
+<td>&gt;= 500 - characters per <code>expand</code> page, clamped by <code>maxResultChars</code></td>
 <td>config file</td>
 </tr>
 <tr>
