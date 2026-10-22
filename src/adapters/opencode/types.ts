@@ -27,6 +27,11 @@ export interface SessionDomain {
   }>
   context(input: { sessionID: string }): Promise<ReadonlyArray<any>>
   prompt(input: { sessionID: string; text: string; delivery?: unknown }): Promise<unknown>
+  /**
+   * Admit a synthetic user turn. `resume: true` schedules the agent loop, so this
+   * is the only channel that starts a model turn without a user message.
+   */
+  synthetic(input: { sessionID: string; text: string; resume?: boolean }): Promise<unknown>
   compact(input: { sessionID: string; delivery?: unknown }): Promise<unknown>
 }
 

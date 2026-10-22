@@ -61,14 +61,32 @@ const INTERRUPTED_TEXT =
   "The previous response was interrupted. Continue from where you left off without repeating completed content."
 
 /**
+ * The sentence `/context resume` sends through the host's synthetic channel.
+ *
+ * It is the plugin's own copy of the host's interruption cue, and it rides the
+ * same tail path: `/context resume` admits a synthetic row, so there is no user
+ * message and no new turn (and no pending eviction aged). The bracket marker is
+ * deliberately not a `megasc_` id: `context.ts` filters every injected id out of
+ * the window, so the cue must arrive under the host's ordinary `msg_` id and be
+ * recognised by its text.
+ *
+ * Matched whole, like `INTERRUPTED_TEXT`. The marker makes an accidental human
+ * collision unlikely; a person writing the sentence without it stays a turn.
+ */
+export const RESUMED_TEXT =
+  "[mega-smart-context] Continue from where you left off without repeating completed content."
+
+/**
  * Classify a host-injected user message; `undefined` for a message a person wrote.
  *
- * The host admits four things as a *user* message that no one typed: a Plan/Build
- * mode notice (a `<system-reminder>` block, sometimes with a trailing `@n@`
- * marker), the output-token-limit nudge, a background job's completion (a
- * `<shell>` or `<subagent>` block), and the "previous response was interrupted"
- * resume cue. All four are one text part under an unprefixed id, so the shape is
- * the only tell.
+ * The host admits four kinds of message as a *user* message that no one typed: a
+ * Plan/Build mode notice (a `<system-reminder>` block, sometimes with a trailing
+ * `@n@` marker), the output-token-limit nudge, a background job's completion (a
+ * `<shell>` or `<subagent>` block), and a resume cue - either the host's
+ * "previous response was interrupted" sentence or this plugin's `RESUMED_TEXT`,
+ * which reaches the transform through the same synthetic channel and has the
+ * same shape. All of them are one text part under an unprefixed id, so the shape
+ * is the only tell.
  *
  * - A *notice* is a standing instruction. Left in place it starts a turn: it
  *   inflates the working window and ages a pending turn on a mode switch the
@@ -96,7 +114,7 @@ export function hostMessageOf(message: Message | undefined): HostMessage | undef
   const id = message.id
   if (/^<system-reminder>[\s\S]*<\/system-reminder>$/u.test(text)) return { kind: "notice", id, text }
   if (text.startsWith(OUTPUT_LIMIT_PREFIX)) return { kind: "notice", id, text }
-  if (text === INTERRUPTED_TEXT) return { kind: "cue", id, text }
+  if (text === INTERRUPTED_TEXT || text === RESUMED_TEXT) return { kind: "cue", id, text }
   if (/^<shell\b[\s\S]*<\/shell>$/u.test(text) || /^<subagent\b[\s\S]*<\/subagent>$/u.test(text)) {
     return { kind: "job", id, text }
   }
@@ -113,7 +131,7 @@ export function isHostJob(message: Message | undefined): boolean {
   return hostMessageOf(message)?.kind === "job"
 }
 
-/** A host resume cue: kept in the window like a job, but it reports no result. */
+/** A resume cue: the host's interruption sentence or this plugin's `/context resume` sentence. */
 export function isHostCue(message: Message | undefined): boolean {
   return hostMessageOf(message)?.kind === "cue"
 }

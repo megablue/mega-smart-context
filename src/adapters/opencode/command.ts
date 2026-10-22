@@ -3,7 +3,9 @@
  *
  * The command registry only executes; it does not print. The adapter therefore
  * maps the core's `reply` callback to `ctx.session.prompt`, which is how a
- * command puts text in front of the user on this host.
+ * command puts text in front of the user on this host. `resume` is the exception:
+ * `ctx.session.synthetic` admits the cue with `resume: true`, which starts the
+ * agent loop without a user message and therefore without a new turn.
  *
  * @module mega-smart-context/adapters/opencode/command
  */
@@ -17,6 +19,7 @@ export function createContextCommand(options: {
   readonly store: SessionStore
   readonly config: ResolvedConfig
   readonly reply: (sessionID: string, text: string) => Promise<void>
+  readonly resume?: (sessionID: string, text: string) => Promise<void>
   readonly version?: string
 }): CommandDefinition {
   return {

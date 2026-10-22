@@ -1,7 +1,7 @@
 /**
  * `/context`: the user's read-only window into what the model has written, plus
- * the two control actions a user actually needs — force the archive now, and
- * purge a turn the model kept by mistake.
+ * the control actions a user actually needs — force the archive now, purge a turn
+ * the model kept by mistake, and resume without adding a user message.
  *
  * This is not a second context-management surface. It prints the same memory the
  * model sees and the same archive the model can recall; the model remains the
@@ -15,18 +15,25 @@ import type { ResolvedConfig } from "./config.ts"
 import { renderStats } from "./prompts.ts"
 import { MEMORY_KEYS } from "./schema.ts"
 import type { SessionStore } from "./state.ts"
+import { RESUMED_TEXT } from "./view.ts"
 
 export interface CommandDeps {
   readonly store: SessionStore
   readonly config: ResolvedConfig
   /** Deliver text to the session. The adapter maps this to `ctx.session.prompt`. */
   readonly reply: (sessionID: string, text: string) => Promise<void>
+  /**
+   * Start a model turn with no user message. The adapter maps this to
+   * `ctx.session.synthetic` with `resume: true`; the sentence is a tail, so the
+   * turn count and any pending eviction are untouched.
+   */
+  readonly resume?: (sessionID: string, text: string) => Promise<void>
   /** The loaded build's own version, shown by `status`. The adapter reads it. */
   readonly version?: string
   readonly now?: () => number
 }
 
-const USAGE = "usage: /context [status|now|memory <key>|recall <query>|purge <turn>]"
+const USAGE = "usage: /context [status|now|resume|memory <key>|recall <query>|purge <turn>]"
 
 export async function runContextCommand(sessionID: string, args: string, deps: CommandDeps): Promise<void> {
   const text = args.trim()
@@ -49,6 +56,16 @@ export async function runContextCommand(sessionID: string, args: string, deps: C
     }
     await deps.store.save(sessionID, record)
     await deps.reply(sessionID, `archived ${archived} pending turn(s)\n\n` + renderStats(record, deps.config, deps.version))
+    return
+  }
+
+  if (text === "resume") {
+    if (deps.resume === undefined) {
+      await deps.reply(sessionID, "this host has no synthetic channel, so a resume needs a typed message")
+      return
+    }
+    // Sent as a cue, not a prompt: no user row, no new turn, no aged eviction.
+    await deps.resume(sessionID, RESUMED_TEXT)
     return
   }
 

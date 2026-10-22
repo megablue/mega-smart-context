@@ -25,7 +25,7 @@ An OpenCode 2.0 plugin that hands context management to the model. Instead of re
 - When a turn leaves the window it moves to a **gated archive**, kept for `recall` rather than replayed or dropped silently.
 - **Compaction is owned by the plugin.** When the host makes a checkpoint, the plugin answers with the memory document itself instead of a separate summarization call.
 - **Subagents are managed independently**, each with its own window and memory, so a child never inherits the parent's context.
-- `/context` prints the current memory and archive; `/context now` archives pending turns.
+- `/context` prints the current memory and archive; `/context now` archives pending turns; `/context resume` continues the session without adding a user message or ageing an eviction.
 
 ## Requirements
 
@@ -99,7 +99,7 @@ The update check is the only network call the plugin makes, and it runs in the T
 
 - The model writes memory with the `smart_context` tool: `patch`, `read`, `stats`, `ref`, `archive`, `purge`, `recall`, `expand`.
 - A subagent can read its spawning session's archive without importing it: `recall`/`expand` with `from:"parent"`. The field is read-only and never reaches a writing action, and the reply tells the child how many characters its caller can actually keep.
-- `/context` prints the current memory and archive. `/context now` archives pending turns.
+- `/context` prints the current memory and archive. `/context now` archives pending turns. `/context resume` starts a model turn with the plugin's resume cue through `ctx.session.synthetic` - no user message, no new turn, and no pending eviction aged.
 
 Every request starts with a `<smart-context>` block. If `goal` is empty, the model is told to write the request there before the raw first message leaves the working window.
 

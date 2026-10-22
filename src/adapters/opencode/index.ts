@@ -114,6 +114,9 @@ export async function setup(ctx: PluginContext): Promise<() => Promise<void>> {
               reply: async (sessionID, text) => {
                 await ctx.session.prompt({ sessionID, text })
               },
+              resume: async (sessionID, text) => {
+                await ctx.session.synthetic({ sessionID, text, resume: true })
+              },
             }),
           )
         }),

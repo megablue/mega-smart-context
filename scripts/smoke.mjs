@@ -23,13 +23,14 @@ import { pathToFileURL } from "node:url"
 import { parseLayer, resolveConfig } from "../src/core/config.ts"
 import { buildPayload } from "../src/core/context.ts"
 import { runMemoryTool } from "../src/core/memory-tool.ts"
+import { runContextCommand } from "../src/core/command.ts"
 import { messageChars, messagesChars } from "../src/core/measure.ts"
 import { NOTICE_HEADING, POLICY } from "../src/core/prompts.ts"
 import { emptyMemory } from "../src/core/schema.ts"
 import { MAX_HISTORY, MAX_NOTICES, MAX_NOTICE_CHARS, MAX_RETIRED, SessionStore, pruneOrphans, retireNotice, sameDirectory, trimHistory, upsertNotices } from "../src/core/state.ts"
 import { extractHtmlSection, extractSection, htmlToText, pageCandidates } from "../src/core/refs.ts"
 import { deriveVersion, readVersionBase } from "../src/core/version.ts"
-import { balanceCuts, erodeToolResults, hostMessageOf, isHostCue, isHostJob, isHostMessage, isHostTail, isRealUser, noticeOf, selectWorkingWindow, splitNotices, turnSpans } from "../src/core/view.ts"
+import { balanceCuts, erodeToolResults, hostMessageOf, isHostCue, isHostJob, isHostMessage, isHostTail, isRealUser, noticeOf, RESUMED_TEXT, selectWorkingWindow, splitNotices, turnSpans } from "../src/core/view.ts"
 import { livenessFromError } from "../src/adapters/opencode/sessions.ts"
 import { readPluginVersion } from "../src/adapters/opencode/version.ts"
 import {
@@ -136,6 +137,7 @@ function makeHost(options = {}) {
   const tools = []
   const commands = []
   const replies = []
+  const synthetics = []
   const storage = new Map()
   const ctx = {
     location: { directory: root },
@@ -181,6 +183,10 @@ function makeHost(options = {}) {
         replies.push({ sessionID, text })
         return {}
       },
+      async synthetic({ sessionID, text, resume }) {
+        synthetics.push({ sessionID, text, resume })
+        return {}
+      },
       async compact() {
         return {}
       },
@@ -201,7 +207,7 @@ function makeHost(options = {}) {
       },
     },
   }
-  return { ctx, hooks, tools, commands, replies }
+  return { ctx, hooks, tools, commands, replies, synthetics }
 }
 
 const { default: plugin } = await import(pathToFileURL(resolve(root, "server.ts")).href)
@@ -604,6 +610,25 @@ ok(
   "a shortened interruption is not the cue, so it stays a real turn",
 )
 
+// `/context resume` sends the plugin's own sentence through the synthetic
+// channel. It must land on the same tail path as the host's cue.
+ok(hostMessageOf(noticeMsg("r1", RESUMED_TEXT))?.kind === "cue", "the /context resume sentence is a cue")
+ok(noticeOf(noticeMsg("r1", RESUMED_TEXT)) === undefined, "the resume sentence is never pinned on the notice rail")
+ok(isRealUser(noticeMsg("r1", RESUMED_TEXT)) === false, "the resume sentence does not start a turn")
+ok(isHostTail(noticeMsg("r1", RESUMED_TEXT)), "the resume sentence is a turn tail")
+ok(
+  hostMessageOf(noticeMsg("r2", RESUMED_TEXT, "\n@7@"))?.kind === "cue",
+  "the resume sentence is recognised with a trailing @n@ marker",
+)
+ok(
+  hostMessageOf(noticeMsg("r3", "Continue from where you left off without repeating completed content.")) === undefined,
+  "the resume sentence without its marker stays a real turn",
+)
+ok(
+  turnSpans([user("u1", "Run it. ".repeat(20)), assistant("a1", "Partial. "), noticeMsg("r-late", RESUMED_TEXT)]).length === 1,
+  "the resume sentence annexes to the turn it continues",
+)
+
 const withJob = [
   user("u1", "Run it. ".repeat(20)),
   assistant("a1", "Calling. ".repeat(10)),
@@ -696,6 +721,25 @@ ok(
 ok(
   cueAfter.messages.some((message) => message.id === "c-late"),
   "the cue itself is still in the payload",
+)
+
+// The same guarantees hold for the sentence `/context resume` sends: a new cue
+// id must not read as a new turn, so the pending eviction cannot age.
+const cueAfterResume = await cuePass([...firstTurn, ...secondTurn, noticeMsg("r-late", RESUMED_TEXT)])
+const cueResumeRecord = await cueStore.load("cue")
+ok(cueAfterResume.report.workingTurns === cueBefore.report.workingTurns, "the resume sentence adds no working turn")
+ok(
+  cueResumeRecord.pending.some((pending) => pending.id === "u1"),
+  "the resume sentence does not age a pending turn",
+)
+ok(cueResumeRecord.archive.length === 0, "the resume sentence does not archive a pending turn")
+ok(
+  cueAfterResume.messages.some((message) => message.id === "r-late"),
+  "the resume sentence is still in the payload",
+)
+ok(
+  cueAfterResume.system.every((part) => !part.text.includes("Continue from where you left off")),
+  "the resume sentence never reaches the notice rail",
 )
 
 // The host's own system parts are measured for display, never for a budget.
@@ -1169,6 +1213,34 @@ ok(
 )
 await host.commands[0].execute({ sessionID: "s1", prompt: { text: "/context memory goal" } })
 ok(host.replies.at(-1).text.includes("ship v0.1"), "/context memory reads one key")
+
+const repliesBeforeResume = host.replies.length
+const syntheticsBeforeResume = host.synthetics.length
+await host.commands[0].execute({ sessionID: "s1", prompt: { text: "/context resume" } })
+ok(
+  host.synthetics.length === syntheticsBeforeResume + 1,
+  "/context resume admits exactly one synthetic input",
+)
+ok(
+  host.synthetics.at(-1).text === RESUMED_TEXT && host.synthetics.at(-1).resume === true,
+  "/context resume asks the host to schedule a turn",
+)
+ok(host.replies.length === repliesBeforeResume, "/context resume sends no user message")
+await host.commands[0].execute({ sessionID: "s1", prompt: { text: "/context nope" } })
+ok(host.replies.at(-1).text.includes("resume"), "the usage lists resume")
+
+const noSynthetic = []
+await runContextCommand("s1", "resume", {
+  store: new SessionStore(),
+  config: resolveConfig({ options: {} }),
+  reply: async (sessionID, text) => {
+    noSynthetic.push({ sessionID, text })
+  },
+})
+ok(
+  noSynthetic.length === 1 && /synthetic channel/.test(noSynthetic[0].text),
+  "a host without a synthetic channel answers instead of resuming",
+)
 
 // ---------------------------------------------------------------------------
 // subagents:false passes a child through untouched

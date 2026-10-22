@@ -261,6 +261,10 @@ img{max-width:100%;height:auto}
 <td>archive every pending turn now</td>
 </tr>
 <tr>
+<td><code>/context resume</code></td>
+<td>start a model turn with the plugin&#39;s resume cue through the host&#39;s synthetic channel - no user message, no new turn, and no pending eviction aged</td>
+</tr>
+<tr>
 <td><code>/context memory &lt;key&gt;</code></td>
 <td>print one memory key</td>
 </tr>
@@ -274,6 +278,7 @@ img{max-width:100%;height:auto}
 </tr>
 </tbody>
 </table>
+<p><code>/context resume</code> is the one command that starts a model turn instead of printing: it admits <code>RESUMED_TEXT</code> as a synthetic user message with <code>resume: true</code>, and the context pass classifies that sentence as a cue, so it stays in the window, counts toward the turn it continues, and ages no pending eviction.</p>
 <p>The version is <code>MAJOR.MINOR.PATCH</code>: MAJOR.MINOR is the released line, and PATCH is the number of commits since the base recorded in <code>package.json</code>, so it advances with every commit and the README version badge follows the same field. What <code>/context</code> prints is the loaded build&#39;s own version, which lags the repository until the install is re-synced.</p>
 </section>
 <section id="settings">
