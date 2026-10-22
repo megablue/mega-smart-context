@@ -80,8 +80,8 @@ The settings a user normally touches:
 | Setting | Default | Meaning |
 | --- | --- | --- |
 | `enabled` | `true` | master switch |
-| `memoryTokens` | `50000` | cap on the model-authored memory, estimated |
-| `workingTokens` | `16000` | cap on the verbatim working window, estimated |
+| `memoryTokens` | `20000` | cap on the model-authored memory, estimated |
+| `workingTokens` | `20000` | cap on the verbatim working window, estimated |
 | `autoArchive` | `true` | archive unhandled evictions instead of dropping them |
 | `evictionLead` | `1` | new user turns a pending turn is shown before archiving |
 | `parentArchive` | `true` | let a subagent search its spawning session's archive (`from:"parent"`) |

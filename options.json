@@ -1,7 +1,7 @@
 {
   "enabled": true,
-  "memoryTokens": 50000,
-  "workingTokens": 16000,
+  "memoryTokens": 20000,
+  "workingTokens": 20000,
   "charsPerToken": 4,
   "subagents": true,
   "evictionLead": 1,

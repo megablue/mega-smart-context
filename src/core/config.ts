@@ -50,8 +50,8 @@ export interface ResolvedConfig {
 
 export const DEFAULT_CONFIG: ResolvedConfig = {
   enabled: true,
-  memoryTokens: 50_000,
-  workingTokens: 16_000,
+  memoryTokens: 20_000,
+  workingTokens: 20_000,
   charsPerToken: 4,
   subagents: true,
   evictionLead: 1,

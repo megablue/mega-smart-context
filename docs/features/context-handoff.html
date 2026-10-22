@@ -82,8 +82,8 @@ hr{border:0;border-top:1px solid var(--line);margin:2rem 0}
 </section>
 <section id="config-keys-ui">
 <h2>Config keys / UI</h2>
-<table><thead><tr><th>Key</th><th>Default</th><th>Effect</th></tr></thead><tbody><tr><td><code>memoryTokens</code></td><td>50000</td><td>cap used by <code>budgetOf</code> and the tool&#39;s write check</td></tr><tr><td><code>workingTokens</code></td><td>16000</td><td>cap for the verbatim tail</td></tr><tr><td><code>charsPerToken</code></td><td>4</td><td>estimate divisor</td></tr><tr><td><code>maxResultChars</code></td><td>4000</td><td>per-result erosion limit</td></tr><tr><td><code>subagents</code></td><td>true</td><td>whether a child session is transformed</td></tr></tbody></table>
-<p>The block&#39;s first line is the UI: <code>memory 12.4k/50k est · working 6.1k/16k est · refs 3 · pending 1 · archive 41</code>, plus <code>OVER CAP</code> when either side is over.</p>
+<table><thead><tr><th>Key</th><th>Default</th><th>Effect</th></tr></thead><tbody><tr><td><code>memoryTokens</code></td><td>20000</td><td>cap used by <code>budgetOf</code> and the tool&#39;s write check</td></tr><tr><td><code>workingTokens</code></td><td>20000</td><td>cap for the verbatim tail</td></tr><tr><td><code>charsPerToken</code></td><td>4</td><td>estimate divisor</td></tr><tr><td><code>maxResultChars</code></td><td>4000</td><td>per-result erosion limit</td></tr><tr><td><code>subagents</code></td><td>true</td><td>whether a child session is transformed</td></tr></tbody></table>
+<p>The block&#39;s first line is the UI: <code>memory 12.4k/20k est · working 6.1k/20k est · refs 3 · pending 1 · archive 41</code>, plus <code>OVER CAP</code> when either side is over.</p>
 </section>
 <section id="tests-that-pin-it">
 <h2>Tests that pin it</h2>
