@@ -52,6 +52,7 @@ export interface KeymapLayer {
 export interface StatusClient {
   readonly stats: (input: { readonly sessionID: string }) => Promise<StatsReply>
   readonly purge: (input: { readonly sessionID: string; readonly turn: string }) => Promise<{ ok: boolean; text: string }>
+  readonly notice: (input: { readonly sessionID: string; readonly id: string }) => Promise<{ ok: boolean; text: string }>
 }
 
 /** The colours the sidebar paints with; the host owns the actual theme. */
@@ -120,6 +121,11 @@ export interface TuiContext {
     readonly router: {
       current(): { readonly type: string; readonly sessionID?: string }
     }
+    /** Opens this plugin's session panel; absent on a host without the panel API. */
+    readonly panel?: {
+      open(name: string, options?: { readonly presentation?: "panel" | "fullscreen" }): boolean
+      close(): void
+    }
     /** Claims a place in the host's slot tree; returns the release. */
     readonly slot: (claim: unknown) => () => void
   }
@@ -128,7 +134,7 @@ export interface TuiContext {
   }
 }
 
-/** The TUI-side mirror of one session's last reply, per session id. */
+/** The TUI-side mirror of one session's last reply, shared by the sidebar and the panel. */
 export interface SidebarStore {
   sessions: Record<string, StatusSnapshot>
 }
@@ -143,5 +149,19 @@ export interface SidebarHost {
     readonly status: (sessionID: string) => void
     readonly resume: (sessionID: string) => void
     readonly purge: (sessionID: string) => void
+  }
+}
+
+/** What the panel module needs: the same mirror, plus actions on a named row. */
+export interface PanelHost {
+  readonly context: TuiContext
+  readonly snapshot: (sessionID: string) => StatusSnapshot | undefined
+  readonly refresh: (sessionID: string, force?: boolean) => void
+  readonly actions: {
+    readonly purge: (sessionID: string, turn: string) => void
+    readonly retire: (sessionID: string, id: string) => void
+    readonly resume: (sessionID: string) => void
+    readonly status: (sessionID: string) => void
+    readonly close: () => void
   }
 }

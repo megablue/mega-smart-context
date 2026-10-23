@@ -1,0 +1,25 @@
+/**
+ * The colours both drawn surfaces share.
+ *
+ * The host owns the palette and publishes it as `theme.text`; a slot claim passes
+ * those strings straight to `fg`. The mapping lives in a plain module so the
+ * sidebar and the panel cannot drift apart, and so a theme shape the host does
+ * not resolve degrades to the terminal default instead of throwing from render.
+ *
+ * @module mega-smart-context/tui/theme
+ */
+
+import type { SidebarTone } from "../core/status.ts"
+import type { TuiContext } from "./context.ts"
+
+/** One colour per tone; `undefined` means "whatever the terminal draws". */
+export function toneColor(context: TuiContext, tone: SidebarTone): string | undefined {
+  try {
+    const text = context.theme.text
+    if (tone === "alert") return text.feedback.warning.base
+    if (tone === "muted") return text.muted
+    return text.base
+  } catch {
+    return undefined
+  }
+}

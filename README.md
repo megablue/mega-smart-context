@@ -134,7 +134,7 @@ Below the numbers are two actions:
 | `Resume` | the same cue `/context resume` sends, through the host's synthetic channel - no user message and no new turn |
 | `Purge a turn…` | lists the pending and archived turns, asks which one, confirms, then deletes it from the record. Journaled like the tool's purge, so `/undo` can put it back |
 
-The two halves of the plugin keep separate stores, so the dialog reads the session record over the host's plugin RPC (`stats`, `purge`). If the host has no RPC bridge, or the open route is not a session, the dialog says why instead of failing; an RPC error is reported the same way. The command id is the keybind key if you want a shortcut - no default binding is claimed. A first install may need a restart before the command appears.
+The two halves of the plugin keep separate stores, so the dialog reads the session record over the host's plugin RPC (`stats`, `purge`, `notice`). If the host has no RPC bridge, or the open route is not a session, the dialog says why instead of failing; an RPC error is reported the same way. The command id is the keybind key if you want a shortcut - no default binding is claimed. A first install may need a restart before the command appears.
 
 ### The sidebar block
 
@@ -143,6 +143,12 @@ The same numbers also sit in the TUI sidebar, appended to `sidebar.content` so t
 Under it are `[status]` (opens the dialog), `[resume]` (asks first, then sends the cue) and `[purge]` (the same list and confirmation as the dialog). The block renders from a per-session mirror that is pulled once when the session is shown, once after each idle pass, and again after a purge; at most one pull per session is in flight, a repeat inside fifteen seconds is skipped, and the mirror keeps the thirty-two most recent sessions. Renders never call the RPC.
 
 If the slot API or the JSX runtime is missing the dialog still works, and its `sidebar:` row says `unavailable`; `"sidebar": false` turns the block off.
+
+### The session panel
+
+`Context panel` (palette id `mega-smart-context.panel`) opens the full report in the host's session panel: both budgets, the request's own system-prompt size, the goal, a sparkline of the last forty passes, every pending and archived turn with `[purge]`, the pinned notices with `[retire]` on the superseded ones, and the undo state. The newest notice is the live instruction and has no retire action.
+
+The footer offers `[refresh] [resume] [dialog] [close]`. Purge and retire ask first, write through the same RPC, then refresh the shared mirror. It is independent of `sidebar`: the block's setting only skips the block's own claim. A host without the panel API reports `panel: unavailable` in the dialog.
 
 ## Installer
 

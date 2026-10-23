@@ -1,6 +1,7 @@
 /**
  * The TUI surfaces that read the server half: what one session's record reports,
- * how a reply becomes dialog rows, and how it becomes the sidebar's block.
+ * how a reply becomes dialog rows, how it becomes the sidebar's block, and how
+ * it fills the full panel.
  *
  * The two halves of the plugin run in different processes and share no memory:
  * the server half owns the session record in the host's KV, the TUI half owns a
@@ -17,7 +18,7 @@
 
 import type { ResolvedConfig } from "./config.ts"
 import { formatTokens } from "./measure.ts"
-import { budgetOf } from "./prompts.ts"
+import { budgetOf, noticePreview } from "./prompts.ts"
 import type { SessionRecord } from "./types.ts"
 
 /** The RPC id both halves agree on; the host routes `rpc.<id>.<method>`. */
@@ -26,6 +27,25 @@ export const STATUS_RPC_ID = "mega-smart-context"
 /** The two actions the dialog offers below the status rows. */
 export const RESUME_ACTION = "resume"
 export const PURGE_ACTION = "purge"
+
+/**
+ * The panel's selected-content name. The host hands every `session.panel` claim
+ * the name `ui.panel.open` was called with, and a contribution draws only when
+ * it recognises its own.
+ */
+export const PANEL_NAME = "mega-smart-context"
+
+/** The dialog row and the palette command that open the panel. */
+export const PANEL_ACTION = "panel"
+
+/** How many history samples the sparkline keeps; one cell per pass. */
+export const PANEL_HISTORY_WIDTH = 40
+
+/** How many archived turns the panel lists before it collapses the rest. */
+export const PANEL_ARCHIVE_ROWS = 12
+
+/** The eight heights a sparkline cell can take. */
+export const SPARK_CHARS = "▁▂▃▄▅▆▇█"
 
 /** Cells in one bar. Ten is readable at a sidebar-ish width and leaves the numbers room. */
 export const STATUS_BAR_WIDTH = 10
@@ -44,6 +64,26 @@ export interface StatusTurn {
   readonly gist: string
   /** Whether the raw messages survive, which the purge select says. */
   readonly raw: boolean
+  /** Recorded size, so the panel shows what a purge frees. */
+  readonly chars: number
+  /** New user turns since eviction; the archive only shrinks, so it is `0` there. */
+  readonly age: number
+}
+
+/** A pinned notice as the panel lists it; the text never has to cross whole. */
+export interface StatusNotice {
+  readonly id: string
+  readonly preview: string
+  /** The newest emission: the live instruction, which the rail refuses to retire. */
+  readonly live: boolean
+}
+
+/** What the last applied undo changed, for the panel's Undo section. */
+export interface StatusUndo {
+  readonly turn: string
+  readonly memory: number
+  readonly dropped: number
+  readonly lost: number
 }
 
 export interface StatsRequest {
@@ -66,10 +106,19 @@ export interface StatsReply {
   readonly refs: number
   readonly overBudget: boolean
   readonly goalEmpty: boolean
+  /** The goal, flattened to one line and head-kept for the panel. */
+  readonly goal: string
   readonly hostSystemTokens?: number
   readonly hostSystemParts?: number
   readonly pending: ReadonlyArray<StatusTurn>
   readonly archive: ReadonlyArray<StatusTurn>
+  /** Newest first. The last entry of the record's own array is the live one. */
+  readonly notices: ReadonlyArray<StatusNotice>
+  /** Working-window tokens per pass, oldest first, for the sparkline. */
+  readonly history: ReadonlyArray<number>
+  readonly lastUndo?: StatusUndo
+  /** Journal entries still waiting for an undo. */
+  readonly undoTurns: number
 }
 
 export interface PurgeRequest {
@@ -78,6 +127,17 @@ export interface PurgeRequest {
 }
 
 export interface PurgeReply {
+  readonly ok: boolean
+  readonly text: string
+}
+
+/** Retire one pinned notice by id; the newest one is refused server-side. */
+export interface NoticeRequest {
+  readonly sessionID: string
+  readonly id: string
+}
+
+export interface NoticeReply {
   readonly ok: boolean
   readonly text: string
 }
@@ -110,7 +170,29 @@ function isTurn(value: unknown): value is StatusTurn {
     typeof value.id === "string" &&
     value.id.length > 0 &&
     typeof value.gist === "string" &&
-    typeof value.raw === "boolean"
+    typeof value.raw === "boolean" &&
+    isCount(value.chars) &&
+    isCount(value.age)
+  )
+}
+
+function isNotice(value: unknown): value is StatusNotice {
+  return (
+    isRecord(value) &&
+    typeof value.id === "string" &&
+    value.id.length > 0 &&
+    typeof value.preview === "string" &&
+    typeof value.live === "boolean"
+  )
+}
+
+function isUndo(value: unknown): value is StatusUndo {
+  return (
+    isRecord(value) &&
+    typeof value.turn === "string" &&
+    isCount(value.memory) &&
+    isCount(value.dropped) &&
+    isCount(value.lost)
   )
 }
 
@@ -143,14 +225,33 @@ export function isStatsReply(value: unknown): value is StatsReply {
   ] as const
   for (const key of required) if (!isCount(value[key])) return false
   if (typeof value.overBudget !== "boolean" || typeof value.goalEmpty !== "boolean") return false
+  if (typeof value.goal !== "string") return false
   if (value.hostSystemTokens !== undefined && !isCount(value.hostSystemTokens)) return false
   if (value.hostSystemParts !== undefined && !isCount(value.hostSystemParts)) return false
   if (!Array.isArray(value.pending) || !value.pending.every(isTurn)) return false
   if (!Array.isArray(value.archive) || !value.archive.every(isTurn)) return false
+  if (!Array.isArray(value.notices) || !value.notices.every(isNotice)) return false
+  if (!Array.isArray(value.history) || !value.history.every(isCount)) return false
+  if (value.lastUndo !== undefined && !isUndo(value.lastUndo)) return false
+  if (!isCount(value.undoTurns)) return false
   return true
 }
 
 export function isPurgeReply(value: unknown): value is PurgeReply {
+  return isRecord(value) && typeof value.ok === "boolean" && typeof value.text === "string"
+}
+
+export function isNoticeRequest(value: unknown): value is NoticeRequest {
+  return (
+    isRecord(value) &&
+    typeof value.sessionID === "string" &&
+    value.sessionID.length > 0 &&
+    typeof value.id === "string" &&
+    value.id.length > 0
+  )
+}
+
+export function isNoticeReply(value: unknown): value is NoticeReply {
   return isRecord(value) && typeof value.ok === "boolean" && typeof value.text === "string"
 }
 
@@ -169,6 +270,8 @@ export const statsRequestSchema = schema("stats input", isStatsRequest)
 export const statsReplySchema = schema("stats output", isStatsReply)
 export const purgeRequestSchema = schema("purge input", isPurgeRequest)
 export const purgeReplySchema = schema("purge output", isPurgeReply)
+export const noticeRequestSchema = schema("notice input", isNoticeRequest)
+export const noticeReplySchema = schema("notice output", isNoticeReply)
 
 /**
  * The portable definition. The id is the plugin's: the host routes
@@ -180,6 +283,7 @@ export const STATUS_RPC = {
   methods: {
     stats: { input: statsRequestSchema, output: statsReplySchema },
     purge: { input: purgeRequestSchema, output: purgeReplySchema },
+    notice: { input: noticeRequestSchema, output: noticeReplySchema },
   },
   events: {},
 } as const
@@ -198,18 +302,40 @@ export function statsOf(record: SessionRecord, config: ResolvedConfig, version?:
     refs: report.refs,
     overBudget: report.overBudget,
     goalEmpty: report.goalEmpty,
+    goal: previewLine(record.memory.goal),
     ...(report.hostSystemTokens === undefined ? {} : { hostSystemTokens: report.hostSystemTokens }),
     ...(report.hostSystemParts === undefined ? {} : { hostSystemParts: report.hostSystemParts }),
     pending: record.pending.map((turn) => ({
       id: turn.id,
       gist: turn.gist,
       raw: turn.messages !== undefined,
+      chars: turn.chars,
+      age: turn.age,
     })),
     archive: record.archive.map((turn) => ({
       id: turn.id,
       gist: turn.gist,
       raw: turn.messages !== undefined,
+      chars: turn.chars,
+      age: 0,
     })),
+    notices: [...(record.notices ?? [])].reverse().map((notice, index) => ({
+      id: notice.id,
+      preview: noticePreview(notice.text),
+      live: index === 0,
+    })),
+    history: (record.history ?? []).slice(-PANEL_HISTORY_WIDTH).map((sample) => sample.workingTokens),
+    ...(record.lastUndo === undefined
+      ? {}
+      : {
+          lastUndo: {
+            turn: record.lastUndo.turn,
+            memory: record.lastUndo.memory,
+            dropped: record.lastUndo.dropped,
+            lost: record.lastUndo.lost,
+          },
+        }),
+    undoTurns: (record.undo ?? []).length,
   }
 }
 
@@ -228,6 +354,12 @@ export function statusBar(value: number, cap: number): string {
 
 function count(value: number): string {
   return value === 1 ? "1" : String(value)
+}
+
+/** One line, trimmed, and head-kept: a goal or a notice preview for the panel. */
+export function previewLine(value: string, width = 200): string {
+  const line = value.replace(/\s+/g, " ").trim()
+  return line.length <= width ? line : line.slice(0, Math.max(0, width - 1)).trimEnd() + "…"
 }
 
 /** A gist one line and short enough for a dialog row. */
@@ -405,5 +537,188 @@ export function sidebarText(reply: StatsReply): string {
   return sidebarLines(reply)
     .map((line) => line.spans.map((span) => span.text).join(""))
     .join("\n")
+}
+
+/**
+ * A sparkline of the working window over the recent passes.
+ *
+ * The scale tops out at the largest sample rather than at the cap: the point is
+ * the shape of the curve, and a window that never nears its cap would otherwise
+ * be a flat line of one character. An over-cap sample is simply the tallest cell.
+ */
+export function sparkline(values: ReadonlyArray<number>, width = PANEL_HISTORY_WIDTH): string {
+  if (values.length === 0) return ""
+  const recent = values.slice(-Math.max(1, width))
+  const peak = Math.max(1, ...recent.map((value) => (Number.isFinite(value) ? value : 0)))
+  return recent
+    .map((value) => {
+      const ratio = Math.max(0, Math.min(1, (Number.isFinite(value) ? value : 0) / peak))
+      return SPARK_CHARS[Math.min(SPARK_CHARS.length - 1, Math.round(ratio * (SPARK_CHARS.length - 1)))]
+    })
+    .join("")
+}
+
+/** What a click on a panel row asks the TUI half to do. */
+export type PanelActionKind = "purge" | "retire" | "resume"
+
+export interface PanelAction {
+  readonly kind: PanelActionKind
+  /** The turn id (`purge`) or the notice id (`retire`); `resume` has none. */
+  readonly id: string
+}
+
+/** One panel line: the same spans the sidebar uses, plus an optional action. */
+export interface PanelRow {
+  readonly spans: ReadonlyArray<StatusSpan>
+  readonly action?: PanelAction
+}
+
+export interface PanelSection {
+  readonly title: string
+  readonly rows: ReadonlyArray<PanelRow>
+}
+
+function plain(spans: ReadonlyArray<StatusSpan>): string {
+  return spans.map((span) => span.text).join("")
+}
+
+function turnRow(turn: StatusTurn, place: "pending" | "archive"): PanelRow {
+  const notes = [`${turn.chars} ch`, turn.raw ? "gist + raw" : "gist only"]
+  if (place === "pending" && turn.age > 0) notes.push(`age ${count(turn.age)}`)
+  return {
+    spans: [
+      { text: turnLabel(turn.gist, 72), tone: "value" },
+      { text: ` · ${notes.join(" · ")}`, tone: "muted" },
+      { text: ` · ${turn.id}`, tone: "muted" },
+    ],
+    action: { kind: "purge", id: turn.id },
+  }
+}
+
+/**
+ * The full panel, as sections of rows.
+ *
+ * This is the sidebar's opposite: every list the user asked to see, including the
+ * parts that grow with the session. It is built here, in a pure function, so the
+ * smoke test can pin what the panel says without a TUI; `panel.tsx` only maps
+ * spans to colours and rows to click handlers.
+ */
+export function panelSections(reply: StatsReply): PanelSection[] {
+  const budget: PanelRow[] = [
+    { spans: meterLine("mem ", reply.memoryTokens, reply.memoryCap, reply.memoryTokens > reply.memoryCap).spans },
+    {
+      spans: meterLine(
+        "win ",
+        reply.workingTokens,
+        reply.workingCap,
+        reply.overBudget,
+        reply.overBudget ? " over" : "",
+      ).spans,
+    },
+  ]
+  if (reply.hostSystemTokens !== undefined) {
+    budget.push({
+      spans: [
+        {
+          text:
+            `host system ~${formatTokens(reply.hostSystemTokens)} est ` +
+            `(${count(reply.hostSystemParts ?? 0)} parts) · outside this plugin's budget`,
+          tone: "muted",
+        },
+      ],
+    })
+  }
+
+  const window: PanelRow[] = [
+    {
+      spans: [
+        { text: `${count(reply.workingTurns)} kept · ${count(reply.droppedTurns)} dropped`, tone: "muted" },
+      ],
+    },
+    {
+      spans: [
+        {
+          text: reply.goalEmpty ? "goal: (empty)" : `goal: ${reply.goal}`,
+          tone: reply.goalEmpty ? "alert" : "value",
+        },
+      ],
+    },
+  ]
+  if (reply.history.length >= 2) {
+    window.push({
+      spans: [
+        { text: "passes ", tone: "muted" },
+        { text: sparkline(reply.history), tone: reply.overBudget ? "alert" : "meter" },
+        {
+          text: ` ${count(reply.history.length)} samples · peak ${formatTokens(Math.max(...reply.history))}`,
+          tone: "muted",
+        },
+      ],
+    })
+  }
+
+  const undo: PanelRow[] = []
+  if (reply.lastUndo !== undefined) {
+    undo.push({
+      spans: [
+        {
+          text:
+            `last undo: before ${reply.lastUndo.turn} · ${reply.lastUndo.memory} memory key(s), ` +
+            `${reply.lastUndo.dropped} turn(s) dropped` +
+            (reply.lastUndo.lost > 0 ? `, ${reply.lastUndo.lost} not restorable` : ""),
+          tone: "muted",
+        },
+      ],
+    })
+  }
+  if (reply.undoTurns > 0) {
+    undo.push({
+      spans: [{ text: `journal: ${count(reply.undoTurns)} turn(s) still restorable by /undo`, tone: "muted" }],
+    })
+  }
+  if (undo.length === 0) undo.push({ spans: [{ text: "nothing to undo", tone: "muted" }] })
+
+  const notices: PanelRow[] = reply.notices.map((notice) => ({
+    spans: [
+      { text: notice.preview, tone: "value" },
+      { text: notice.live ? " · live" : "", tone: "muted" },
+      { text: ` · ${notice.id}`, tone: "muted" },
+    ],
+    ...(notice.live ? {} : { action: { kind: "retire" as const, id: notice.id } }),
+  }))
+  if (notices.length === 0) notices.push({ spans: [{ text: "none pinned", tone: "muted" }] })
+
+  const pending: PanelRow[] = reply.pending.map((turn) => turnRow(turn, "pending"))
+  if (pending.length === 0) pending.push({ spans: [{ text: "nothing waiting", tone: "muted" }] })
+
+  const archiveRows = reply.archive.slice(-PANEL_ARCHIVE_ROWS).reverse()
+  const archive: PanelRow[] = archiveRows.map((turn) => turnRow(turn, "archive"))
+  if (archive.length === 0) archive.push({ spans: [{ text: "empty", tone: "muted" }] })
+  else if (reply.archive.length > archiveRows.length) {
+    archive.push({
+      spans: [{ text: `… ${count(reply.archive.length - archiveRows.length)} older`, tone: "muted" }],
+    })
+  }
+
+  return [
+    { title: "Budget", rows: budget },
+    { title: "Window", rows: window },
+    { title: `Pending eviction (${count(reply.pending.length)})`, rows: pending },
+    { title: `Archive (${count(reply.archive.length)})`, rows: archive },
+    { title: `Pinned notices (${count(reply.notices.length)})`, rows: notices },
+    { title: "Undo", rows: undo },
+  ]
+}
+
+/** The panel as plain text, one row per line, which is what a test can compare. */
+export function panelText(reply: StatsReply): string {
+  const lines: string[] = []
+  for (const section of panelSections(reply)) {
+    lines.push(`## ${section.title}`)
+    for (const row of section.rows) {
+      lines.push(`${plain(row.spans)}${row.action === undefined ? "" : ` [${row.action.kind}]`}`)
+    }
+  }
+  return lines.join("\n")
 }
 

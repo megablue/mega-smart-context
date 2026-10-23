@@ -26,7 +26,8 @@ import { createContextCommand } from "./command.ts"
 import { resolveHostConfig } from "./config.ts"
 import { createFsFeatureMap, runContextTransform } from "./context.ts"
 import { SessionStore, sameDirectory } from "../../core/state.ts"
-import { STATUS_RPC, statsOf, type PurgeRequest, type StatsRequest } from "../../core/status.ts"
+import { STATUS_RPC, statsOf, type NoticeRequest, type PurgeRequest, type StatsRequest } from "../../core/status.ts"
+import { retirePinned } from "../../core/notices.ts"
 import { purgeWithUndo, queueRevert, revertTarget } from "../../core/undo.ts"
 import { createSmartContextTool } from "./tool.ts"
 import { readPluginVersion } from "./version.ts"
@@ -132,10 +133,10 @@ export async function setup(ctx: PluginContext): Promise<() => Promise<void>> {
   }
 
   // The TUI half cannot read this half's record: its storage is a separate
-  // per-plugin JSON file, not the host's KV. The status dialog therefore asks
-  // over the host's plugin RPC, and these two handlers are the only bridge. A
-  // host without the domain, or one whose registry refuses the definition, still
-  // gets every other surface; only the dialog reports the gap.
+  // per-plugin JSON file, not the host's KV. The status dialog, the block and the
+  // panel therefore ask over the host's plugin RPC, and these three handlers are
+  // the only bridge. A host without the domain, or one whose registry refuses the
+  // definition, still gets every other surface; only the TUI reports the gap.
   if (ctx.rpc !== undefined) {
     try {
       registrations.push(
@@ -150,6 +151,9 @@ export async function setup(ctx: PluginContext): Promise<() => Promise<void>> {
             return removed
               ? { ok: true, text: `purged ${input.turn}` }
               : { ok: false, text: `no turn ${input.turn}` }
+          },
+          notice: async (input: NoticeRequest) => {
+            return store.mutate(input.sessionID, (record) => retirePinned(record, input.id, Date.now()))
           },
         }),
       )

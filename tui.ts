@@ -1,6 +1,7 @@
 /**
- * The TUI half of the plugin: a status dialog, the sidebar block, and one daily
- * check for a newer published version, reported as a toast in the terminal.
+ * The TUI half of the plugin: a status dialog, a session panel, the sidebar
+ * block, and one daily check for a newer published version, reported as a toast
+ * in the terminal.
  *
  * Why a second entrypoint at all: the server plugin's context has no toast, no
  * client and no notification channel, so it cannot put anything in front of the
@@ -8,9 +9,10 @@
  * `options`, `client`, `ui`, `keymap`, `storage`, `data.on`, `theme`. Nothing
  * here touches a request: no payload, no policy, no tokens.
  *
- * The file itself renders no JSX and imports no TUI peer, so a host without the
- * slot API keeps the dialog. The sidebar lives in `src/tui/sidebar.tsx`, is
- * imported dynamically, and its failure to load is caught here.
+ * The file itself renders no JSX and imports no TUI peer, so a host without a
+ * slot API keeps the dialog. The sidebar lives in `src/tui/sidebar.tsx` and the
+ * panel in `src/tui/panel.tsx`; each is imported dynamically on its own, and its
+ * failure to load is caught here.
  *
  * The host resolves `<plugin-root>/tui` before anything else for the TUI side
  * (and `package.json` exports `./tui` for a by-name install), the same way it
@@ -25,6 +27,8 @@ import { readPluginVersion } from "./src/adapters/opencode/version.ts"
 import { resolveLayeredConfig } from "./src/adapters/opencode/config.ts"
 import { DEFAULT_CONFIG, type ResolvedConfig } from "./src/core/config.ts"
 import {
+  PANEL_ACTION,
+  PANEL_NAME,
   PURGE_ACTION,
   RESUME_ACTION,
   STATUS_RPC,
@@ -37,6 +41,7 @@ import { sidebarRefreshOf } from "./src/tui/status-store.ts"
 import type {
   KeymapCommand,
   KeymapLayer,
+  PanelHost,
   SelectOption,
   SidebarStore,
   StatusClient,
@@ -78,6 +83,9 @@ const RESULT_TOAST_MS = 6_000
 /** The keymap id is also the config key a user can bind. */
 const STATUS_COMMAND = "mega-smart-context.status"
 
+/** Opens the session panel. Also a config key, also no default binding. */
+const PANEL_COMMAND = "mega-smart-context.panel"
+
 /** The ephemeral store the sidebar renders from; one pull per session, at most. */
 const SIDEBAR_STORE_KEY = "sidebar"
 
@@ -88,6 +96,22 @@ const SIDEBAR_STORE_KEY = "sidebar"
 type SidebarState = "disabled" | "unavailable" | "active"
 
 let sidebarState: SidebarState = "disabled"
+
+/**
+ * Whether the panel claim is registered. Separate from the sidebar because the
+ * two load separately: a host can draw the block while its panel API is missing.
+ */
+type PanelState = "unavailable" | "active"
+
+let panelState: PanelState = "unavailable"
+
+/**
+ * The one pull the commands may start, published by `startSurfaces`.
+ *
+ * The command handler is built before the surfaces are wired, so it reaches the
+ * mirror through here rather than capturing a `refresh` that does not exist yet.
+ */
+let statusRefresh: ((sessionID: string, force?: boolean) => void) | undefined
 
 /**
  * The three config layers, or the shipped defaults when they do not resolve.
@@ -152,13 +176,14 @@ function resultToast(context: TuiContext, message: string, variant: ToastVariant
 }
 
 /** Resume: a synthetic cue, the same channel `/context resume` uses. */
-async function resume(context: TuiContext, sessionID: string): Promise<void> {
+async function resume(context: TuiContext, sessionID: string, after?: () => void): Promise<void> {
   try {
     await context.client.session.synthetic({ sessionID, text: RESUMED_TEXT, resume: true })
     resultToast(context, "resumed: one turn with no user message", "info")
   } catch (error) {
     resultToast(context, "resume failed: " + messageOf(error), "error")
   }
+  after?.()
 }
 
 /** The purge list: pending first, then the archive, each row naming the turn id. */
@@ -172,6 +197,68 @@ function purgeOptions(reply: StatsReply): SelectOption<string>[] {
     ...reply.pending.map((turn) => row("pending", turn)),
     ...reply.archive.map((turn) => row("archive", turn)),
   ]
+}
+
+/**
+ * Confirm and purge one turn. Both the select's choice and a panel row's click
+ * end here, so the confirmation and the refresh-after are stated once.
+ */
+async function purgeTurn(
+  context: TuiContext,
+  rpc: StatusClient,
+  sessionID: string,
+  turn: string,
+  after?: () => void,
+): Promise<void> {
+  let confirmed: boolean | undefined
+  try {
+    confirmed = await context.ui.dialog.confirm({
+      title: "Purge a turn",
+      message: `Remove ${turn} from the record? The transcript is not touched.`,
+      label: { confirm: "Purge", cancel: "Keep" },
+    })
+  } catch {
+    return
+  }
+  if (confirmed !== true) return
+  try {
+    const result = await rpc.purge({ sessionID, turn })
+    resultToast(context, result.text, result.ok ? "info" : "warning")
+  } catch (error) {
+    resultToast(context, "purge failed: " + messageOf(error), "error")
+  }
+  // Whether or not the turn was there, the mirror is now one pass behind.
+  after?.()
+}
+
+/** Retire one pinned notice; the server refuses the live one. */
+async function retireNotice(
+  context: TuiContext,
+  rpc: StatusClient,
+  sessionID: string,
+  id: string,
+  after?: () => void,
+): Promise<void> {
+  let confirmed: boolean | undefined
+  try {
+    confirmed = await context.ui.dialog.confirm({
+      title: "Retire a pinned notice",
+      message:
+        `Retire ${id}? It stays retired while its text is still in the window; ` +
+        "the host emitting it again under a new id returns it.",
+      label: { confirm: "Retire", cancel: "Keep" },
+    })
+  } catch {
+    return
+  }
+  if (confirmed !== true) return
+  try {
+    const result = await rpc.notice({ sessionID, id })
+    resultToast(context, result.text, result.ok ? "info" : "warning")
+  } catch (error) {
+    resultToast(context, "retire failed: " + messageOf(error), "error")
+  }
+  after?.()
 }
 
 async function openPurge(
@@ -209,25 +296,7 @@ async function openPurge(
     return
   }
   if (turn === undefined) return
-  let confirmed: boolean | undefined
-  try {
-    confirmed = await context.ui.dialog.confirm({
-      title: "Purge a turn",
-      message: `Remove ${turn} from the record? The transcript is not touched.`,
-      label: { confirm: "Purge", cancel: "Keep" },
-    })
-  } catch {
-    return
-  }
-  if (confirmed !== true) return
-  try {
-    const result = await rpc.purge({ sessionID, turn })
-    resultToast(context, result.text, result.ok ? "info" : "warning")
-  } catch (error) {
-    resultToast(context, "purge failed: " + messageOf(error), "error")
-  }
-  // Whether or not the turn was there, the mirror is now one pass behind.
-  after?.()
+  await purgeTurn(context, rpc, sessionID, turn, after)
 }
 
 /** The dialog's own answer to "did the sidebar block appear?". */
@@ -247,6 +316,28 @@ function sidebarRow(): StatusRow {
       sidebarState === "disabled"
         ? "set sidebar:true to show the block"
         : "the slot API or the JSX runtime is missing; the dialog still works",
+    disabled: true,
+  }
+}
+
+/**
+ * The dialog's own answer to "can I open the panel?".
+ *
+ * A row rather than a disabled command: a palette command that silently does
+ * nothing is worse than one that says the host has no panel API.
+ */
+function panelRow(): StatusRow {
+  if (panelState === "active") {
+    return {
+      title: "Open the full panel",
+      value: PANEL_ACTION,
+      description: "budgets, history, pending and archive with purge, pinned notices",
+    }
+  }
+  return {
+    title: "panel: unavailable in this TUI",
+    value: "",
+    description: "the panel API or the JSX runtime is missing; the sidebar and this dialog still work",
     disabled: true,
   }
 }
@@ -278,10 +369,10 @@ async function openStatus(context: TuiContext, target?: string, after?: () => vo
     return
   }
   const rows = statusRows(reply)
-  // Above the actions, so it reads as part of the numbers and never steals the
+  // Above the actions, so they read as part of the numbers and never steal the
   // selection from Resume.
   const firstAction = rows.findIndex((row) => row.value !== "")
-  rows.splice(firstAction < 0 ? rows.length : firstAction, 0, sidebarRow())
+  rows.splice(firstAction < 0 ? rows.length : firstAction, 0, panelRow(), sidebarRow())
   const title = reply.version === undefined ? STATUS_TITLE : `${STATUS_TITLE} v${reply.version}`
   let choice: string | undefined
   try {
@@ -291,13 +382,49 @@ async function openStatus(context: TuiContext, target?: string, after?: () => vo
   }
   if (choice === RESUME_ACTION) await resume(context, sessionID)
   else if (choice === PURGE_ACTION) await openPurge(context, rpc, sessionID, reply, after)
+  else if (choice === PANEL_ACTION) await openPanel(context, sessionID)
+}
+
+/**
+ * Open the full panel in the current session.
+ *
+ * The host remembers which panel is open by name; the claim in `panel.tsx`
+ * renders only for `PANEL_NAME`. `refresh` is forced first, so the panel opens
+ * on the record as it stands rather than on a stale mirror.
+ */
+async function openPanel(context: TuiContext, target?: string): Promise<void> {
+  const sessionID = target ?? sessionIDOf(context)
+  if (sessionID === undefined) {
+    await alert(context, STATUS_TITLE, "Open a session first: the panel reads that session's record.")
+    return
+  }
+  const panel = context.ui.panel
+  if (panelState !== "active" || panel === undefined) {
+    await alert(
+      context,
+      STATUS_TITLE,
+      "This TUI cannot render the panel (the panel API or the JSX runtime is missing). The dialog still works.",
+    )
+    return
+  }
+  let opened = false
+  try {
+    opened = panel.open(PANEL_NAME, { presentation: "panel" })
+  } catch {
+    opened = false
+  }
+  if (!opened) {
+    await alert(context, STATUS_TITLE, "The host refused to open the panel.")
+    return
+  }
+  statusRefresh?.(sessionID, true)
 }
 
 /**
  * Resume from a click, which is not a dialog choice: ask first, because the cue
  * spends a model turn and a stray click must not.
  */
-async function confirmResume(context: TuiContext, sessionID: string): Promise<void> {
+async function confirmResume(context: TuiContext, sessionID: string, after?: () => void): Promise<void> {
   let confirmed: boolean | undefined
   try {
     confirmed = await context.ui.dialog.confirm({
@@ -308,7 +435,7 @@ async function confirmResume(context: TuiContext, sessionID: string): Promise<vo
   } catch {
     return
   }
-  if (confirmed === true) await resume(context, sessionID)
+  if (confirmed === true) await resume(context, sessionID, after)
 }
 
 /** The palette command. No default binding: the id is the config key to bind. */
@@ -320,6 +447,18 @@ function statusCommand(context: TuiContext): KeymapCommand {
     group: "mega-smart-context",
     palette: true,
     run: () => openStatus(context),
+  }
+}
+
+/** The panel command. Also a config key, also no default binding. */
+function panelCommand(context: TuiContext): KeymapCommand {
+  return {
+    id: PANEL_COMMAND,
+    title: "Context panel",
+    description: "the full record: budgets, history, turns, notices and undo",
+    group: "mega-smart-context",
+    palette: true,
+    run: () => openPanel(context),
   }
 }
 
@@ -382,25 +521,37 @@ function idleSessionID(event: unknown): string | undefined {
 }
 
 /**
- * Start the sidebar half: one ephemeral store, one pull at a time, and the slot
- * claim itself.
+ * Start the drawn surfaces: one ephemeral mirror, one pull at a time, the
+ * sidebar claim, the panel claim, and one idle listener.
  *
  * Every step is optional on purpose. A host without `storage.memory` or `ui.slot`
- * simply has no sidebar; a host whose TUI cannot load this file's JSX (a missing
- * `@opentui/solid` runtime, say) keeps the status dialog, because the import is
- * tried *here* and its failure is caught, not raised from `setup`.
+ * gets neither surface; a host whose TUI cannot load one file's JSX (a missing
+ * `@opentui/solid` runtime, say) keeps the other, because the two imports are
+ * tried separately and their failures are caught, not raised from `setup`.
  */
-async function startSidebar(context: TuiContext): Promise<() => void> {
+async function startSurfaces(context: TuiContext, sidebar: boolean): Promise<() => void> {
   const noop = (): void => {}
-  sidebarState = "unavailable"
+  sidebarState = sidebar ? "unavailable" : "disabled"
+  panelState = "unavailable"
   if (typeof context.storage.memory !== "function" || typeof context.ui.slot !== "function") return noop
 
-  let slots: typeof import("./src/tui/sidebar.tsx")
-  try {
-    slots = await import("./src/tui/sidebar.tsx")
-  } catch {
-    return noop
+  // Load first: a host that can render neither file must not leave a mirror
+  // behind. The sidebar import is skipped outright when the config disables it.
+  let sidebarModule: typeof import("./src/tui/sidebar.tsx") | undefined
+  if (sidebar) {
+    try {
+      sidebarModule = await import("./src/tui/sidebar.tsx")
+    } catch {
+      // No sidebar: the dialog and the panel are unaffected.
+    }
   }
+  let panelModule: typeof import("./src/tui/panel.tsx") | undefined
+  try {
+    panelModule = await import("./src/tui/panel.tsx")
+  } catch {
+    // No panel: the dialog and the sidebar are unaffected.
+  }
+  if (sidebarModule === undefined && panelModule === undefined) return noop
 
   let held: readonly [
     SidebarStore,
@@ -418,58 +569,119 @@ async function startSidebar(context: TuiContext): Promise<() => void> {
     store: () => store,
     mutate,
   })
+  const snapshot = (sessionID: string): SidebarStore["sessions"][string] | undefined => store.sessions[sessionID]
+  const reload = (sessionID: string): void => {
+    void refresh(sessionID, true)
+  }
+  statusRefresh = (sessionID, force) => {
+    void refresh(sessionID, force)
+  }
 
-  let release: () => void
-  try {
-    release = slots.registerSidebar({
+  const stops: Array<() => void> = []
+
+  if (sidebarModule !== undefined) {
+    try {
+      stops.push(
+        sidebarModule.registerSidebar({
+          context,
+          snapshot,
+          refresh,
+          actions: {
+            status: (sessionID) => {
+              void openStatus(context, sessionID, () => reload(sessionID))
+            },
+            resume: (sessionID) => {
+              void confirmResume(context, sessionID, () => reload(sessionID))
+            },
+            purge: (sessionID) => {
+              const rpc = rpcOf(context)
+              if (rpc === undefined) {
+                resultToast(context, "this host has no plugin RPC bridge", "error")
+                return
+              }
+              void openPurge(context, rpc, sessionID, undefined, () => reload(sessionID))
+            },
+          },
+        }),
+      )
+      sidebarState = "active"
+    } catch {
+      // A claim the host refuses leaves the mirror for the panel.
+    }
+  }
+
+  if (panelModule !== undefined && context.ui.panel !== undefined) {
+    const host: PanelHost = {
       context,
-      snapshot: (sessionID) => store.sessions[sessionID],
+      snapshot,
       refresh,
       actions: {
-        status: (sessionID) => {
-          void openStatus(context, sessionID, () => refresh(sessionID, true))
-        },
-        resume: (sessionID) => {
-          void confirmResume(context, sessionID)
-        },
-        purge: (sessionID) => {
+        purge: (sessionID, turn) => {
           const rpc = rpcOf(context)
           if (rpc === undefined) {
             resultToast(context, "this host has no plugin RPC bridge", "error")
             return
           }
-          void openPurge(context, rpc, sessionID, undefined, () => refresh(sessionID, true))
+          void purgeTurn(context, rpc, sessionID, turn, () => reload(sessionID))
+        },
+        retire: (sessionID, id) => {
+          const rpc = rpcOf(context)
+          if (rpc === undefined) {
+            resultToast(context, "this host has no plugin RPC bridge", "error")
+            return
+          }
+          void retireNotice(context, rpc, sessionID, id, () => reload(sessionID))
+        },
+        resume: (sessionID) => {
+          void confirmResume(context, sessionID, () => reload(sessionID))
+        },
+        status: (sessionID) => {
+          void openStatus(context, sessionID, () => reload(sessionID))
+        },
+        close: () => {
+          try {
+            context.ui.panel?.close()
+          } catch {
+            // The host is closing it anyway.
+          }
         },
       },
-    })
-  } catch {
+    }
+    try {
+      stops.push(panelModule.registerPanel(host))
+      panelState = "active"
+    } catch {
+      // A claim the host refuses leaves the mirror for the sidebar.
+    }
+  }
+
+  if (stops.length === 0) {
+    statusRefresh = undefined
     return noop
   }
-  sidebarState = "active"
 
   // A pass just ran, so the numbers are stale by definition - but only the
   // session that went idle is re-read.
-  let off: () => void
   try {
-    off = context.data.on("session.idle", (event) => {
-      const sessionID = idleSessionID(event)
-      if (sessionID !== undefined) refresh(sessionID, true)
-    })
+    stops.push(
+      context.data.on("session.idle", (event) => {
+        const sessionID = idleSessionID(event)
+        if (sessionID !== undefined) reload(sessionID)
+      }),
+    )
   } catch {
-    return release
+    // One pull per command still works without idle events.
   }
 
   return () => {
-    try {
-      off()
-    } catch {
-      // A listener that cannot be removed is already gone with the host.
+    for (const stop of [...stops].reverse()) {
+      try {
+        stop()
+      } catch {
+        // A listener or claim that cannot be removed is already gone with the host.
+      }
     }
-    try {
-      release()
-    } catch {
-      // Same for the slot.
-    }
+    statusRefresh = undefined
   }
 }
 
@@ -479,19 +691,18 @@ export async function setup(context: TuiContext): Promise<() => void> {
 
   const stops: Array<() => void> = []
 
-  // Before the config early returns: the dialog is not part of the daily version
-  // check, and neither is the sidebar.
+  // Before the config early returns: the dialog and the panel are not part of
+  // the daily version check, and neither is the sidebar.
   try {
     context.keymap.layer(() => ({
       mode: "global",
-      commands: [statusCommand(context)],
+      commands: [statusCommand(context), panelCommand(context)],
     }))
   } catch {
     // A host without a keymap still gets the update check.
   }
 
-  if (config.sidebar) stops.push(await startSidebar(context))
-  else sidebarState = "disabled"
+  stops.push(await startSurfaces(context, config.sidebar))
 
   if (config.updateCheck) {
     const [state, update] = context.storage.store<UpdateState>(STORE_KEY, {

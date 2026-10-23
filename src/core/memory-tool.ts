@@ -19,10 +19,10 @@
 import { archivePending, findArchived, purgeQuery, recall } from "./archive.ts"
 import type { ResolvedConfig } from "./config.ts"
 import { estimateTokens, formatTokens, memoryChars } from "./measure.ts"
+import { retirePinned } from "./notices.ts"
 import { budgetOf, noticePreview, renderMemory, renderStats } from "./prompts.ts"
 import { MEMORY_KEYS, applyPatch, parsePatch } from "./schema.ts"
-import { retireNotice } from "./state.ts"
-import { captureMemory, captureNotice, capturePurge, purgeWithUndo } from "./undo.ts"
+import { captureMemory, capturePurge, purgeWithUndo } from "./undo.ts"
 import type { SessionStore } from "./state.ts"
 import type { FeatureMapPort, Memory, SessionRecord } from "./types.ts"
 import { refVerdict } from "./refs.ts"
@@ -334,31 +334,10 @@ function notice(
     lines.push("", 'Retire a superseded notice with action:"notice" remove:"<id>".')
     return { text: lines.join("\n"), ok: true }
   }
-  if (remove === notices[notices.length - 1]?.id) {
-    return {
-      text:
-        `smart_context: ${remove} is the newest notice, the live instruction, and cannot be removed. ` +
-        "A newer notice retires it; until then it stays pinned.",
-      ok: false,
-    }
-  }
-  const entry = notices.find((notice) => notice.id === remove)
-  if (entry === undefined) {
-    const ids = notices.map((notice) => notice.id).join(", ") || "none"
-    return { text: `smart_context: no pinned notice ${JSON.stringify(remove)}. Pinned: ${ids}`, ok: false }
-  }
-  captureNotice(record, entry, notices.findIndex((candidate) => candidate.id === remove), now)
-  record.notices = notices.filter((notice) => notice.id !== remove)
-  record.retired = retireNotice(record.retired ?? [], entry)
-  return {
-    text:
-      `removed pinned notice ${remove}\n` +
-      "It stays retired while its text is still in the window; the host emitting it again under a new id returns it.\n" +
-      usage(record, config),
-    ok: true,
-  }
+  const outcome = retirePinned(record, remove, now)
+  if (!outcome.ok) return { text: `smart_context: ${outcome.text}`, ok: false }
+  return { text: outcome.text + "\n" + usage(record, config), ok: true }
 }
-
 export async function runMemoryTool(
   request: MemoryToolRequest,
   deps: MemoryToolDeps,

@@ -4,11 +4,12 @@
  * `sidebar.content`, plus three clickable words that reach the same actions the
  * palette command offers.
  *
- * This is the only file in the plugin that renders JSX, and it is the only one
- * that needs the TUI peers (`@opentui/solid` for the transform, `solid-js` for
- * the primitives). Both are provided by the host at runtime - the pragma above
- * is what makes Bun resolve them for a plugin file that has no `node_modules` of
- * its own - and both are only a *dev* dependency of this package.
+ * One of the two files in the plugin that render JSX (`panel.tsx` is the other),
+ * and one of the two that need the TUI peers (`@opentui/solid` for the transform,
+ * `solid-js` for the primitives). Both are provided by the host at runtime - the
+ * pragma above is what makes Bun resolve them for a plugin file that has no
+ * `node_modules` of its own - and both are only a *dev* dependency of this
+ * package.
  *
  * Everything that decides what the block says lives in `core/status.ts` and is
  * pure: this file maps spans to colours and wires the click targets. It renders
@@ -20,8 +21,9 @@
 
 import type { JSX } from "@opentui/solid"
 import { For, Show, createEffect, createMemo, on } from "solid-js"
-import { sidebarLines, type SidebarLine, type SidebarTone, type StatsReply } from "../core/status.ts"
-import type { SidebarHost, TuiContext } from "./context.ts"
+import { sidebarLines, type SidebarLine, type StatsReply } from "../core/status.ts"
+import type { SidebarHost } from "./context.ts"
+import { toneColor } from "./theme.ts"
 
 /** The one input the host passes to a `sidebar.content` claim. */
 interface SidebarClaimInput {
@@ -40,18 +42,6 @@ interface SidebarClaim {
   readonly after?: string
   readonly replace?: string
   readonly render: (input: SidebarClaimInput) => JSX.Element
-}
-
-/** One theme colour per tone. A host theme that does not resolve paints nothing. */
-function toneColor(context: TuiContext, tone: SidebarTone): string | undefined {
-  try {
-    const text = context.theme.text
-    if (tone === "alert") return text.feedback.warning.base
-    if (tone === "muted") return text.muted
-    return text.base
-  } catch {
-    return undefined
-  }
 }
 
 function Line(props: { host: SidebarHost; line: SidebarLine }): JSX.Element {

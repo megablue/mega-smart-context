@@ -23,21 +23,29 @@ import { pathToFileURL } from "node:url"
 import { parseLayer, resolveConfig } from "../src/core/config.ts"
 import { buildPayload } from "../src/core/context.ts"
 import { runMemoryTool } from "../src/core/memory-tool.ts"
+import { retirePinned } from "../src/core/notices.ts"
 import { runContextCommand } from "../src/core/command.ts"
 import { messageChars, messagesChars } from "../src/core/measure.ts"
 import { NOTICE_HEADING, POLICY, renderMemory, renderStats } from "../src/core/prompts.ts"
 import { emptyMemory } from "../src/core/schema.ts"
 import {
+  PANEL_ACTION,
+  PANEL_NAME,
   PURGE_ACTION,
   RESUME_ACTION,
   SIDEBAR_STALE_MS,
   STATUS_RPC,
+  isNoticeRequest,
   isPurgeRequest,
   isStatsReply,
   isStatsRequest,
+  noticeRequestSchema,
+  panelSections,
+  panelText,
   sidebarLines,
   sidebarText,
   snapshotStale,
+  sparkline,
   statsOf,
   statsReplySchema,
   statusBar,
@@ -495,6 +503,31 @@ const removeOlder = await runMemoryTool({ sessionID: "notice-tool", action: "not
 ok(removeOlder.ok, "an older notice can be removed")
 const remaining = await noticeStore.load("notice-tool")
 ok(remaining.notices.length === 1 && remaining.notices[0].id === "n-new", "only the retired notice is gone")
+
+// The same rule is reachable over the RPC, so it lives in one function.
+const railRecord = blankRecord()
+railRecord.notices = [
+  { id: "rail-old", text: "older text", at: 1 },
+  { id: "rail-live", text: "live text", at: 2 },
+]
+const railRefuse = retirePinned(railRecord, "rail-live", 10)
+ok(
+  !railRefuse.ok && railRecord.notices.length === 2 && (railRecord.undo ?? []).length === 0,
+  "the shared retire rule refuses the newest notice and writes nothing",
+)
+const railTake = retirePinned(railRecord, "rail-old", 11)
+ok(
+  railTake.ok &&
+    railRecord.notices.length === 1 &&
+    railRecord.retired[0].id === "rail-old" &&
+    (railRecord.undo ?? []).length === 1,
+  "retiring an older notice records the retirement and journals it",
+)
+const railMissing = retirePinned(railRecord, "rail-none", 12)
+ok(
+  !railMissing.ok && /no pinned notice/.test(railMissing.text) && (railRecord.undo ?? []).length === 1,
+  "a retirement for an unknown id changes nothing",
+)
 
 // Removal is sticky: the text is still in the window, so the pass must skip it.
 await noticePass("notice-tool", toolWindow)
@@ -1540,8 +1573,8 @@ ok(
 )
 ok(
   STATUS_RPC.id === "mega-smart-context" &&
-    Object.keys(STATUS_RPC.methods).sort().join(",") === "purge,stats",
-  "both halves share one RPC id and two methods",
+    Object.keys(STATUS_RPC.methods).sort().join(",") === "notice,purge,stats",
+  "both halves share one RPC id and three methods",
 )
 ok(statusBar(15_000, 20_000) === "████████░░", "a bar fills to its ratio")
 ok(statusBar(25_000, 20_000) === "██████████", "a bar over cap fills every cell")
@@ -1623,6 +1656,88 @@ ok(
   "a window inside its cap paints no alert tone",
 )
 
+// The panel is the full report: everything the sidebar leaves out, still built
+// by a pure function so its shape does not need a host.
+const panelRecord = {
+  ...statusRecord,
+  notices: [
+    { id: "msg_n1", text: "<system-reminder>\nYou are in Plan mode. Do not edit.", at: 1 },
+    { id: "msg_n2", text: "<system-reminder>\nYou are NO LONGER in Plan mode.", at: 2 },
+  ],
+  history: [{ workingTokens: 2_000 }, { workingTokens: 5_000 }, { workingTokens: 3_000 }],
+  lastUndo: { turn: "msg_u", at: 3, memory: 2, turns: 1, dropped: 1, lost: 0 },
+  undo: [{ turn: "msg_u" }],
+}
+const panelReply = statsOf(panelRecord, statusConfig, "0.1.99")
+const panelBody = panelText(panelReply)
+
+ok(
+  panelReply.notices[0].id === "msg_n2" && panelReply.notices[0].live === true && panelReply.notices[1].live === false,
+  "the panel lists the newest notice first and marks only it live",
+)
+ok(
+  panelReply.history.join(",") === "2000,5000,3000" && panelReply.goal === "ship the status dialog",
+  "statsOf carries the pass history and the goal into the panel's reply",
+)
+ok(
+  statusReply.pending[0].chars === 10 && statusReply.pending[0].age === 0 && statusReply.archive[0].age === 0,
+  "a turn reply carries its size and its eviction age",
+)
+ok(
+  panelBody.includes("## Pending eviction (1)") &&
+    panelBody.includes("a pending turn · 10 ch · gist + raw · msg_p [purge]") &&
+    panelBody.includes("the archived turn · 20 ch · gist only · msg_a [purge]"),
+  "the panel lists pending and archived turns with a purge action",
+)
+ok(
+  panelBody.includes("## Pinned notices (2)") &&
+    panelBody.includes("You are NO LONGER in Plan mode. · live") &&
+    panelBody.includes("You are in Plan mode. Do not edit. · msg_n1 [retire]"),
+  "only a superseded notice offers its retire action",
+)
+ok(
+  panelBody.includes("## Budget") &&
+    panelBody.includes("host system ~4.2k est (5 parts)") &&
+    panelBody.includes("## Undo") &&
+    panelBody.includes("last undo: before msg_u · 2 memory key(s), 1 turn(s) dropped") &&
+    panelBody.includes("journal: 1 turn(s)"),
+  "the panel reports the budgets, the host system size and the undo state",
+)
+ok(
+  panelBody.includes("passes ") && panelBody.includes("3 samples · peak 5k"),
+  "the panel draws the pass sparkline with its peak",
+)
+ok(
+  !panelText({ ...panelReply, notices: [], history: [], lastUndo: undefined, undoTurns: 0 }).includes("[retire]") &&
+    panelText({ ...panelReply, notices: [], history: [], lastUndo: undefined, undoTurns: 0 }).includes("none pinned"),
+  "an empty panel says so instead of leaving blank sections",
+)
+const longArchive = statsOf(
+  { ...statusRecord, archive: Array.from({ length: 20 }, (_, index) => ({ id: `msg_a${index}`, gist: `turn ${index}`, chars: 1, createdAt: index })) },
+  statusConfig,
+)
+ok(
+  panelText(longArchive).includes("msg_a19") && panelText(longArchive).includes("… 8 older"),
+  "the archive lists the newest turns and collapses the rest behind a count",
+)
+ok(sparkline([]) === "", "an empty history draws no sparkline")
+ok(sparkline([0, 5, 10]) === "▁▅█", "the sparkline scales its cells to the tallest sample")
+ok(sparkline(Array.from({ length: 100 }, () => 1)).length === 40, "the sparkline keeps only its recent width")
+ok(
+  panelSections(panelReply).map((section) => section.title).join("|") ===
+    "Budget|Window|Pending eviction (1)|Archive (1)|Pinned notices (2)|Undo",
+  "the panel's sections have a fixed order",
+)
+ok(PANEL_NAME === "mega-smart-context" && PANEL_ACTION === "panel", "the panel has one open name and one dialog value")
+ok(
+  isNoticeRequest({ sessionID: "s", id: "n" }) && !isNoticeRequest({ sessionID: "s", id: "" }),
+  "a retire request needs a notice id",
+)
+ok(
+  noticeRequestSchema["~standard"].validate({ sessionID: "s", id: "n" }).issues === undefined,
+  "the retire request matches the schema the host validates",
+)
+
 // The pull rule: one per window, one in flight, bounded store.
 ok(
   snapshotStale(undefined, 0) === true &&
@@ -1700,6 +1815,10 @@ const statusScene = makeTui(
 await setupTui(statusScene.context)
 const statusCommand = statusScene.seen.commands.find((command) => command.id === "mega-smart-context.status")
 ok(statusCommand !== undefined, "the status command is registered even with updateCheck:false")
+ok(
+  statusScene.seen.commands.some((command) => command.id === "mega-smart-context.panel"),
+  "the panel command is registered alongside the dialog",
+)
 await statusCommand.run()
 ok(statusScene.seen.rpcDefinition === STATUS_RPC, "the command builds its client from the shared definition")
 const statusDialog = statusScene.seen.dialogs.find((dialog) => dialog.kind === "select")
@@ -1777,8 +1896,11 @@ ok(slotScene.seen.dialogs[0].kind === "select", "a host with slots still opens t
 ok(
   slotScene.seen.dialogs[0].options.some(
     (row) => typeof row.title === "string" && row.title.startsWith("sidebar:"),
-  ),
-  "the dialog says whether the sidebar is drawing",
+  ) &&
+    slotScene.seen.dialogs[0].options.some(
+      (row) => typeof row.title === "string" && row.title.startsWith("panel:"),
+    ),
+  "the dialog says whether the sidebar draws and whether the panel can open",
 )
 stopSlots()
 ok(slotScene.seen.released.length === slotScene.seen.slots.length, "teardown releases the claim it made")
@@ -1786,8 +1908,8 @@ ok(slotScene.seen.released.length === slotScene.seen.slots.length, "teardown rel
 const noSidebar = makeTui({ updateCheck: false, sidebar: false }, {}, { withSlots: true })
 const stopNoSidebar = await setupTui(noSidebar.context)
 ok(
-  noSidebar.seen.slots.length === 0 && noSidebar.seen.memory === 0,
-  "sidebar:false claims no slot and makes no store",
+  noSidebar.seen.slots.length === 0,
+  "sidebar:false claims no sidebar slot (the panel would share the one mirror)",
 )
 stopNoSidebar()
 
