@@ -23,7 +23,7 @@ import type { JSX } from "@opentui/solid"
 import { For, Show, createEffect, createMemo, on } from "solid-js"
 import { sidebarLines, type SidebarLine, type StatsReply } from "../core/status.ts"
 import type { SidebarHost } from "./context.ts"
-import { toneColor } from "./theme.ts"
+import { toneAttributes, toneColor } from "./theme.ts"
 
 /** The one input the host passes to a `sidebar.content` claim. */
 interface SidebarClaimInput {
@@ -46,9 +46,15 @@ interface SidebarClaim {
 
 function Line(props: { host: SidebarHost; line: SidebarLine }): JSX.Element {
   return (
-    <box flexDirection="row">
+    // `space-between` is what right-aligns a header's version: the box already
+    // spans the sidebar's width, so the two spans sit against opposite edges.
+    <box flexDirection="row" justifyContent={props.line.spread === true ? "space-between" : undefined}>
       <For each={props.line.spans}>
-        {(span) => <text fg={toneColor(props.host.context, span.tone)}>{span.text}</text>}
+        {(span) => (
+          <text fg={toneColor(props.host.context, span.tone)} attributes={toneAttributes(span.tone)}>
+            {span.text}
+          </text>
+        )}
       </For>
     </box>
   )
@@ -76,14 +82,17 @@ function Sidebar(props: { host: SidebarHost; sessionID: string }): JSX.Element {
           </For>
         )}
       </Show>
+      {/* Mouse-up, deliberately: a dialog opened on mouse-down is already on
+          screen when the button is released, and the host reads that release as
+          a click on the new surface and dismisses it in the same gesture. */}
       <box flexDirection="row" gap={1}>
-        <text fg={muted()} onMouseDown={() => props.host.actions.status(props.sessionID)}>
+        <text fg={muted()} onMouseUp={() => props.host.actions.status(props.sessionID)}>
           [status]
         </text>
-        <text fg={muted()} onMouseDown={() => props.host.actions.resume(props.sessionID)}>
+        <text fg={muted()} onMouseUp={() => props.host.actions.resume(props.sessionID)}>
           [resume]
         </text>
-        <text fg={muted()} onMouseDown={() => props.host.actions.purge(props.sessionID)}>
+        <text fg={muted()} onMouseUp={() => props.host.actions.purge(props.sessionID)}>
           [purge]
         </text>
       </box>

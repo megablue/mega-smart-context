@@ -112,7 +112,7 @@ Every request starts with a `<smart-context>` block. If `goal` is empty, the mod
 
 | Command | Effect |
 | --- | --- |
-| `/context` or `/context status` | the status report: memory and working usage against their caps, turns kept and dropped, `over budget`, the goal, the host system size (display only), the pinned notices, the pending evictions, the archive, and the loaded build's version |
+| `/context` or `/context status` | the status report: its first line names the product and the loaded build, then memory and working usage against their caps, turns kept and dropped, `over budget`, the goal, the host system size (display only), the pinned notices, the pending evictions and the archive |
 | `/context now` | archive every pending turn immediately, instead of waiting for an eviction to age it |
 | `/context resume` | start a model turn with the plugin's resume cue through the host's synthetic channel - no user message, no new turn, and no pending eviction aged |
 | `/context memory <key>` | print one memory key as JSON: `goal`, `plan`, `facts`, `files`, `decisions`, `open`, `refs` or `notes` |
@@ -138,9 +138,9 @@ The two halves of the plugin keep separate stores, so the dialog reads the sessi
 
 ### The sidebar block
 
-The same numbers also sit in the TUI sidebar, appended to `sidebar.content` so they are the last item in its scrollable list: the build, a memory bar, a working-window bar marked when it is over cap, turns kept and dropped, pending/archive/ref counts, and the host system size when a pass measured one. Gists, notice text and the archive list stay out - the block never grows with the session.
+The same numbers also sit in the TUI sidebar, appended to `sidebar.content` so they are the last item in its scrollable list: a header of the plugin name with the loaded version against the block's right edge, a memory bar, a working-window bar, turns kept and dropped, pending/archive/ref counts, and the host system size when a pass measured one. The header line is spread edge to edge, so the sidebar's own width decides where the version lands. The bars' numbers are right-aligned to a shared column so the slashes line up, and an over-cap working line carries a `*` in the gutter before its value. Gists, notice text and the archive list stay out - the block never grows with the session.
 
-Under it are `[status]` (opens the dialog), `[resume]` (asks first, then sends the cue) and `[purge]` (the same list and confirmation as the dialog). The block renders from a per-session mirror that is pulled once when the session is shown, once after each idle pass, and again after a purge; at most one pull per session is in flight, a repeat inside fifteen seconds is skipped, and the mirror keeps the thirty-two most recent sessions. Renders never call the RPC.
+Under it are `[status]` (opens the dialog), `[resume]` (asks first, then sends the cue) and `[purge]` (the same list and confirmation as the dialog). Each acts when the mouse button is released, so the dialog a click opens is not dismissed by that same release. The block renders from a per-session mirror that is pulled once when the session is shown, once after each idle pass, and again after a purge; at most one pull per session is in flight, a repeat inside fifteen seconds is skipped, and the mirror keeps the thirty-two most recent sessions. Renders never call the RPC.
 
 If the slot API or the JSX runtime is missing the dialog still works, and its `sidebar:` row says `unavailable`; `"sidebar": false` turns the block off.
 

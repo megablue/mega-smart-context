@@ -20,6 +20,8 @@ import assert from "node:assert/strict"
 import { resolve } from "node:path"
 import { pathToFileURL } from "node:url"
 
+import { TextAttributes } from "@opentui/core"
+
 import { parseLayer, resolveConfig } from "../src/core/config.ts"
 import { buildPayload } from "../src/core/context.ts"
 import { runMemoryTool } from "../src/core/memory-tool.ts"
@@ -31,6 +33,7 @@ import { emptyMemory } from "../src/core/schema.ts"
 import {
   PANEL_ACTION,
   PANEL_NAME,
+  PRODUCT_NAME,
   PURGE_ACTION,
   RESUME_ACTION,
   SIDEBAR_STALE_MS,
@@ -54,6 +57,7 @@ import {
   turnLabel,
 } from "../src/core/status.ts"
 import { MAX_SIDEBAR_SESSIONS, sessionsToDrop, sidebarRefreshOf } from "../src/tui/status-store.ts"
+import { toneAttributes } from "../src/tui/theme.ts"
 import {
   MAX_UNDO_CHARS,
   MAX_UNDO_TURNS,
@@ -1279,10 +1283,11 @@ ok(compaction.result.summary.includes("ship v0.1"), "compaction returns the memo
 ok(!compaction.result.summary.includes("budget:"), "the compaction summary carries no live numbers either")
 
 await host.commands[0].execute({ sessionID: "s1", prompt: { text: "/context" } })
-ok(host.replies.at(-1).text.includes("smart-context"), "/context prints the status")
+const statsFirstLine = host.replies.at(-1).text.split("\n")[0]
+ok(statsFirstLine.startsWith(`${PRODUCT_NAME} v`), "/context prints the status under the product name")
 ok(
-  /^smart-context v\d+\.\d+\.\d+ · /.test(host.replies.at(-1).text),
-  "/context status shows the build's version",
+  /\d+\.\d+\.\d+ · memory /.test(statsFirstLine),
+  "/context status shows the build's version ahead of the budgets",
 )
 await host.commands[0].execute({ sessionID: "s1", prompt: { text: "/context memory goal" } })
 ok(host.replies.at(-1).text.includes("ship v0.1"), "/context memory reads one key")
@@ -1594,6 +1599,10 @@ ok(
   "the working row explains the normal over-cap case",
 )
 ok(
+  statusRowsReply[0].title.search(/[█░]/) === statusRowsReply[1].title.search(/[█░]/),
+  "the dialog's two budget rows line their bars up",
+)
+ok(
   statusRowsReply.some((row) => row.value === RESUME_ACTION) &&
     statusRowsReply.some((row) => row.value === PURGE_ACTION && row.disabled !== true),
   "the dialog offers resume and purge",
@@ -1616,16 +1625,30 @@ ok(
 // so its shape is pinned here rather than in a host.
 const sidebarBody = sidebarText(statusReply)
 ok(
-  sidebarBody.split("\n")[0] === "mega-smart-context v0.1.99",
+  sidebarBody.split("\n")[0] === "Mega Smart Context v0.1.99",
   "the sidebar names the build on its first line",
 )
+const sidebarHeader = sidebarLines(statusReply)[0]
 ok(
-  sidebarBody.includes("mem ") && sidebarBody.includes("/20k"),
+  sidebarHeader.spread === true &&
+    sidebarHeader.spans.length === 2 &&
+    sidebarHeader.spans[0].text === PRODUCT_NAME &&
+    sidebarHeader.spans[1].text === "v0.1.99" &&
+    sidebarHeader.spans[0].tone === "title",
+  "the sidebar header puts the version on a right edge the renderer spreads to",
+)
+ok(
+  sidebarLines({ ...statusReply, version: undefined })[0].spread === undefined &&
+    sidebarLines({ ...statusReply, version: undefined })[0].spans.length === 1,
+  "a header with no version keeps one span and asks for no spread",
+)
+ok(
+  sidebarBody.includes("mem ") && sidebarBody.includes("/ 20k"),
   "the sidebar draws the memory budget",
 )
 ok(
-  sidebarBody.includes("win ") && sidebarBody.includes(" over") && statusReply.overBudget,
-  "the sidebar marks a working window that is over cap",
+  sidebarBody.includes("win ") && sidebarBody.includes("*21k / 20k") && statusReply.overBudget,
+  "the sidebar marks a working window that is over cap with a star in the gutter",
 )
 ok(
   sidebarBody.includes("3 kept · 41 dropped") && sidebarBody.includes("1 pending · 1 archive · 0 ref"),
@@ -1646,8 +1669,31 @@ ok(
 )
 const alertLines = sidebarLines(statusReply).filter((line) => line.spans.some((span) => span.tone === "alert"))
 ok(
-  alertLines.length === 1 && alertLines[0].spans.map((span) => span.text).join("").endsWith(" over"),
+  alertLines.length === 1 &&
+    alertLines[0].spans
+      .map((span) => span.text)
+      .join("")
+      .includes("*21k / 20k"),
   "only the over-cap working line carries the alert tone",
+)
+const sidebarMeters = sidebarBody
+  .split("\n")
+  .filter((line) => line.startsWith("mem ") || line.startsWith("win "))
+ok(
+  sidebarMeters.length === 2 && sidebarMeters[0].indexOf("/") === sidebarMeters[1].indexOf("/"),
+  "the two budget lines align their value, slash and cap",
+)
+const wideSidebar = sidebarText({
+  ...statusReply,
+  memoryTokens: 9_000,
+  workingTokens: 121_000,
+  workingCap: 40_000,
+}).split("\n")
+ok(
+  wideSidebar[1].includes("   9k / 20k") &&
+    wideSidebar[2].includes("*121k / 40k") &&
+    wideSidebar[1].indexOf("/") === wideSidebar[2].indexOf("/"),
+  "a shorter value is padded on the left so the digits stay right-aligned",
 )
 ok(
   sidebarLines({ ...noHostReply, overBudget: false }).every((line) =>
@@ -1702,6 +1748,15 @@ ok(
     panelBody.includes("last undo: before msg_u · 2 memory key(s), 1 turn(s) dropped") &&
     panelBody.includes("journal: 1 turn(s)"),
   "the panel reports the budgets, the host system size and the undo state",
+)
+const panelBudget = panelSections(panelReply)[0].rows
+  .slice(0, 2)
+  .map((row) => row.spans.map((span) => span.text).join(""))
+ok(
+  panelBudget[0].indexOf("/") === panelBudget[1].indexOf("/") &&
+    panelBudget[1].includes("*21k / 20k") &&
+    panelBudget[0].startsWith("mem "),
+  "the panel's budget rows share the sidebar's alignment and over-cap star",
 )
 ok(
   panelBody.includes("passes ") && panelBody.includes("3 samples · peak 5k"),
@@ -1904,6 +1959,20 @@ ok(
 )
 stopSlots()
 ok(slotScene.seen.released.length === slotScene.seen.slots.length, "teardown releases the claim it made")
+
+// The block's header is bold so it sits alongside the host's own section
+// headers; the numbers stay plain. `attributes` is a bitmask, and every other
+// tone must leave it at zero rather than, say, half-bold.
+ok(
+  toneAttributes("title") === TextAttributes.BOLD && toneAttributes("muted") === TextAttributes.NONE,
+  "only the title tone is bold",
+)
+ok(
+  toneAttributes("value") === TextAttributes.NONE &&
+    toneAttributes("meter") === TextAttributes.NONE &&
+    toneAttributes("alert") === TextAttributes.NONE,
+  "the sidebar's data tones are not bold",
+)
 
 const noSidebar = makeTui({ updateCheck: false, sidebar: false }, {}, { withSlots: true })
 const stopNoSidebar = await setupTui(noSidebar.context)

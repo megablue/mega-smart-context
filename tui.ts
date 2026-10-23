@@ -29,6 +29,7 @@ import { DEFAULT_CONFIG, type ResolvedConfig } from "./src/core/config.ts"
 import {
   PANEL_ACTION,
   PANEL_NAME,
+  PRODUCT_NAME,
   PURGE_ACTION,
   RESUME_ACTION,
   STATUS_RPC,
@@ -72,10 +73,10 @@ const FETCH_TIMEOUT_MS = 4_000
 /** Long enough to read, short enough not to sit over the prompt. */
 const TOAST_DURATION_MS = 10_000
 
-const TOAST_TITLE = "mega-smart-context update"
+const TOAST_TITLE = `${PRODUCT_NAME} update`
 
 /** The dialog and result toasts are about the plugin, not only an update. */
-const STATUS_TITLE = "mega-smart-context"
+const STATUS_TITLE = PRODUCT_NAME
 
 /** A result is read, not studied; the dialog is still open behind it. */
 const RESULT_TOAST_MS = 6_000

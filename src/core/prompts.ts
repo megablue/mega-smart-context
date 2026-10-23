@@ -16,6 +16,19 @@ import { isMemoryEmpty } from "./schema.ts"
 import type { ResolvedConfig } from "./config.ts"
 import type { SessionRecord } from "./types.ts"
 
+/**
+ * The name a person reads. The `/context` report puts it on its first line, and
+ * every drawn surface in the terminal half (the sidebar block, the panel, the
+ * dialog's title, the update toast) reads it from `status.ts`, which re-exports
+ * this one definition. The identifiers - the RPC id, the panel name, the command
+ * ids and the config filename - stay lowercase, because the host routes them.
+ *
+ * It lives here, not in `status.ts`, so both halves can reach it: `status.ts`
+ * already imports this module, and a constant in `status.ts` would have to be
+ * imported back into the file that renders the report.
+ */
+export const PRODUCT_NAME = "Mega Smart Context"
+
 /** The standing policy, pushed once into the request's system parts. */
 export const POLICY = `## Smart context
 
@@ -245,7 +258,7 @@ export function renderNotices(record: SessionRecord): string | undefined {
 export function renderStats(record: SessionRecord, config: ResolvedConfig, version?: string): string {
   const report = budgetOf(record, config)
   const lines = [
-    `smart-context${version === undefined ? "" : ` v${version}`} · ${budgetLine(report)}`,
+    `${PRODUCT_NAME}${version === undefined ? "" : ` v${version}`} · ${budgetLine(report)}`,
     `window: ${report.workingTurns} turns kept, ${report.droppedTurns} dropped · over budget: ${report.overBudget ? "yes" : "no"}`,
   ]
   if (record.lastUndo !== undefined) {

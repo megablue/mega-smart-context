@@ -18,8 +18,15 @@
 
 import type { ResolvedConfig } from "./config.ts"
 import { formatTokens } from "./measure.ts"
-import { budgetOf, noticePreview } from "./prompts.ts"
+import { PRODUCT_NAME, budgetOf, noticePreview } from "./prompts.ts"
 import type { SessionRecord } from "./types.ts"
+
+/**
+ * The name a person reads, spelled once in `prompts.ts` because the `/context`
+ * report prints it on its first line. Re-exported here so the terminal half
+ * takes everything it draws from this one module.
+ */
+export { PRODUCT_NAME }
 
 /** The RPC id both halves agree on; the host routes `rpc.<id>.<method>`. */
 export const STATUS_RPC_ID = "mega-smart-context"
@@ -377,9 +384,15 @@ export function turnLabel(gist: string, width = 64): string {
  * nothing to purge, and carries the count so the dialog says why.
  */
 export function statusRows(reply: StatsReply): StatusRow[] {
+  const widths = meterWidths(reply)
   const rows: StatusRow[] = [
     {
-      title: `memory ${statusBar(reply.memoryTokens, reply.memoryCap)} ${formatTokens(reply.memoryTokens)} / ${formatTokens(reply.memoryCap)}`,
+      title: `${"memory".padEnd(7)} ${statusBar(reply.memoryTokens, reply.memoryCap)} ${meterNumbers(
+        reply.memoryTokens,
+        reply.memoryCap,
+        reply.memoryTokens > reply.memoryCap,
+        widths,
+      )}`,
       value: "",
       description: "the memory document the model owns",
       disabled: true,
@@ -387,7 +400,7 @@ export function statusRows(reply: StatsReply): StatusRow[] {
     {
       title:
         `working ${statusBar(reply.workingTokens, reply.workingCap)} ` +
-        `${formatTokens(reply.workingTokens)} / ${formatTokens(reply.workingCap)}` +
+        meterNumbers(reply.workingTokens, reply.workingCap, reply.overBudget, widths) +
         (reply.overBudget ? " · over cap" : ""),
       value: "",
       description: "at the last pass; the current turn is always kept, so a long turn can sit over cap",
@@ -474,17 +487,51 @@ export interface StatusSpan {
 /** One line of the sidebar block, as spans. */
 export interface SidebarLine {
   readonly spans: ReadonlyArray<StatusSpan>
+  /**
+   * Put the first and last span at opposite edges of the block, so a header's
+   * version sits at the right edge whatever the sidebar's width is. Only a
+   * renderer can do that (it is a layout, not a byte); `sidebarText` falls back
+   * to a single space between the spans.
+   */
+  readonly spread?: boolean
 }
 
-function meterLine(label: string, value: number, cap: number, alert: boolean, suffix = ""): SidebarLine {
+/** The widest value and cap across the two budgets, in characters. */
+interface MeterWidths {
+  readonly value: number
+  readonly cap: number
+}
+
+/**
+ * The widths both budget lines pad to, measured over the pair rather than one
+ * line at a time: that is what puts `18k` and `124k` on the same right edge.
+ */
+function meterWidths(reply: StatsReply): MeterWidths {
+  const value = Math.max(formatTokens(reply.memoryTokens).length, formatTokens(reply.workingTokens).length)
+  const cap = Math.max(formatTokens(reply.memoryCap).length, formatTokens(reply.workingCap).length)
+  return { value, cap }
+}
+
+/**
+ * The numbers after a bar: a one-cell gutter that carries the over-cap `*`, the
+ * value right-aligned so both lines line up digit to digit, then ` / ` and the
+ * cap (also right-aligned). The star takes the gutter rather than the end of the
+ * line so it never shifts the digits it marks.
+ */
+function meterNumbers(value: number, cap: number, over: boolean, widths: MeterWidths): string {
+  const valueText = formatTokens(value).padStart(widths.value)
+  const capText = formatTokens(cap).padStart(widths.cap)
+  return `${over ? "*" : " "}${valueText} / ${capText}`
+}
+
+function meterLine(label: string, value: number, cap: number, over: boolean, widths: MeterWidths): SidebarLine {
   const { filled, empty } = statusBarParts(value, cap)
   return {
     spans: [
       { text: `${label} `, tone: "muted" },
-      { text: filled, tone: alert ? "alert" : "meter" },
+      { text: filled, tone: over ? "alert" : "meter" },
       { text: empty, tone: "muted" },
-      { text: ` ${formatTokens(value)}/${formatTokens(cap)}`, tone: alert ? "alert" : "value" },
-      ...(suffix.length > 0 ? [{ text: suffix, tone: "alert" as const }] : []),
+      { text: ` ${meterNumbers(value, cap, over, widths)}`, tone: over ? "alert" : "value" },
     ],
   }
 }
@@ -499,15 +546,17 @@ function meterLine(label: string, value: number, cap: number, alert: boolean, su
  * by design and a red block would be crying wolf.
  */
 export function sidebarLines(reply: StatsReply): SidebarLine[] {
+  const widths = meterWidths(reply)
+  const title: StatusSpan = { text: PRODUCT_NAME, tone: "title" }
   const lines: SidebarLine[] = [
-    {
-      spans: [
-        { text: "mega-smart-context", tone: "title" },
-        ...(reply.version === undefined ? [] : [{ text: ` v${reply.version}`, tone: "muted" as const }]),
-      ],
-    },
-    meterLine("mem", reply.memoryTokens, reply.memoryCap, reply.memoryTokens > reply.memoryCap),
-    meterLine("win", reply.workingTokens, reply.workingCap, reply.overBudget, reply.overBudget ? " over" : ""),
+    // A header: the name against the left edge, the build against the right one.
+    // `spread` asks the renderer for that edge-to-edge layout, so the version
+    // lands at the sidebar's own width instead of at a number guessed here.
+    reply.version === undefined
+      ? { spans: [title] }
+      : { spans: [title, { text: `v${reply.version}`, tone: "muted" }], spread: true },
+    meterLine("mem", reply.memoryTokens, reply.memoryCap, reply.memoryTokens > reply.memoryCap, widths),
+    meterLine("win", reply.workingTokens, reply.workingCap, reply.overBudget, widths),
     {
       spans: [
         { text: `${count(reply.workingTurns)} kept · ${count(reply.droppedTurns)} dropped`, tone: "muted" },
@@ -532,10 +581,16 @@ export function sidebarLines(reply: StatsReply): SidebarLine[] {
   return lines
 }
 
-/** The whole block as plain text, which is what a test can compare. */
+/**
+ * The whole block as plain text, which is what a test can compare.
+ *
+ * A `spread` line is a layout, not a string: with no width to spread across this
+ * joins its spans with one space ("Mega Smart Context v0.1.30"), the same way it
+ * looks when the renderer has no room to push the version to the right edge.
+ */
 export function sidebarText(reply: StatsReply): string {
   return sidebarLines(reply)
-    .map((line) => line.spans.map((span) => span.text).join(""))
+    .map((line) => line.spans.map((span) => span.text).join(line.spread === true ? " " : ""))
     .join("\n")
 }
 
@@ -604,16 +659,14 @@ function turnRow(turn: StatusTurn, place: "pending" | "archive"): PanelRow {
  * spans to colours and rows to click handlers.
  */
 export function panelSections(reply: StatsReply): PanelSection[] {
+  const widths = meterWidths(reply)
   const budget: PanelRow[] = [
-    { spans: meterLine("mem ", reply.memoryTokens, reply.memoryCap, reply.memoryTokens > reply.memoryCap).spans },
     {
-      spans: meterLine(
-        "win ",
-        reply.workingTokens,
-        reply.workingCap,
-        reply.overBudget,
-        reply.overBudget ? " over" : "",
-      ).spans,
+      spans: meterLine("mem", reply.memoryTokens, reply.memoryCap, reply.memoryTokens > reply.memoryCap, widths)
+        .spans,
+    },
+    {
+      spans: meterLine("win", reply.workingTokens, reply.workingCap, reply.overBudget, widths).spans,
     },
   ]
   if (reply.hostSystemTokens !== undefined) {

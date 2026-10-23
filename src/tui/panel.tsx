@@ -25,6 +25,7 @@ import type { JSX } from "@opentui/solid"
 import { For, Show, createEffect, createMemo, on } from "solid-js"
 import {
   PANEL_NAME,
+  PRODUCT_NAME,
   panelSections,
   type PanelAction,
   type PanelRow,
@@ -32,7 +33,7 @@ import {
   type StatsReply,
 } from "../core/status.ts"
 import type { PanelHost } from "./context.ts"
-import { toneColor } from "./theme.ts"
+import { toneAttributes, toneColor } from "./theme.ts"
 
 /** The input the host passes to every `session.panel` claim. */
 interface PanelClaimInput {
@@ -63,11 +64,17 @@ function Row(props: { host: PanelHost; sessionID: string; row: PanelRow }): JSX.
   return (
     <box flexDirection="row" gap={1}>
       <For each={props.row.spans}>
-        {(span) => <text fg={toneColor(props.host.context, span.tone)}>{span.text}</text>}
+        {(span) => (
+          <text fg={toneColor(props.host.context, span.tone)} attributes={toneAttributes(span.tone)}>
+            {span.text}
+          </text>
+        )}
       </For>
       <Show when={props.row.action}>
         {(action: () => PanelAction) => (
-          <text fg={muted()} onMouseDown={() => run(props.host, props.sessionID, action())}>
+          // Mouse-up for the same reason as the sidebar: the confirm dialog must
+          // not be mounted while the click that opened it is still pressed.
+          <text fg={muted()} onMouseUp={() => run(props.host, props.sessionID, action())}>
             [{action().kind}]
           </text>
         )}
@@ -79,7 +86,9 @@ function Row(props: { host: PanelHost; sessionID: string; row: PanelRow }): JSX.
 function Section(props: { host: PanelHost; sessionID: string; section: PanelSection }): JSX.Element {
   return (
     <box flexDirection="column" marginTop={1}>
-      <text fg={toneColor(props.host.context, "title")}>{props.section.title}</text>
+      <text fg={toneColor(props.host.context, "title")} attributes={toneAttributes("title")}>
+        {props.section.title}
+      </text>
       <For each={props.section.rows}>
         {(row) => <Row host={props.host} sessionID={props.sessionID} row={row} />}
       </For>
@@ -108,12 +117,16 @@ function Panel(props: { host: PanelHost; input: PanelClaimInput }): JSX.Element 
   return (
     <Show when={props.input.name === PANEL_NAME}>
       <box flexDirection="column" flexGrow={1} minHeight={0}>
-        <box flexDirection="row" gap={1} paddingLeft={1}>
-          <text fg={toneColor(props.host.context, "title")}>mega-smart-context</text>
+        <box flexDirection="row" justifyContent="space-between" paddingLeft={1} paddingRight={1}>
+          <box flexDirection="row" gap={1}>
+            <text fg={toneColor(props.host.context, "title")} attributes={toneAttributes("title")}>
+              {PRODUCT_NAME}
+            </text>
+            <text fg={muted()}>· the record, not the transcript</text>
+          </box>
           <Show when={reply()?.version}>
             {(version: () => string) => <text fg={muted()}>v{version()}</text>}
           </Show>
-          <text fg={muted()}>· the record, not the transcript</text>
         </box>
         <scrollbox flexGrow={1} minHeight={0} paddingLeft={1}>
           <Show when={reply()} fallback={<text fg={muted()}>waiting for the first pull…</text>}>
@@ -125,16 +138,18 @@ function Panel(props: { host: PanelHost; input: PanelClaimInput }): JSX.Element 
           </Show>
         </scrollbox>
         <box flexDirection="row" gap={1} paddingLeft={1}>
-          <text fg={muted()} onMouseDown={() => props.host.refresh(props.input.sessionID, true)}>
+          {/* Mouse-up here too: [dialog] opens one, [close] unmounts this panel,
+              and either on mouse-down would race the release. */}
+          <text fg={muted()} onMouseUp={() => props.host.refresh(props.input.sessionID, true)}>
             [refresh]
           </text>
-          <text fg={muted()} onMouseDown={() => props.host.actions.resume(props.input.sessionID)}>
+          <text fg={muted()} onMouseUp={() => props.host.actions.resume(props.input.sessionID)}>
             [resume]
           </text>
-          <text fg={muted()} onMouseDown={() => props.host.actions.status(props.input.sessionID)}>
+          <text fg={muted()} onMouseUp={() => props.host.actions.status(props.input.sessionID)}>
             [dialog]
           </text>
-          <text fg={muted()} onMouseDown={() => props.host.actions.close()}>
+          <text fg={muted()} onMouseUp={() => props.host.actions.close()}>
             [close]
           </text>
         </box>
