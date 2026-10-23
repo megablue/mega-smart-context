@@ -1,22 +1,22 @@
 /**
- * The TUI half of the plugin: a status dialog and one daily check for a newer
- * published version, reported as a toast in the terminal.
+ * The TUI half of the plugin: a status dialog, the sidebar block, and one daily
+ * check for a newer published version, reported as a toast in the terminal.
  *
  * Why a second entrypoint at all: the server plugin's context has no toast, no
  * client and no notification channel, so it cannot put anything in front of the
  * user on its own. The TUI context can, and this file uses exactly that slice -
- * `options`, `client`, `ui`, `keymap`, `storage.store`, `data.on`. Nothing here
- * touches a request: no payload, no policy, no tokens.
+ * `options`, `client`, `ui`, `keymap`, `storage`, `data.on`, `theme`. Nothing
+ * here touches a request: no payload, no policy, no tokens.
  *
- * The dialog is phase 0 of the sidebar plan: no JSX, no `@opentui/solid`, just
- * the host's own `dialog.select` over a portable RPC reply. The sidebar slots
- * render JSX and therefore need the peers; this file deliberately does not.
+ * The file itself renders no JSX and imports no TUI peer, so a host without the
+ * slot API keeps the dialog. The sidebar lives in `src/tui/sidebar.tsx`, is
+ * imported dynamically, and its failure to load is caught here.
  *
  * The host resolves `<plugin-root>/tui` before anything else for the TUI side
  * (and `package.json` exports `./tui` for a by-name install), the same way it
  * resolves `server` for the server side. `define` is the identity function, so
- * a bare object is a complete definition; skipping the import keeps the TUI
- * peers (`@opentui/*`, `solid-js`) off this package's typecheck.
+ * a bare object is a complete definition; skipping the import keeps `tui.ts`
+ * itself free of the TUI peers.
  *
  * @module mega-smart-context/tui
  */
@@ -30,11 +30,20 @@ import {
   STATUS_RPC,
   statusRows,
   turnLabel,
-  type PurgeReply,
-  type PurgeRequest,
+  type StatusRow,
   type StatsReply,
-  type StatsRequest,
 } from "./src/core/status.ts"
+import { sidebarRefreshOf } from "./src/tui/status-store.ts"
+import type {
+  KeymapCommand,
+  KeymapLayer,
+  SelectOption,
+  SidebarStore,
+  StatusClient,
+  ToastOptions,
+  ToastVariant,
+  TuiContext,
+} from "./src/tui/context.ts"
 import { messageOf } from "./src/core/types.ts"
 import {
   EMPTY_UPDATE_STATE,
@@ -69,97 +78,16 @@ const RESULT_TOAST_MS = 6_000
 /** The keymap id is also the config key a user can bind. */
 const STATUS_COMMAND = "mega-smart-context.status"
 
-type ToastVariant = "info" | "success" | "warning" | "error"
-
-interface ToastOptions {
-  readonly title?: string
-  readonly message: string
-  readonly variant?: ToastVariant
-  readonly duration?: number
-}
-
-/** The dialog's select shape, minus the host's generic JSX renderer. */
-interface SelectOption<Value> {
-  readonly title: string
-  readonly value: Value
-  readonly description?: string
-  readonly disabled?: boolean
-}
-
-/** A keymap command, restated without `@opentui/core`'s `KeyEvent`. */
-interface KeymapCommand {
-  readonly id?: string
-  readonly title?: string
-  readonly description?: string
-  readonly group?: string
-  readonly palette?: true
-  readonly bind?: false | string
-  readonly run: (input?: string, event?: unknown) => void | false | Promise<void>
-}
-
-interface KeymapLayer {
-  readonly mode?: string
-  readonly commands?: readonly KeymapCommand[]
-}
-
-/** The RPC client the server half's `STATUS_RPC` hands back. */
-interface StatusClient {
-  readonly stats: (input: StatsRequest) => Promise<StatsReply>
-  readonly purge: (input: PurgeRequest) => Promise<PurgeReply>
-}
+/** The ephemeral store the sidebar renders from; one pull per session, at most. */
+const SIDEBAR_STORE_KEY = "sidebar"
 
 /**
- * The slice of the TUI context this plugin uses, declared locally.
- *
- * The host's own `Context` type would drag `solid-js`, `@opentui/core` and
- * `@opencode/client` into the typecheck as peers; the runtime contract is small
- * and stable, so it is restated here rather than depended on.
+ * Whether the sidebar half is drawing. The dialog reports it, because "the block
+ * did not appear" is otherwise indistinguishable from "the host never asked".
  */
-interface TuiContext {
-  readonly options: Readonly<Record<string, unknown>>
-  readonly storage: {
-    store<Value extends object>(
-      key: string,
-      options: { readonly initial: Value },
-    ): readonly [Value, (mutation: (draft: Value) => void) => Promise<void>]
-  }
-  /**
-   * The host client. `rpc` turns a portable definition into a method client over
-   * the host's `/api/rpc/<id>/<method>` route; `session.synthetic` is the resume
-   * channel (no user message, no turn).
-   */
-  readonly client: {
-    rpc(definition: unknown): StatusClient
-    readonly session: {
-      synthetic(input: { readonly sessionID: string; readonly text: string; readonly resume?: boolean }): Promise<unknown>
-    }
-  }
-  readonly keymap: {
-    layer(factory: () => KeymapLayer): void
-  }
-  readonly ui: {
-    readonly toast: { show(options: ToastOptions): void }
-    readonly dialog: {
-      alert(options: { readonly title: string; readonly message: string }): Promise<void>
-      confirm(options: {
-        readonly title: string
-        readonly message: string
-        readonly label?: { readonly confirm?: string; readonly cancel?: string }
-      }): Promise<boolean | undefined>
-      select<Value>(options: {
-        readonly title: string
-        readonly placeholder?: string
-        readonly options: readonly SelectOption<Value>[]
-      }): Promise<Value | undefined>
-    }
-    readonly router: {
-      current(): { readonly type: string; readonly sessionID?: string }
-    }
-  }
-  readonly data: {
-    on(type: "session.idle", handler: (event: unknown) => void): () => void
-  }
-}
+type SidebarState = "disabled" | "unavailable" | "active"
+
+let sidebarState: SidebarState = "disabled"
 
 /**
  * The three config layers, or the shipped defaults when they do not resolve.
@@ -246,14 +174,24 @@ function purgeOptions(reply: StatsReply): SelectOption<string>[] {
   ]
 }
 
-async function openPurge(context: TuiContext, rpc: StatusClient, reply: StatsReply, sessionID: string): Promise<void> {
+async function openPurge(
+  context: TuiContext,
+  rpc: StatusClient,
+  sessionID: string,
+  reply?: StatsReply,
+  after?: () => void,
+): Promise<void> {
   // Re-read before listing: a pass between opening the dialog and choosing this
   // row could have archived (or purged) a turn, and a stale id would only fail.
-  let fresh = reply
+  let fresh: StatsReply | undefined = reply
   try {
     fresh = await rpc.stats({ sessionID })
   } catch {
-    // The original reply is still a truthful list of what the dialog showed.
+    // The caller's reply is still a truthful list of what the dialog showed.
+  }
+  if (fresh === undefined) {
+    resultToast(context, "the server half did not answer", "error")
+    return
   }
   const options = purgeOptions(fresh)
   if (options.length === 0) {
@@ -288,18 +226,41 @@ async function openPurge(context: TuiContext, rpc: StatusClient, reply: StatsRep
   } catch (error) {
     resultToast(context, "purge failed: " + messageOf(error), "error")
   }
+  // Whether or not the turn was there, the mirror is now one pass behind.
+  after?.()
+}
+
+/** The dialog's own answer to "did the sidebar block appear?". */
+function sidebarRow(): StatusRow {
+  if (sidebarState === "active") {
+    return {
+      title: "sidebar: drawn in the session sidebar",
+      value: "",
+      description: "a mirror of the last pull; click status, resume or purge there",
+      disabled: true,
+    }
+  }
+  return {
+    title: sidebarState === "disabled" ? "sidebar: disabled by config" : "sidebar: unavailable in this TUI",
+    value: "",
+    description:
+      sidebarState === "disabled"
+        ? "set sidebar:true to show the block"
+        : "the slot API or the JSX runtime is missing; the dialog still works",
+    disabled: true,
+  }
 }
 
 /**
  * Open the status dialog: the numbers first (disabled rows, so Enter lands on an
  * action), then Resume and Purge.
  *
- * A pull, not a push: the RPC runs when the command runs, never from render, and
- * the dialog is the only surface phase 0 adds. The sidebar phases would add a
- * store and a listener; this does not.
+ * A pull, not a push: the RPC runs when the command or the sidebar's action row
+ * runs, never from render. `after` is how the sidebar learns that the numbers it
+ * is showing changed underneath it.
  */
-async function openStatus(context: TuiContext): Promise<void> {
-  const sessionID = sessionIDOf(context)
+async function openStatus(context: TuiContext, target?: string, after?: () => void): Promise<void> {
+  const sessionID = target ?? sessionIDOf(context)
   if (sessionID === undefined) {
     await alert(context, STATUS_TITLE, "Open a session first: the dialog reads that session's record.")
     return
@@ -316,15 +277,38 @@ async function openStatus(context: TuiContext): Promise<void> {
     await alert(context, STATUS_TITLE, "The server half did not answer: " + messageOf(error))
     return
   }
+  const rows = statusRows(reply)
+  // Above the actions, so it reads as part of the numbers and never steals the
+  // selection from Resume.
+  const firstAction = rows.findIndex((row) => row.value !== "")
+  rows.splice(firstAction < 0 ? rows.length : firstAction, 0, sidebarRow())
   const title = reply.version === undefined ? STATUS_TITLE : `${STATUS_TITLE} v${reply.version}`
   let choice: string | undefined
   try {
-    choice = await context.ui.dialog.select<string>({ title, options: statusRows(reply) })
+    choice = await context.ui.dialog.select<string>({ title, options: rows })
   } catch {
     return
   }
   if (choice === RESUME_ACTION) await resume(context, sessionID)
-  else if (choice === PURGE_ACTION) await openPurge(context, rpc, reply, sessionID)
+  else if (choice === PURGE_ACTION) await openPurge(context, rpc, sessionID, reply, after)
+}
+
+/**
+ * Resume from a click, which is not a dialog choice: ask first, because the cue
+ * spends a model turn and a stray click must not.
+ */
+async function confirmResume(context: TuiContext, sessionID: string): Promise<void> {
+  let confirmed: boolean | undefined
+  try {
+    confirmed = await context.ui.dialog.confirm({
+      title: "Resume",
+      message: "Send the plugin's resume cue? It starts one turn with no user message.",
+      label: { confirm: "Resume", cancel: "Cancel" },
+    })
+  } catch {
+    return
+  }
+  if (confirmed === true) await resume(context, sessionID)
 }
 
 /** The palette command. No default binding: the id is the config key to bind. */
@@ -385,12 +369,118 @@ async function check(
   }
 }
 
+/**
+ * The session an `session.idle` event is about, or nothing when the event shape
+ * is not the one the host documents.
+ */
+function idleSessionID(event: unknown): string | undefined {
+  if (typeof event !== "object" || event === null) return undefined
+  const data = (event as { data?: unknown }).data
+  if (typeof data !== "object" || data === null) return undefined
+  const sessionID = (data as { sessionID?: unknown }).sessionID
+  return typeof sessionID === "string" && sessionID.length > 0 ? sessionID : undefined
+}
+
+/**
+ * Start the sidebar half: one ephemeral store, one pull at a time, and the slot
+ * claim itself.
+ *
+ * Every step is optional on purpose. A host without `storage.memory` or `ui.slot`
+ * simply has no sidebar; a host whose TUI cannot load this file's JSX (a missing
+ * `@opentui/solid` runtime, say) keeps the status dialog, because the import is
+ * tried *here* and its failure is caught, not raised from `setup`.
+ */
+async function startSidebar(context: TuiContext): Promise<() => void> {
+  const noop = (): void => {}
+  sidebarState = "unavailable"
+  if (typeof context.storage.memory !== "function" || typeof context.ui.slot !== "function") return noop
+
+  let slots: typeof import("./src/tui/sidebar.tsx")
+  try {
+    slots = await import("./src/tui/sidebar.tsx")
+  } catch {
+    return noop
+  }
+
+  let held: readonly [
+    SidebarStore,
+    (mutation: (draft: SidebarStore) => void) => void,
+  ]
+  try {
+    held = context.storage.memory<SidebarStore>(SIDEBAR_STORE_KEY, { initial: { sessions: {} } })
+  } catch {
+    return noop
+  }
+  const [store, mutate] = held
+
+  const refresh = sidebarRefreshOf({
+    rpc: () => rpcOf(context),
+    store: () => store,
+    mutate,
+  })
+
+  let release: () => void
+  try {
+    release = slots.registerSidebar({
+      context,
+      snapshot: (sessionID) => store.sessions[sessionID],
+      refresh,
+      actions: {
+        status: (sessionID) => {
+          void openStatus(context, sessionID, () => refresh(sessionID, true))
+        },
+        resume: (sessionID) => {
+          void confirmResume(context, sessionID)
+        },
+        purge: (sessionID) => {
+          const rpc = rpcOf(context)
+          if (rpc === undefined) {
+            resultToast(context, "this host has no plugin RPC bridge", "error")
+            return
+          }
+          void openPurge(context, rpc, sessionID, undefined, () => refresh(sessionID, true))
+        },
+      },
+    })
+  } catch {
+    return noop
+  }
+  sidebarState = "active"
+
+  // A pass just ran, so the numbers are stale by definition - but only the
+  // session that went idle is re-read.
+  let off: () => void
+  try {
+    off = context.data.on("session.idle", (event) => {
+      const sessionID = idleSessionID(event)
+      if (sessionID !== undefined) refresh(sessionID, true)
+    })
+  } catch {
+    return release
+  }
+
+  return () => {
+    try {
+      off()
+    } catch {
+      // A listener that cannot be removed is already gone with the host.
+    }
+    try {
+      release()
+    } catch {
+      // Same for the slot.
+    }
+  }
+}
+
 export async function setup(context: TuiContext): Promise<() => void> {
   const config = configFor(context.options)
   if (!config.enabled) return () => {}
 
-  // Before the update check's early return: the dialog is not part of the daily
-  // version check, and `updateCheck:false` must not remove it.
+  const stops: Array<() => void> = []
+
+  // Before the config early returns: the dialog is not part of the daily version
+  // check, and neither is the sidebar.
   try {
     context.keymap.layer(() => ({
       mode: "global",
@@ -400,26 +490,36 @@ export async function setup(context: TuiContext): Promise<() => void> {
     // A host without a keymap still gets the update check.
   }
 
-  if (!config.updateCheck) return () => {}
+  if (config.sidebar) stops.push(await startSidebar(context))
+  else sidebarState = "disabled"
 
-  const [state, update] = context.storage.store<UpdateState>(STORE_KEY, {
-    initial: { ...EMPTY_UPDATE_STATE },
-  })
-  // One check in flight at a time: a burst of idle events must not fan out
-  // into parallel requests for the same answer.
-  let running = false
-  const run = (): void => {
-    if (running) return
-    running = true
-    void check(context, state, update).finally(() => {
-      running = false
+  if (config.updateCheck) {
+    const [state, update] = context.storage.store<UpdateState>(STORE_KEY, {
+      initial: { ...EMPTY_UPDATE_STATE },
     })
+    // One check in flight at a time: a burst of idle events must not fan out
+    // into parallel requests for the same answer.
+    let running = false
+    const run = (): void => {
+      if (running) return
+      running = true
+      void check(context, state, update).finally(() => {
+        running = false
+      })
+    }
+
+    run()
+    stops.push(context.data.on("session.idle", run))
   }
 
-  run()
-  const off = context.data.on("session.idle", run)
   return () => {
-    off()
+    for (const stop of stops) {
+      try {
+        stop()
+      } catch {
+        // Teardown must not throw into the host.
+      }
+    }
   }
 }
 

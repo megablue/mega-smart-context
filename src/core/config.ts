@@ -44,6 +44,8 @@ export interface ResolvedConfig {
   manualCommand: boolean
   /** Let the TUI half ask GitHub once a day for a newer version. */
   updateCheck: boolean
+  /** Let the TUI half render the sidebar block. */
+  sidebar: boolean
   /** Log pass decisions to stderr. */
   debug: boolean
 }
@@ -64,6 +66,7 @@ export const DEFAULT_CONFIG: ResolvedConfig = {
   maxResultChars: 4_000,
   manualCommand: true,
   updateCheck: true,
+  sidebar: true,
   debug: false,
 }
 
@@ -81,6 +84,7 @@ const BOOLEAN_KEYS = new Set([
   "refs",
   "manualCommand",
   "updateCheck",
+  "sidebar",
   "debug",
 ])
 

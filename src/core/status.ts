@@ -1,6 +1,6 @@
 /**
- * The TUI status dialog: what the server half reports about one session, and how
- * a reply becomes dialog rows.
+ * The TUI surfaces that read the server half: what one session's record reports,
+ * how a reply becomes dialog rows, and how it becomes the sidebar's block.
  *
  * The two halves of the plugin run in different processes and share no memory:
  * the server half owns the session record in the host's KV, the TUI half owns a
@@ -213,11 +213,17 @@ export function statsOf(record: SessionRecord, config: ResolvedConfig, version?:
   }
 }
 
-/** A ten-cell bar. Over-cap fills every cell rather than overflowing the width. */
-export function statusBar(value: number, cap: number): string {
+/** A ten-cell bar, split so the filled cells can carry their own colour. */
+export function statusBarParts(value: number, cap: number): { readonly filled: string; readonly empty: string } {
   const ratio = cap > 0 && Number.isFinite(value) ? Math.max(0, value / cap) : 0
   const filled = Math.min(STATUS_BAR_WIDTH, Math.round(ratio * STATUS_BAR_WIDTH))
-  return "█".repeat(filled) + "░".repeat(STATUS_BAR_WIDTH - filled)
+  return { filled: "█".repeat(filled), empty: "░".repeat(STATUS_BAR_WIDTH - filled) }
+}
+
+/** A ten-cell bar. Over-cap fills every cell rather than overflowing the width. */
+export function statusBar(value: number, cap: number): string {
+  const { filled, empty } = statusBarParts(value, cap)
+  return filled + empty
 }
 
 function count(value: number): string {
@@ -290,3 +296,114 @@ export function statusRows(reply: StatsReply): StatusRow[] {
   })
   return rows
 }
+
+// ---------------------------------------------------------------------------
+// The sidebar
+// ---------------------------------------------------------------------------
+
+/**
+ * How long a pull stays good enough for the sidebar.
+ *
+ * The sidebar is a mirror, not a meter: a pass ends, the host goes idle, and one
+ * pull follows. A new session, a returning route or a live turn can ask again,
+ * but not more than once per window, so a chatty render cannot become a request
+ * loop.
+ */
+export const SIDEBAR_STALE_MS = 15_000
+
+/** One pulled reply and the moment it arrived. */
+export interface StatusSnapshot {
+  readonly reply: StatsReply
+  readonly at: number
+}
+
+/** Whether the sidebar needs a fresh pull rather than what it already holds. */
+export function snapshotStale(
+  snapshot: StatusSnapshot | undefined,
+  now: number,
+  stale = SIDEBAR_STALE_MS,
+): boolean {
+  if (snapshot === undefined) return true
+  if (!Number.isFinite(snapshot.at)) return true
+  return now - snapshot.at >= stale
+}
+
+/**
+ * A span is text plus the one tone the sidebar paints it with. Tones are names,
+ * not colours: the TUI half owns the theme, and a pure module cannot import one.
+ */
+export type SidebarTone = "title" | "meter" | "value" | "muted" | "alert"
+
+export interface StatusSpan {
+  readonly text: string
+  readonly tone: SidebarTone
+}
+
+/** One line of the sidebar block, as spans. */
+export interface SidebarLine {
+  readonly spans: ReadonlyArray<StatusSpan>
+}
+
+function meterLine(label: string, value: number, cap: number, alert: boolean, suffix = ""): SidebarLine {
+  const { filled, empty } = statusBarParts(value, cap)
+  return {
+    spans: [
+      { text: `${label} `, tone: "muted" },
+      { text: filled, tone: alert ? "alert" : "meter" },
+      { text: empty, tone: "muted" },
+      { text: ` ${formatTokens(value)}/${formatTokens(cap)}`, tone: alert ? "alert" : "value" },
+      ...(suffix.length > 0 ? [{ text: suffix, tone: "alert" as const }] : []),
+    ],
+  }
+}
+
+/**
+ * The sidebar's block: a title, the two budgets, and two count lines.
+ *
+ * Deliberately nothing that grows with the session: no gists, no notice text, no
+ * archive list. Those live behind the dialog, where the user asked for them.
+ * Over cap is painted as a warning on the working line only - `workingTokens`
+ * includes the current turn, which is always kept, so a long turn sits over cap
+ * by design and a red block would be crying wolf.
+ */
+export function sidebarLines(reply: StatsReply): SidebarLine[] {
+  const lines: SidebarLine[] = [
+    {
+      spans: [
+        { text: "mega-smart-context", tone: "title" },
+        ...(reply.version === undefined ? [] : [{ text: ` v${reply.version}`, tone: "muted" as const }]),
+      ],
+    },
+    meterLine("mem", reply.memoryTokens, reply.memoryCap, reply.memoryTokens > reply.memoryCap),
+    meterLine("win", reply.workingTokens, reply.workingCap, reply.overBudget, reply.overBudget ? " over" : ""),
+    {
+      spans: [
+        { text: `${count(reply.workingTurns)} kept · ${count(reply.droppedTurns)} dropped`, tone: "muted" },
+      ],
+    },
+    {
+      spans: [
+        {
+          text: `${count(reply.pending.length)} pending · ${count(reply.archive.length)} archive · ${count(reply.refs)} ref`,
+          tone: "muted",
+        },
+      ],
+    },
+  ]
+  if (reply.hostSystemTokens !== undefined) {
+    lines.push({
+      spans: [
+        { text: `host ~${formatTokens(reply.hostSystemTokens)} est · not counted`, tone: "muted" },
+      ],
+    })
+  }
+  return lines
+}
+
+/** The whole block as plain text, which is what a test can compare. */
+export function sidebarText(reply: StatsReply): string {
+  return sidebarLines(reply)
+    .map((line) => line.spans.map((span) => span.text).join(""))
+    .join("\n")
+}
+

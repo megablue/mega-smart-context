@@ -30,16 +30,22 @@ import { emptyMemory } from "../src/core/schema.ts"
 import {
   PURGE_ACTION,
   RESUME_ACTION,
+  SIDEBAR_STALE_MS,
   STATUS_RPC,
   isPurgeRequest,
   isStatsReply,
   isStatsRequest,
+  sidebarLines,
+  sidebarText,
+  snapshotStale,
   statsOf,
   statsReplySchema,
   statusBar,
+  statusBarParts,
   statusRows,
   turnLabel,
 } from "../src/core/status.ts"
+import { MAX_SIDEBAR_SESSIONS, sessionsToDrop, sidebarRefreshOf } from "../src/tui/status-store.ts"
 import {
   MAX_UNDO_CHARS,
   MAX_UNDO_TURNS,
@@ -1341,8 +1347,12 @@ function makeTui(options, state, scene = {}) {
     purges: [],
     stats: 0,
     rpcDefinition: undefined,
+    slots: [],
+    released: [],
+    memory: 0,
   }
   const answers = [...(scene.answers ?? [])]
+  const memoryStores = new Map()
   const context = {
     options,
     storage: {
@@ -1352,6 +1362,19 @@ function makeTui(options, state, scene = {}) {
           mutation(state)
         },
       ],
+      ...(scene.withSlots
+        ? {
+            memory: (key, { initial }) => {
+              seen.memory += 1
+              if (!memoryStores.has(key)) memoryStores.set(key, structuredClone(initial))
+              const held = memoryStores.get(key)
+              return [held, (mutation) => mutation(held)]
+            },
+          }
+        : {}),
+    },
+    theme: {
+      text: { base: "#ffffff", muted: "#888888", feedback: { error: { base: "#ff0000" }, warning: { base: "#ffaa00" } } },
     },
     client: {
       rpc: (definition) => {
@@ -1396,6 +1419,14 @@ function makeTui(options, state, scene = {}) {
         },
       },
       router: { current: () => scene.route ?? { type: "session", sessionID: "ses_tui" } },
+      ...(scene.withSlots
+        ? {
+            slot: (claim) => {
+              seen.slots.push(claim)
+              return () => seen.released.push(claim)
+            },
+          }
+        : {}),
     },
     data: {
       on: () => {
@@ -1548,6 +1579,119 @@ ok(
   "a host-system line drops out when the pass did not measure one",
 )
 
+// The sidebar renders the same reply as a short block. The block is pure data,
+// so its shape is pinned here rather than in a host.
+const sidebarBody = sidebarText(statusReply)
+ok(
+  sidebarBody.split("\n")[0] === "mega-smart-context v0.1.99",
+  "the sidebar names the build on its first line",
+)
+ok(
+  sidebarBody.includes("mem ") && sidebarBody.includes("/20k"),
+  "the sidebar draws the memory budget",
+)
+ok(
+  sidebarBody.includes("win ") && sidebarBody.includes(" over") && statusReply.overBudget,
+  "the sidebar marks a working window that is over cap",
+)
+ok(
+  sidebarBody.includes("3 kept · 41 dropped") && sidebarBody.includes("1 pending · 1 archive · 0 ref"),
+  "the sidebar counts turns, pending, archive and refs",
+)
+ok(
+  sidebarBody.includes("host ~4.2k est · not counted") && !sidebarText(noHostReply).includes("host ~"),
+  "the sidebar shows the host system size only when a pass measured one",
+)
+ok(
+  !sidebarText({ ...statusReply, version: undefined }).includes(" v0.1.99"),
+  "a reply without a version does not leave a dangling v",
+)
+const bars = statusBarParts(statusReply.workingTokens, statusReply.workingCap)
+ok(
+  bars.filled.length + bars.empty.length === 10 && bars.filled === "█".repeat(10) && bars.empty === "",
+  "an over-cap bar fills every cell and never overflows the width",
+)
+const alertLines = sidebarLines(statusReply).filter((line) => line.spans.some((span) => span.tone === "alert"))
+ok(
+  alertLines.length === 1 && alertLines[0].spans.map((span) => span.text).join("").endsWith(" over"),
+  "only the over-cap working line carries the alert tone",
+)
+ok(
+  sidebarLines({ ...noHostReply, overBudget: false }).every((line) =>
+    line.spans.every((span) => span.tone !== "alert"),
+  ),
+  "a window inside its cap paints no alert tone",
+)
+
+// The pull rule: one per window, one in flight, bounded store.
+ok(
+  snapshotStale(undefined, 0) === true &&
+    snapshotStale({ reply: statusReply, at: 1_000 }, 1_100) === false &&
+    snapshotStale({ reply: statusReply, at: 1_000 }, 1_000 + SIDEBAR_STALE_MS) === true,
+  "a snapshot is stale only after the window, and always when absent",
+)
+ok(snapshotStale({ reply: statusReply, at: Number.NaN }, 5) === true, "a snapshot without a time is stale")
+
+let pullNow = 1_000
+const pullStore = { sessions: {} }
+let pullCalls = 0
+const pull = sidebarRefreshOf({
+  rpc: () => ({
+    stats: async ({ sessionID }) => {
+      pullCalls += 1
+      return { ...statusReply, version: sessionID }
+    },
+    purge: async () => ({ ok: true, text: "" }),
+  }),
+  store: () => pullStore,
+  mutate: (mutation) => {
+    mutation(pullStore)
+  },
+  now: () => pullNow,
+})
+await pull("ses_one")
+ok(pullCalls === 1 && pullStore.sessions.ses_one.reply.version === "ses_one", "the sidebar pulls a session once")
+await pull("ses_one")
+ok(pullCalls === 1, "a second ask inside the window does not pull again")
+pullNow += SIDEBAR_STALE_MS
+await pull("ses_one")
+ok(pullCalls === 2, "an ask after the window pulls again")
+await pull("ses_one", true)
+ok(pullCalls === 3, "a forced ask pulls even inside the window")
+await Promise.all([pull("ses_two", true), pull("ses_two", true)])
+ok(pullCalls === 4, "two asks at once share one pull")
+ok(pullStore.sessions.ses_two.reply.version === "ses_two", "the pull writes the session it was asked about")
+
+const noBridge = sidebarRefreshOf({ rpc: () => undefined, store: () => pullStore, mutate: () => {} })
+await noBridge("ses_three", true)
+ok(pullCalls === 4 && pullStore.sessions.ses_three === undefined, "a host without the bridge pulls nothing")
+
+const failing = sidebarRefreshOf({
+  rpc: () => ({
+    stats: async () => {
+      throw new Error("RPC is unavailable")
+    },
+    purge: async () => ({ ok: true, text: "" }),
+  }),
+  store: () => pullStore,
+  mutate: (mutation) => {
+    mutation(pullStore)
+  },
+})
+await failing("ses_four", true)
+ok(pullStore.sessions.ses_four === undefined, "a failed pull leaves the mirror alone")
+
+const crowded = {}
+for (let index = 0; index < MAX_SIDEBAR_SESSIONS + 3; index += 1) {
+  crowded[`ses_${index}`] = { reply: statusReply, at: index }
+}
+const dropped = sessionsToDrop(crowded)
+ok(
+  dropped.length === 3 && dropped[0] === "ses_0" && dropped[2] === "ses_2",
+  "the mirror drops the oldest pulls first",
+)
+ok(sessionsToDrop({ a: { reply: statusReply, at: 1 } }).length === 0, "a mirror inside the bound drops nothing")
+
 const statusScene = makeTui(
   { updateCheck: false },
   { checkedAt: 0, latest: "", notified: "" },
@@ -1611,6 +1755,39 @@ ok(
   errorScene.seen.dialogs[0].kind === "alert" && errorScene.seen.dialogs[0].message.includes("did not answer"),
   "an RPC failure becomes a dialog, not a crash",
 )
+
+// The sidebar half. Whether the JSX module loads depends on the runtime (Bun
+// resolves `@opentui/solid` for the host, plain Node cannot parse this file at
+// all), so the assertions are about the contract either way: a claim with one
+// placement, a store only when the module loaded, and teardown that releases it.
+const slotScene = makeTui({ updateCheck: false }, {}, { reply: statusReply, withSlots: true })
+const stopSlots = await setupTui(slotScene.context)
+ok(
+  slotScene.seen.slots.length === 0 || slotScene.seen.slots[0].prepend === "sidebar.content",
+  "the sidebar claims sidebar.content when the TUI can render it, and claims nothing when it cannot",
+)
+ok(
+  slotScene.seen.slots.length > 0 || slotScene.seen.memory === 0,
+  "a sidebar that cannot render leaves the ephemeral store unmade",
+)
+await slotScene.seen.commands.find((command) => command.id === "mega-smart-context.status").run()
+ok(slotScene.seen.dialogs[0].kind === "select", "a host with slots still opens the status dialog")
+ok(
+  slotScene.seen.dialogs[0].options.some(
+    (row) => typeof row.title === "string" && row.title.startsWith("sidebar:"),
+  ),
+  "the dialog says whether the sidebar is drawing",
+)
+stopSlots()
+ok(slotScene.seen.released.length === slotScene.seen.slots.length, "teardown releases the claim it made")
+
+const noSidebar = makeTui({ updateCheck: false, sidebar: false }, {}, { withSlots: true })
+const stopNoSidebar = await setupTui(noSidebar.context)
+ok(
+  noSidebar.seen.slots.length === 0 && noSidebar.seen.memory === 0,
+  "sidebar:false claims no slot and makes no store",
+)
+stopNoSidebar()
 
 stopTui()
 globalThis.fetch = realFetch

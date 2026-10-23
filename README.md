@@ -89,6 +89,7 @@ The settings a user normally touches:
 | `subagents` | `true` | manage child sessions independently |
 | `refs` | `true` | allow feature-map references |
 | `updateCheck` | `true` | ask GitHub once a day for a newer version (one TUI toast per release) |
+| `sidebar` | `true` | draw the block in the TUI sidebar (`sidebar:false` removes it, keeps the dialog) |
 | `debug` | `false` | log pass decisions to stderr |
 
 The source repository's `docs/SPEC.md` has the full table and the behavior.
@@ -100,7 +101,7 @@ The update check is the only network call the plugin makes, and it runs in the T
 - The model writes memory with the `smart_context` tool: `patch`, `read`, `stats`, `ref`, `archive`, `purge`, `recall`, `expand`.
 - A subagent can read its spawning session's archive without importing it: `recall`/`expand` with `from:"parent"`. The field is read-only and never reaches a writing action, and the reply tells the child how many characters its caller can actually keep.
 - `/context` prints the current memory and archive, and carries the control actions a user needs; the subcommands are in [The `/context` command](#the-context-command).
-- The palette command `Context status` opens the same numbers as a dialog, with `Resume` and `Purge a turn…` below them; see [The TUI status dialog](#the-tui-status-dialog).
+- The palette command `Context status` opens the same numbers as a dialog, with `Resume` and `Purge a turn…` below them, and the TUI sidebar carries a short block of the same numbers with clickable `status` / `resume` / `purge`; see [The TUI status dialog](#the-tui-status-dialog).
 - `/undo` is followed: when the host commits a revert, the plugin rolls its own record back with it - memory written in the undone turn is undone, notices it retired are pinned again, purged turns come back, and the memory block says so for that turn. The journal covers the last eight turns; see "Undo" in the SPEC.
 
 Every request starts with a `<smart-context>` block. If `goal` is empty, the model is told to write the request there before the raw first message leaves the working window.
@@ -135,6 +136,14 @@ Below the numbers are two actions:
 
 The two halves of the plugin keep separate stores, so the dialog reads the session record over the host's plugin RPC (`stats`, `purge`). If the host has no RPC bridge, or the open route is not a session, the dialog says why instead of failing; an RPC error is reported the same way. The command id is the keybind key if you want a shortcut - no default binding is claimed. A first install may need a restart before the command appears.
 
+### The sidebar block
+
+The same numbers also sit in the TUI sidebar (`sidebar.content`): the build, a memory bar, a working-window bar marked when it is over cap, turns kept and dropped, pending/archive/ref counts, and the host system size when a pass measured one. Gists, notice text and the archive list stay out - the block never grows with the session.
+
+Under it are `[status]` (opens the dialog), `[resume]` (asks first, then sends the cue) and `[purge]` (the same list and confirmation as the dialog). The block renders from a per-session mirror that is pulled once when the session is shown, once after each idle pass, and again after a purge; at most one pull per session is in flight, a repeat inside fifteen seconds is skipped, and the mirror keeps the thirty-two most recent sessions. Renders never call the RPC.
+
+If the slot API or the JSX runtime is missing the dialog still works, and its `sidebar:` row says `unavailable`; `"sidebar": false` turns the block off.
+
 ## Installer
 
 `scripts/install.ts` copies the shippable set (`package.json`'s `files[]` plus `package.json`) into:
@@ -157,7 +166,7 @@ npm run analyze       # read a recorded session back: enabled payload vs the dis
 ## Where the details live
 
 - [`docs/SPEC.md`](docs/SPEC.md) — the user-visible behavior in full.
-- [`docs/features/`](docs/features/index.html) — the feature map for this plugin itself: the handoff, the memory tool, the archive, subagents, refs, compaction, the install, the analyzer, and the terminal half (status dialog and update toast).
+- [`docs/features/`](docs/features/index.html) - the feature map for this plugin itself: the handoff, the memory tool, the archive, subagents, refs, compaction, the install, the analyzer, and the terminal half (status dialog, sidebar block and update toast).
 - [`AGENTS.md`](AGENTS.md) — how to work on the plugin.
 - [`HANDOFF.md`](HANDOFF.md) — where things currently stand.
 

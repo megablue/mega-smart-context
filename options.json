@@ -14,5 +14,6 @@
   "maxResultChars": 4000,
   "manualCommand": true,
   "updateCheck": true,
+  "sidebar": true,
   "debug": false
 }
