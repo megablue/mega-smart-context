@@ -99,10 +99,27 @@ The update check is the only network call the plugin makes, and it runs in the T
 
 - The model writes memory with the `smart_context` tool: `patch`, `read`, `stats`, `ref`, `archive`, `purge`, `recall`, `expand`.
 - A subagent can read its spawning session's archive without importing it: `recall`/`expand` with `from:"parent"`. The field is read-only and never reaches a writing action, and the reply tells the child how many characters its caller can actually keep.
-- `/context` prints the current memory and archive. `/context now` archives pending turns. `/context resume` starts a model turn with the plugin's resume cue through `ctx.session.synthetic` - no user message, no new turn, and no pending eviction aged.
+- `/context` prints the current memory and archive, and carries the control actions a user needs; the subcommands are in [The `/context` command](#the-context-command).
 - `/undo` is followed: when the host commits a revert, the plugin rolls its own record back with it - memory written in the undone turn is undone, notices it retired are pinned again, purged turns come back, and the memory block says so for that turn. The journal covers the last eight turns; see "Undo" in the SPEC.
 
 Every request starts with a `<smart-context>` block. If `goal` is empty, the model is told to write the request there before the raw first message leaves the working window.
+
+## The `/context` command
+
+`/context` is the user's window into the same state the model sees. It prints; it does not edit the memory document - the model stays the only writer of the semantic content.
+
+| Command | Effect |
+| --- | --- |
+| `/context` or `/context status` | the status report: memory and working usage against their caps, turns kept and dropped, `over budget`, the goal, the host system size (display only), the pinned notices, the pending evictions, the archive, and the loaded build's version |
+| `/context now` | archive every pending turn immediately, instead of waiting for an eviction to age it |
+| `/context resume` | start a model turn with the plugin's resume cue through the host's synthetic channel - no user message, no new turn, and no pending eviction aged |
+| `/context memory <key>` | print one memory key as JSON: `goal`, `plan`, `facts`, `files`, `decisions`, `open`, `refs` or `notes` |
+| `/context recall <query>` | search the archive for a term; lists matching turn ids and gists, marking an entry `(gist only)` when its raw messages are gone |
+| `/context purge <turn>` | delete one pending or archived turn by id |
+
+An unknown subcommand prints the usage line. Apart from `resume`, a `/context` reply arrives as a real user turn, so it counts toward the working window and can age a pending eviction.
+
+After `/undo`, the status report adds two lines: `last undo:` (the boundary turn it rolled back to, how many memory keys were restored, how many turns were dropped, and a `not restorable` count when the journal could only do part of the job) and `undo journal:` (how many turns `/undo` would roll back now, and the oldest one it still covers).
 
 ## Installer
 
