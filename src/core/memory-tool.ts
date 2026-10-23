@@ -22,6 +22,7 @@ import { estimateTokens, formatTokens, memoryChars } from "./measure.ts"
 import { budgetOf, noticePreview, renderMemory, renderStats } from "./prompts.ts"
 import { MEMORY_KEYS, applyPatch, parsePatch } from "./schema.ts"
 import { retireNotice } from "./state.ts"
+import { captureMemory, captureNotice, capturePurge } from "./undo.ts"
 import type { SessionStore } from "./state.ts"
 import type { FeatureMapPort, Memory, SessionRecord } from "./types.ts"
 import { refVerdict } from "./refs.ts"
@@ -80,6 +81,10 @@ export const TOOL_HELP = `smart_context actions:
 
 function str(value: unknown): string | undefined {
   return typeof value === "string" && value.trim().length > 0 ? value.trim() : undefined
+}
+
+function nowOf(deps: MemoryToolDeps): number {
+  return deps.now?.() ?? Date.now()
 }
 
 /**
@@ -167,7 +172,12 @@ function read(record: SessionRecord, request: MemoryToolRequest, config: Resolve
   return { text: JSON.stringify(record.memory[key as keyof Memory], null, 2), ok: true }
 }
 
-function patch(record: SessionRecord, request: MemoryToolRequest, config: ResolvedConfig): MemoryToolOutcome {
+function patch(
+  record: SessionRecord,
+  request: MemoryToolRequest,
+  config: ResolvedConfig,
+  now: number,
+): MemoryToolOutcome {
   const parsed = parsePatch(request.patch)
   if (parsed.error !== undefined) return { text: `smart_context: ${parsed.error}`, ok: false }
   const result = applyPatch(record.memory, parsed.patch)
@@ -185,6 +195,8 @@ function patch(record: SessionRecord, request: MemoryToolRequest, config: Resolv
     }
   }
 
+  // Capture before the assignment: an undo restores the turn's starting document.
+  captureMemory(record, record.memory, result.changed, now)
   record.memory = result.memory
   const lines = [`smart_context: stored${result.changed.length > 0 ? " " + result.changed.join(", ") : ""}`]
   if (result.dropped.length > 0) lines.push(`dropped unknown key(s): ${result.dropped.join(", ")}`)
@@ -222,6 +234,8 @@ async function addRef(
       ok: false,
     }
   }
+  // Capture only an accepted write: the over-cap refusal above left no trace.
+  captureMemory(record, { ...record.memory, refs: before }, ["refs"], nowOf(deps))
 
   const lines: string[] = []
   if (verdict.found) {
@@ -262,15 +276,35 @@ function archive(record: SessionRecord, request: MemoryToolRequest, deps: Memory
   }
 }
 
-function purge(record: SessionRecord, request: MemoryToolRequest, config: ResolvedConfig): MemoryToolOutcome {
+function purge(
+  record: SessionRecord,
+  request: MemoryToolRequest,
+  config: ResolvedConfig,
+  now: number,
+): MemoryToolOutcome {
   const turn = str(request.turn)
   const query = str(request.query)
   if (turn !== undefined) {
+    const pendingIndex = record.pending.findIndex((entry) => entry.id === turn)
+    const archiveIndex = record.archive.findIndex((entry) => entry.id === turn)
+    const pendingEntry = pendingIndex < 0 ? undefined : record.pending[pendingIndex]
+    const archiveEntry = archiveIndex < 0 ? undefined : record.archive[archiveIndex]
     const removed = purgeTurn(record, turn)
+    // The whole entry (raw messages included) is kept for the undo: once purged,
+    // nothing else in the record can reconstruct it.
+    if (removed && pendingEntry !== undefined) capturePurge(record, "pending", pendingEntry, pendingIndex, now)
+    else if (removed && archiveEntry !== undefined) capturePurge(record, "archive", archiveEntry, archiveIndex, now)
     return { text: removed ? `purged ${turn}` : `smart_context: no turn ${JSON.stringify(turn)}`, ok: removed }
   }
   if (query !== undefined) {
+    const before = record.archive.map((entry, index) => ({ entry, index }))
     const count = purgeQuery(record, query)
+    if (count > 0) {
+      const kept = new Set(record.archive.map((entry) => entry.id))
+      for (const item of before) {
+        if (!kept.has(item.entry.id)) capturePurge(record, "archive", item.entry, item.index, now)
+      }
+    }
     return { text: `purged ${count} archived turn(s) matching ${JSON.stringify(query)}\n` + usage(record, config), ok: true }
   }
   return { text: "smart_context: purge needs turn or query", ok: false }
@@ -290,7 +324,12 @@ function purge(record: SessionRecord, request: MemoryToolRequest, config: Resolv
  * emission under a new id clears the retirement, because a re-emitted instruction
  * is live again.
  */
-function notice(record: SessionRecord, request: MemoryToolRequest, config: ResolvedConfig): MemoryToolOutcome {
+function notice(
+  record: SessionRecord,
+  request: MemoryToolRequest,
+  config: ResolvedConfig,
+  now: number,
+): MemoryToolOutcome {
   const notices = record.notices ?? []
   const remove = str(request.remove)
   if (remove === undefined) {
@@ -316,6 +355,7 @@ function notice(record: SessionRecord, request: MemoryToolRequest, config: Resol
     const ids = notices.map((notice) => notice.id).join(", ") || "none"
     return { text: `smart_context: no pinned notice ${JSON.stringify(remove)}. Pinned: ${ids}`, ok: false }
   }
+  captureNotice(record, entry, notices.findIndex((candidate) => candidate.id === remove), now)
   record.notices = notices.filter((notice) => notice.id !== remove)
   record.retired = retireNotice(record.retired ?? [], entry)
   return {
@@ -351,15 +391,15 @@ export async function runMemoryTool(
       return { text: renderStats(record, deps.config) + "\n" + usage(record, deps.config), ok: true }
     }
     case "patch":
-      return deps.store.mutate(sessionID, (record) => patch(record, request, deps.config))
+      return deps.store.mutate(sessionID, (record) => patch(record, request, deps.config, nowOf(deps)))
     case "ref":
       return deps.store.mutate(sessionID, (record) => addRef(record, request, deps))
     case "archive":
       return deps.store.mutate(sessionID, (record) => archive(record, request, deps))
     case "purge":
-      return deps.store.mutate(sessionID, (record) => purge(record, request, deps.config))
+      return deps.store.mutate(sessionID, (record) => purge(record, request, deps.config, nowOf(deps)))
     case "notice":
-      return deps.store.mutate(sessionID, (record) => notice(record, request, deps.config))
+      return deps.store.mutate(sessionID, (record) => notice(record, request, deps.config, nowOf(deps)))
     case "recall": {
       if (request.lost !== true) {
         return {

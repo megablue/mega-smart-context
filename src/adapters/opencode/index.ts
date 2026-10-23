@@ -1,7 +1,7 @@
 /**
  * mega-smart-context — the model owns the context window.
  *
- * Four contributions, registered from one `setup`:
+ * Five contributions, registered from one `setup`:
  *
  * 1. a standing policy stating the contract: the model sees its own memory, a
  *    short verbatim working window, and the current turn — not the transcript;
@@ -9,7 +9,9 @@
  *    from the memory document and the turns that fit the working budget;
  * 3. `smart_context`, the tool the model uses to write memory, archive an
  *    evicted turn, or recall one only when it is lost;
- * 4. `/context`, the same state printed for the user.
+ * 4. `/context`, the same state printed for the user;
+ * 5. a `session.revert.committed` subscription that rolls the record back with
+ *    the transcript, using the journal the pass and the tool keep.
  *
  * Nothing here edits the durable transcript. Cuts land on turn boundaries, so a
  * `tool-call` is never separated from its `tool-result`. Child sessions are
@@ -23,7 +25,8 @@ import { messageOf } from "../../core/types.ts"
 import { createContextCommand } from "./command.ts"
 import { resolveHostConfig } from "./config.ts"
 import { createFsFeatureMap, runContextTransform } from "./context.ts"
-import { SessionStore } from "../../core/state.ts"
+import { SessionStore, sameDirectory } from "../../core/state.ts"
+import { queueRevert, revertTarget } from "../../core/undo.ts"
 import { createSmartContextTool } from "./tool.ts"
 import { readPluginVersion } from "./version.ts"
 import { sweepOrphanedSessions } from "./sessions.ts"
@@ -125,6 +128,45 @@ export async function setup(ctx: PluginContext): Promise<() => Promise<void>> {
       // A host without a command registry still gets the tool and the pass.
       warn("the /context command could not be registered: " + messageOf(error))
     }
+  }
+
+  // `/undo` commits a host revert on the next prompt: the host deletes the
+  // boundary message and everything after it, and emits
+  // `session.revert.committed` with `{ sessionID, to }`. The record cannot follow
+  // that deletion by itself, so the event queues the boundary and the next pass
+  // applies it. A host without an event bus leaves the record alone. The loop is
+  // disposed with the plugin; a failed subscription never stops the plugin from
+  // loading.
+  if (ctx.event !== undefined) {
+    const abort = new AbortController()
+    const events = ctx.event
+    const task = (async () => {
+      for await (const event of events.subscribe({ signal: abort.signal })) {
+        const target = revertTarget(event)
+        if (target === undefined) continue
+        // The bus is host-wide; records are stamped with the directory that wrote
+        // them, so an event from another project is not ours to touch. Sessions
+        // are globally unique, so an absent location is safe to accept.
+        const directory = event.location?.directory
+        if (typeof directory === "string" && !sameDirectory(directory, ctx.location.directory)) continue
+        try {
+          const queued = await store.mutate(target.sessionID, (record) =>
+            queueRevert(record, target.to, Date.now()),
+          )
+          if (queued && config.debug) warn(`queued undo for ${target.sessionID}: revert to ${target.to}`)
+        } catch (error) {
+          warn("a committed revert could not be queued: " + messageOf(error))
+        }
+      }
+    })().catch((error) => {
+      if (!abort.signal.aborted) warn("the revert subscription stopped: " + messageOf(error))
+    })
+    registrations.push({
+      dispose: async () => {
+        abort.abort()
+        await task
+      },
+    })
   }
 
   // Records outlive the sessions they belong to: the host deletes the row, not

@@ -17,6 +17,7 @@
 import { emptyMemory, normalizeMemory } from "./schema.ts"
 import type { ArchivedTurn, Notice, PassSample, PendingTurn, RetiredNotice, SessionRecord, StoragePort } from "./types.ts"
 import { isPlainObject, messageOf } from "./types.ts"
+import { normalizeLastUndo, normalizeRevert, normalizeUndo } from "./undo.ts"
 
 /** How many sessions the store keeps before the oldest is evicted. */
 export const MAX_SESSIONS = 64
@@ -393,6 +394,12 @@ export function normalizeRecord(value: unknown, now: number): SessionRecord {
   if (notices !== undefined) record.notices = notices
   const retired = normalizeRetiredList(value.retired)
   if (retired !== undefined) record.retired = retired
+  const revert = normalizeRevert(value.revert)
+  if (revert !== undefined) record.revert = revert
+  const undo = normalizeUndo(value.undo)
+  if (undo !== undefined) record.undo = undo
+  const lastUndo = normalizeLastUndo(value.lastUndo)
+  if (lastUndo !== undefined) record.lastUndo = lastUndo
   return record
 }
 

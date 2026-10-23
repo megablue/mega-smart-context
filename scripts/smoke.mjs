@@ -25,8 +25,17 @@ import { buildPayload } from "../src/core/context.ts"
 import { runMemoryTool } from "../src/core/memory-tool.ts"
 import { runContextCommand } from "../src/core/command.ts"
 import { messageChars, messagesChars } from "../src/core/measure.ts"
-import { NOTICE_HEADING, POLICY } from "../src/core/prompts.ts"
+import { NOTICE_HEADING, POLICY, renderMemory, renderStats } from "../src/core/prompts.ts"
 import { emptyMemory } from "../src/core/schema.ts"
+import {
+  MAX_UNDO_CHARS,
+  MAX_UNDO_TURNS,
+  applyRevert,
+  captureMemory,
+  noteTurn,
+  queueRevert,
+  revertTarget,
+} from "../src/core/undo.ts"
 import { MAX_HISTORY, MAX_NOTICES, MAX_NOTICE_CHARS, MAX_RETIRED, SessionStore, pruneOrphans, retireNotice, sameDirectory, trimHistory, upsertNotices } from "../src/core/state.ts"
 import { extractHtmlSection, extractSection, htmlToText, pageCandidates } from "../src/core/refs.ts"
 import { deriveVersion, readVersionBase } from "../src/core/version.ts"
@@ -207,7 +216,7 @@ function makeHost(options = {}) {
       },
     },
   }
-  return { ctx, hooks, tools, commands, replies, synthetics }
+  return { ctx, hooks, tools, commands, replies, synthetics, storage }
 }
 
 const { default: plugin } = await import(pathToFileURL(resolve(root, "server.ts")).href)
@@ -1376,6 +1385,212 @@ ok(tuiFour.toasts.length === 0, "updateCheck:false says nothing")
 
 stopTui()
 globalThis.fetch = realFetch
+
+// ---------------------------------------------------------------------------
+// Undo: the record follows a committed host revert
+// ---------------------------------------------------------------------------
+
+function blankRecord() {
+  return {
+    version: 1,
+    memory: emptyMemory(),
+    seenTurns: [],
+    pending: [],
+    archive: [],
+    createdAt: 1,
+    updatedAt: 1,
+  }
+}
+
+ok(
+  revertTarget({ type: "session.revert.staged", data: { sessionID: "s", revert: { messageID: "u2" } } }) === undefined,
+  "a staged revert is not applied: /redo can still cancel it",
+)
+ok(
+  revertTarget({ type: "session.revert.committed", data: { sessionID: "s" } }) === undefined,
+  "a committed event without a boundary is ignored",
+)
+const revert = revertTarget({ type: "session.revert.committed", data: { sessionID: "s", to: "u2" } })
+ok(revert.sessionID === "s" && revert.to === "u2", "a committed revert names the session and the boundary")
+
+const markRecord = blankRecord()
+ok(queueRevert(markRecord, "u3", 1) && markRecord.revert.to === "u3", "a committed revert is queued on the record")
+ok(!queueRevert(markRecord, "u4", 2) && markRecord.revert.to === "u3", "a later boundary does not widen an earlier one")
+ok(queueRevert(markRecord, "u2", 3) && markRecord.revert.to === "u2", "an earlier boundary replaces a later one")
+
+// The journal keeps the turn's starting value even after several writes.
+const firstWrite = blankRecord()
+firstWrite.seenTurns = ["u1"]
+captureMemory(firstWrite, firstWrite.memory, ["goal"], 10)
+firstWrite.memory.goal = "one"
+captureMemory(firstWrite, firstWrite.memory, ["goal"], 11)
+firstWrite.memory.goal = "two"
+ok(firstWrite.undo.length === 1, "a turn writes one journal entry")
+ok(firstWrite.undo[0].memory.goal === "", "a key written twice still rolls back to the turn's start")
+applyRevert(firstWrite, { to: "u1", at: 20 }, 20)
+ok(firstWrite.memory.goal === "", "the undo restores the captured value")
+
+// Bounds.
+const bounded = blankRecord()
+for (let index = 0; index < MAX_UNDO_TURNS + 4; index += 1) {
+  noteTurn(bounded, "t" + String(index).padStart(3, "0"), index)
+}
+ok(bounded.undo.length === MAX_UNDO_TURNS, "the journal keeps only the newest turns")
+ok(bounded.undo[bounded.undo.length - 1].turn === "t011", "the newest turn is the one that survives")
+
+const oversized = blankRecord()
+const huge = emptyMemory()
+huge.notes = "x".repeat(MAX_UNDO_CHARS)
+captureMemory(oversized, huge, ["notes"], 1)
+noteTurn(oversized, "a2", 2)
+ok(oversized.undo.length === 1 && oversized.undo[0].turn === "a2", "the byte cap drops the oldest whole entry")
+
+// A boundary newer than every journal entry keeps the entries: the turns before
+// it are still reversible.
+const pastJournal = blankRecord()
+pastJournal.undo = [{ turn: "u1", at: 1 }, { turn: "u2", at: 2 }]
+pastJournal.seenTurns = ["u1", "u2", "u3"]
+applyRevert(pastJournal, { to: "u9", at: 5 }, 5)
+ok(pastJournal.undo?.length === 2, "a boundary past the journal keeps every entry")
+ok(pastJournal.seenTurns.join(",") === "u1,u2,u3", "and leaves turns older than the boundary alone")
+
+// A turn the span auto-archived comes back to pending with its raw messages.
+const archivedDuring = blankRecord()
+archivedDuring.seenTurns = ["u1", "u2"]
+archivedDuring.undo = [
+  { turn: "u2", at: 1, pending: [{ id: "u1", gist: "g1", chars: 4, createdAt: 1, age: 1 }] },
+]
+archivedDuring.archive = [{ id: "u1", gist: "g1", chars: 4, messages: [user("u1", "one")], createdAt: 2 }]
+const archivedUndo = applyRevert(archivedDuring, { to: "u2", at: 5 }, 5)
+ok(archivedDuring.pending.length === 1 && archivedDuring.pending[0].id === "u1", "an auto-archived turn returns to pending")
+ok(archivedDuring.pending[0].messages.length === 1, "its raw messages come out of the archive with it")
+ok(archivedDuring.archive.length === 0, "the archive no longer holds the restored turn")
+ok(archivedDuring.seenTurns.join(",") === "u1", "seenTurns drops the undone turn")
+ok(archivedUndo.dropped === 0, "nothing is counted dropped when the turn was only moved")
+
+// A pending turn that stayed pending still gets its snapshot age back.
+const agedRecord = blankRecord()
+agedRecord.seenTurns = ["u1", "u2"]
+agedRecord.pending = [{ id: "u1", gist: "g1", chars: 1, messages: [user("u1", "one")], createdAt: 1, age: 5 }]
+agedRecord.undo = [{ turn: "u2", at: 1, pending: [{ id: "u1", gist: "g1", chars: 1, createdAt: 1, age: 1 }] }]
+applyRevert(agedRecord, { to: "u2", at: 9 }, 9)
+ok(agedRecord.pending[0].age === 1, "a turn still pending gets its age back from the snapshot")
+
+// A pending turn whose raw messages are gone is counted, not fabricated.
+const lostRecord = blankRecord()
+lostRecord.seenTurns = ["u1", "u2"]
+lostRecord.undo = [{ turn: "u2", at: 1, pending: [{ id: "u1", gist: "g", chars: 1, createdAt: 1, age: 1 }] }]
+const lostUndo = applyRevert(lostRecord, { to: "u2", at: 5 }, 5)
+ok(lostUndo.lost === 1 && lostRecord.pending.length === 0, "a pending turn with no raw left is counted as lost")
+
+// A purged turn is restored whole.
+const purgedRecord = blankRecord()
+purgedRecord.seenTurns = ["u2"]
+purgedRecord.undo = [
+  {
+    turn: "u2",
+    at: 1,
+    purged: [{ list: "archive", index: 0, entry: { id: "u0", gist: "g", chars: 1, createdAt: 1 } }],
+  },
+]
+applyRevert(purgedRecord, { to: "u2", at: 5 }, 5)
+ok(purgedRecord.archive.length === 1 && purgedRecord.archive[0].id === "u0", "a purged turn is put back")
+
+// A retired notice is pinned again, and its retirement is cleared.
+const noticeRecord = blankRecord()
+noticeRecord.seenTurns = ["u2"]
+noticeRecord.notices = [{ id: "n1", text: "one", at: 1 }]
+noticeRecord.retired = [{ id: "n2", text: "two" }]
+noticeRecord.undo = [
+  { turn: "u2", at: 1, notices: [{ notice: { id: "n2", text: "two", at: 2 }, index: 1 }] },
+]
+applyRevert(noticeRecord, { to: "u2", at: 5 }, 5)
+ok(noticeRecord.notices.map((entry) => entry.text).join(",") === "one,two", "a retired notice is pinned again")
+ok((noticeRecord.retired ?? []).length === 0, "the retirement is cleared with it")
+
+// End to end: a pass journals a turn, a patch fills it, a revert unwinds it.
+const undoStore = new SessionStore()
+const undoConfig = resolveConfig({
+  options: { workingTokens: 4000, memoryTokens: 3000, charsPerToken: 2, autoArchive: true, evictionLead: 2 },
+})
+const undoDeps = { store: undoStore, config: undoConfig, now: () => 1000 }
+const undoPass = (messages) =>
+  buildPayload({ sessionID: "undo", system: [], messages, model: {} }, undoDeps)
+const undoTool = (input) => runMemoryTool({ sessionID: "undo", ...input }, undoDeps)
+const turnOne = [user("u1", "First. ".repeat(20)), assistant("a1", "ok")]
+const turnTwo = [...turnOne, user("u2", "Second. ".repeat(20)), assistant("a2", "ok")]
+const turnThree = [...turnTwo, user("u3", "Third. ".repeat(20)), assistant("a3", "ok")]
+
+await undoPass(turnOne)
+await undoTool({ action: "patch", patch: { goal: "one", facts: { a: "1" } } })
+await undoPass(turnTwo)
+await undoTool({ action: "patch", patch: { goal: "two", facts: { b: "2" } } })
+await undoPass(turnThree)
+await undoTool({ action: "patch", patch: { goal: "three" } })
+
+let undoRecord = await undoStore.load("undo")
+ok(undoRecord.undo.length === 3, "a pass journals each turn once")
+ok(undoRecord.undo.map((entry) => entry.turn).join(",") === "u1,u2,u3", "the journal is in turn order")
+
+await undoStore.mutate("undo", (record) => queueRevert(record, "u3", 5000))
+const undoPayload = await undoPass(turnTwo)
+undoRecord = await undoStore.load("undo")
+ok(undoRecord.memory.goal === "two", "the undone turn's memory write is rolled back")
+ok(undoRecord.memory.facts.b === "2", "a write from the turn before the boundary survives")
+ok(undoRecord.seenTurns.join(",") === "u1,u2", "seenTurns drops the undone turn")
+ok(undoRecord.revert === undefined, "the revert marker is cleared in the same pass")
+ok(undoRecord.lastUndo.turn === "u3" && undoRecord.lastUndo.memory === 1, "lastUndo records what was restored")
+const undoText = renderMemory(undoRecord)
+ok(undoText.includes("## Undo") && undoText.includes("u3"), "the memory block tells the model about the undo")
+ok(
+  undoPayload.messages[0].content[0].text.includes("## Undo"),
+  "the pass that applies the undo renders it immediately",
+)
+ok(renderStats(undoRecord, undoConfig).includes("last undo"), "/context reports the last undo")
+
+const turnFour = [...turnTwo, user("u4", "Fourth. ".repeat(20)), assistant("a4", "ok")]
+await undoPass(turnFour)
+undoRecord = await undoStore.load("undo")
+ok(undoRecord.lastUndo === undefined, "a later user turn drops the undo line")
+ok(!renderMemory(undoRecord).includes("## Undo"), "and the memory block stops carrying it")
+
+// Two undos in a row: the second boundary still restores the earlier turn.
+await undoStore.mutate("undo", (record) => queueRevert(record, "u1", 6000))
+await undoPass([])
+undoRecord = await undoStore.load("undo")
+ok(undoRecord.memory.goal === "", "a revert to the first turn restores the empty goal")
+ok(Object.keys(undoRecord.memory.facts).length === 0, "and the facts written after it are gone")
+ok(undoRecord.undo === undefined, "the journal is emptied when the first turn is reverted")
+
+// The event subscription is what queues a committed revert.
+const eventHost = makeHost()
+const fed = [
+  { type: "session.revert.staged", data: { sessionID: "ev-staged", revert: { messageID: "u2" } } },
+  {
+    type: "session.revert.committed",
+    data: { sessionID: "ev-other", to: "u2" },
+    location: { directory: "C:/somewhere/else" },
+  },
+  { type: "session.revert.committed", data: { sessionID: "ev-ok", to: "u2" }, location: { directory: root } },
+  { type: "session.revert.committed", data: { sessionID: "ev-last", to: "u5" } },
+]
+eventHost.ctx.event = {
+  subscribe({ signal } = {}) {
+    return (async function* () {
+      for (const event of fed) {
+        if (signal?.aborted) return
+        yield event
+      }
+    })()
+  },
+}
+const disposeEvents = await plugin.setup(eventHost.ctx)
+await new Promise((done) => setTimeout(done, 50))
+ok(eventHost.storage.get("session/ev-ok")?.revert?.to === "u2", "a committed revert is queued on its record")
+ok(eventHost.storage.get("session/ev-staged") === undefined, "a staged revert queues nothing")
+ok(eventHost.storage.get("session/ev-other") === undefined, "an event from another directory is ignored")
+ok(eventHost.storage.get("session/ev-last")?.revert?.to === "u5", "an event without a location is accepted")
+await disposeEvents()
 
 await dispose()
 console.log(`smoke: ${passed} assertions passed`)

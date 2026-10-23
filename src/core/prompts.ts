@@ -175,6 +175,16 @@ export function renderMemory(record: SessionRecord): string {
     lines.push("", "## Notes", q(memory.notes))
   }
 
+  if (record.lastUndo !== undefined) {
+    // Shown for the turn the rollback landed in only: the model that wrote the
+    // undone memory needs to know it is gone, and a later turn does not.
+    lines.push("", "## Undo")
+    lines.push(
+      `The host reverted this session to before ${q(record.lastUndo.turn)}. ` +
+        "Memory written in the undone turn was rolled back; this document is the state as of that point.",
+    )
+  }
+
   if (record.pending.length > 0) {
     lines.push("", "## Pending eviction")
     for (const pending of record.pending) {
@@ -238,6 +248,18 @@ export function renderStats(record: SessionRecord, config: ResolvedConfig, versi
     `smart-context${version === undefined ? "" : ` v${version}`} · ${budgetLine(report)}`,
     `window: ${report.workingTurns} turns kept, ${report.droppedTurns} dropped · over budget: ${report.overBudget ? "yes" : "no"}`,
   ]
+  if (record.lastUndo !== undefined) {
+    lines.push(
+      `last undo: before ${record.lastUndo.turn} · ${record.lastUndo.memory} memory key(s) restored, ` +
+        `${record.lastUndo.dropped} turn(s) dropped` +
+        (record.lastUndo.lost > 0 ? `, ${record.lastUndo.lost} not restorable` : ""),
+    )
+  }
+  if ((record.undo ?? []).length > 0) {
+    lines.push(
+      `undo journal: ${record.undo?.length} turn(s), oldest ${record.undo?.[0].turn || "(no turn yet)"} · /undo rolls these back`,
+    )
+  }
   if (report.hostSystemTokens !== undefined) {
     lines.push(
       `host system ~${formatTokens(report.hostSystemTokens)} est (${report.hostSystemParts ?? 0} parts) · not counted`,

@@ -186,6 +186,11 @@ img{max-width:100%;height:auto}
 <h2>Compaction</h2>
 <p>When the host asks for a checkpoint summary, the plugin returns the rendered memory document and skips the host&#39;s summarizer. If memory is empty, it declines and lets the host summarize; returning an empty block would erase the checkpoint in the name of owning it. The summary is the same block the model reads, so it too carries no live counters.</p>
 </section>
+<section id="undo">
+<h2>Undo</h2>
+<p><code>/undo</code> in the terminal reverts the latest user message (or an earlier one) and the work that followed it: OpenCode stages the rollback, <code>/redo</code> cancels it, and the next prompt commits it by deleting the transcript from the boundary message onward. This plugin follows that commit. When the host emits <code>session.revert.committed</code>, the session record is rolled back on the next context pass: memory written in the undone turn is undone (the tool keeps an inverse journal of previous values), notices the model retired during it are pinned again, turns it purged are restored, pending turns created or auto-archived during it are dropped or pulled back, and the undone turns leave <code>seenTurns</code>, the archive and the pass history.</p>
+<p>What the rollback cannot restore is stated so nothing is guessed at: an archive entry the caps trimmed, a pending turn whose raw messages are gone, and writes from turns older than the journal (the last eight turns, newest kept) are not reversible; <code>/context</code> reports <code>last undo</code> with a <code>not restorable</code> count when any applied. The memory block carries a <code>## Undo</code> section for the turn after a rollback so the model distrusts its own pre-undo writes, and <code>/context</code> adds <code>last undo</code> and <code>undo journal</code> lines. A host without an event bus, and a transcript shortened by compaction, roll nothing back.</p>
+</section>
 <section id="feature-map-references">
 <h2>Feature-map references</h2>
 <p><code>smart_context { action:&quot;ref&quot;, page, section, gist }</code> stores a pointer plus the model&#39;s own one-liner. It reads the section from <code>docs/features/&lt;page&gt;</code> - the HTML page first, the Markdown page as a fallback - reports the gist and section costs, and tells the model which is shorter. The reference counts toward <code>memoryTokens</code>. A section that cannot be read is reported, but the pointer is still stored.</p>
@@ -279,6 +284,7 @@ img{max-width:100%;height:auto}
 </tbody>
 </table>
 <p><code>/context resume</code> is the one command that starts a model turn instead of printing: it admits <code>RESUMED_TEXT</code> as a synthetic user message with <code>resume: true</code>, and the context pass classifies that sentence as a cue, so it stays in the window, counts toward the turn it continues, and ages no pending eviction.</p>
+<p>The same output reports a rollback when one has been applied - <code>last undo: before &lt;turn&gt; &middot; N memory key(s) restored, M turn(s) dropped</code>, with a <code>not restorable</code> count when the journal could only do part of the job - and the journal itself as <code>undo journal: N turn(s), oldest &lt;turn&gt; &middot; /undo rolls these back</code>.</p>
 <p>The version is <code>MAJOR.MINOR.PATCH</code>: MAJOR.MINOR is the released line, and PATCH is the number of commits since the base recorded in <code>package.json</code>, so it advances with every commit and the README version badge follows the same field. What <code>/context</code> prints is the loaded build&#39;s own version, which lags the repository until the install is re-synced.</p>
 </section>
 <section id="settings">

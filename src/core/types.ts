@@ -199,6 +199,101 @@ export interface RetiredNotice {
   text: string
 }
 
+// ---------------------------------------------------------------------------
+// Undo
+// ---------------------------------------------------------------------------
+
+/**
+ * One pending turn as it stood at the start of a journaled turn.
+ *
+ * The raw messages are deliberately absent: a pending turn that is still pending
+ * already holds them, and one the pass auto-archived still has them in the
+ * archive. The undo restores from whichever list can still supply them, which
+ * keeps this snapshot a few hundred bytes instead of a second copy of the turn.
+ */
+export interface PendingSnapshot {
+  readonly id: string
+  readonly gist: string
+  readonly chars: number
+  readonly createdAt: number
+  readonly age: number
+}
+
+/** A notice the model retired during a turn, with where it sat in `notices`. */
+export interface NoticeSnapshot {
+  readonly notice: Notice
+  readonly index: number
+}
+
+/** A turn the model purged during a turn, kept whole so the undo can put it back. */
+export interface PurgedSnapshot {
+  readonly list: "pending" | "archive"
+  readonly index: number
+  readonly entry: PendingTurn | ArchivedTurn
+}
+
+/**
+ * One turn's inverse journal.
+ *
+ * The journal is what makes the memory reversible: the record only ever holds the
+ * current document, so an undo can only restore a value that was captured before
+ * the write. One entry exists per turn, created by that turn's first pass with
+ * the pending state as it stood *before* the pass mutated anything; the memory
+ * and notice fields fill lazily, and only the *first* previous value per key is
+ * kept (a key written twice in one turn still rolls back to the turn's start).
+ *
+ * Bounded by `MAX_UNDO_TURNS` and `MAX_UNDO_CHARS`; the oldest whole entry goes
+ * first, because a partial entry would restore a mix of two turns.
+ */
+export interface UndoEntry {
+  /** The user turn this entry belongs to; `""` when no pass had run yet. */
+  turn: string
+  /** When the entry was created (`Date.now()`). */
+  at: number
+  /** `pending` as it stood at the turn's first pass, before anything was evicted. */
+  pending?: PendingSnapshot[]
+  /** Top-level memory key -> its value before the turn's first write to that key. */
+  memory?: Record<string, unknown>
+  /** Notices the model retired this turn, oldest first. */
+  notices?: NoticeSnapshot[]
+  /** Pending and archived turns the model purged this turn (raw included). */
+  purged?: PurgedSnapshot[]
+}
+
+/**
+ * A committed host revert waiting for the next pass to apply it.
+ *
+ * The event only names the boundary; the rollback itself runs inside the pass so
+ * it sees the record under the same ordering as every other mutation.
+ */
+export interface RevertMark {
+  /** The boundary message id; the host deleted this row and everything after it. */
+  to: string
+  /** When the plugin heard about it (`Date.now()`). */
+  at: number
+}
+
+/** What the last applied undo changed, for `/context` and the debug line. */
+export interface LastUndo {
+  /** The boundary the host reverted to. */
+  turn: string
+  /** When the rollback was applied (`Date.now()`). */
+  at: number
+  /** How many distinct memory keys were restored. */
+  memory: number
+  /** How many journal entries were unwound. */
+  turns: number
+  /** How many pending/archive entries were dropped because they belonged to the span. */
+  dropped: number
+  /** Pending turns the undo could not restore because their raw messages were gone. */
+  lost: number
+  /**
+   * The turn that was current when the undo applied. The memory-block line is
+   * shown for that turn only; a later turn clears it.
+   */
+  seen?: string
+}
+
 /** The last context pass's measurements, so `/context` can show them later. */
 export interface LastReport {
   memoryTokens: number
@@ -291,6 +386,17 @@ export interface SessionRecord {
    * again under a new id. Optional: absent until the first retirement.
    */
   retired?: RetiredNotice[]
+  /**
+   * A committed host revert waiting for the next pass, or absent.
+   *
+   * Only `session.revert.committed` writes it; a staged-then-cleared `/redo`
+   * never does, so a cancelled undo leaves the record untouched.
+   */
+  revert?: RevertMark
+  /** One inverse entry per recent turn, oldest first, bounded. */
+  undo?: UndoEntry[]
+  /** What the last applied undo changed. Cleared on the next user turn. */
+  lastUndo?: LastUndo
   /**
    * The plugin instance's directory when this record was last written.
    *

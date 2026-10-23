@@ -1,0 +1,81 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="generator" content="opencode-feature-map">
+<title>Compaction - one document, one checkpoint — feature map</title>
+<style>
+:root{color-scheme:light dark;--fg:#1d2433;--muted:#5b6475;--bg:#fff;--line:#d8dee9;--accent:#0b6e99;--warn:#8a5a00;--code:#f4f6fa}
+@media (prefers-color-scheme:dark){:root{--fg:#e6eaf2;--muted:#9aa4b8;--bg:#11151c;--line:#2b3342;--accent:#6cc4e8;--warn:#e0b25c;--code:#1a202a}}
+*{box-sizing:border-box}
+body{margin:0 auto;max-width:60rem;padding:2rem 1.25rem 4rem;background:var(--bg);color:var(--fg);font:16px/1.6 system-ui,-apple-system,Segoe UI,sans-serif}
+h1,h2,h3{line-height:1.25;margin:2rem 0 .75rem}
+h1{font-size:1.9rem;border-bottom:2px solid var(--line);padding-bottom:.4rem}
+h2{font-size:1.35rem}
+h3{font-size:1.08rem;color:var(--muted)}
+p,ul,ol,table,pre,blockquote{margin:.75rem 0}
+a{color:var(--accent)}
+code{background:var(--code);padding:.1em .3em;border-radius:.25rem;font-size:.92em}
+pre{background:var(--code);border:1px solid var(--line);border-radius:.4rem;padding:.8rem 1rem;overflow:auto}
+pre code{background:none;padding:0}
+pre.verbatim{border-left:4px solid var(--warn)}
+pre.verbatim::before{content:"verbatim — " attr(data-why);display:block;color:var(--warn);font:600 .78rem/1.4 ui-monospace,monospace;margin-bottom:.5rem;white-space:pre-wrap}
+pre.pseudo{border-left:4px solid var(--accent)}
+pre.mermaid{background:var(--bg);border:1px dashed var(--line)}
+p.status{color:var(--muted);font-size:.92rem}
+table{border-collapse:collapse;width:100%}
+th,td{border:1px solid var(--line);padding:.4rem .6rem;text-align:left;vertical-align:top}
+th{background:var(--code)}
+blockquote{margin-left:0;padding-left:1rem;border-left:3px solid var(--line);color:var(--muted)}
+hr{border:0;border-top:1px solid var(--line);margin:2rem 0}
+.lede{color:var(--muted)}
+</style>
+</head>
+<body>
+<article class="map">
+<h1>Undo - the record follows the host's revert</h1>
+<p class="status">Status: shipped (v0.1.25) - Read when: <code>/undo</code> or <code>/redo</code>, <code>session.revert.committed</code>, the undo journal, or &quot;memory still describes an undone turn&quot;.</p>
+<section id="what-it-does">
+<h2>What it does</h2>
+<ul><li>Watches the host&#39;s event bus for <code>session.revert.committed</code> and queues its boundary on the session record; <code>/redo</code> before a prompt never queues anything, because only the committed event is read.</li><li>On the next context pass, applies the rollback before the window and the change detection run, so the same pass already speaks about the transcript the host kept.</li><li>Restores the memory document from an inverse journal, re-pins notices the model retired, and puts purged turns back.</li><li>Drops every tracked turn at/after the boundary from <code>seenTurns</code>, <code>pending</code>, <code>archive</code> and the pass history.</li><li>Tells the model once, via a <code>## Undo</code> section of the memory block, that the rollback happened; <code>/context</code> adds <code>last undo</code> and <code>undo journal</code> lines.</li></ul>
+<p><code>docs/SPEC.md</code> owns the user-visible behavior; this page owns the mechanism.</p>
+</section>
+<section id="map">
+<h2>Map</h2>
+<ul><li><code>src/core/undo.ts</code> - the module: <code>MAX_UNDO_TURNS</code>, <code>MAX_UNDO_CHARS</code>, <code>revertTarget</code>, <code>queueRevert</code>, <code>noteTurn</code>, <code>captureMemory</code>, <code>captureNotice</code>, <code>capturePurge</code>, <code>applyRevert</code>, <code>trimUndo</code>, <code>undoLine</code>, and the <code>normalizeUndo</code>/<code>normalizeRevert</code>/<code>normalizeLastUndo</code> readers.</li><li><code>src/core/types.ts</code> - <code>UndoEntry</code>, <code>PendingSnapshot</code>, <code>NoticeSnapshot</code>, <code>PurgedSnapshot</code>, <code>RevertMark</code>, <code>LastUndo</code>, and <code>SessionRecord.revert/undo/lastUndo</code>.</li><li><code>src/core/memory-tool.ts</code> - <code>captureMemory</code> in <code>patch</code> and <code>addRef</code>, <code>captureNotice</code> in <code>notice</code>, <code>capturePurge</code> in <code>purge</code>.</li><li><code>src/core/context.ts</code> - <code>applyRevert</code> after <code>spans</code>, <code>noteTurn</code> before the change detection, <code>record.lastUndo.seen</code>.</li><li><code>src/adapters/opencode/index.ts</code> - the <code>ctx.event</code> subscription; <code>types.ts</code> adds <code>EventDomain</code>/<code>PluginEvent</code>.</li><li><code>src/core/prompts.ts</code> - the <code>## Undo</code> section and the <code>renderStats</code> lines.</li><li><code>scripts/smoke.mjs</code> - the &quot;Undo&quot; block at the end.</li></ul>
+</section>
+<section id="how-why">
+<h2>How &amp; why</h2>
+<h3>The host&#39;s revert</h3>
+<p><code>/undo</code> calls <code>session.revert.stage</code>: files are restored and the prompt returns to the composer, but nothing is committed. The commit happens on the <em>next</em> prompt: the host looks the boundary message up by id, deletes every <code>session_message</code> row with a sequence at or after it (the boundary user message itself included), clears the revert, and emits <code>session.revert.committed</code> with <code>{ sessionID, to }</code>. <code>/redo</code> calls <code>session.revert.clear</code> and emits nothing else, which is why a staged revert is deliberately ignored.</p>
+<p>The boundary is a message id, and the host&#39;s ids sort by creation time (<code>Identifier.ascending</code>: timestamp then counter), so <code>id &gt;= to</code> is &quot;at or after the boundary&quot; with no extra timestamp stored.</p>
+<h3>Queued, then applied in the pass</h3>
+<p>The event handler only calls <code>queueRevert</code> under <code>store.mutate</code>; the earliest boundary wins. The pass applies it, which keeps one place - the pass - in charge of the record order, and lets <code>applyRevert</code> run before <code>selectWorkingWindow</code> and the change detection. A bus the host does not hand over (no <code>ctx.event</code>) leaves the record alone; so does an event from another directory, guarded by <code>sameDirectory</code>.</p>
+<h3>One journal entry per turn</h3>
+<p>The record only holds the current document, so restoring a write needs an inverse captured before the write. <code>noteTurn</code> creates the entry at the top of every pass whose current turn differs, snapshotting <code>pending</code> <em>before</em> the pass can evict, age or auto-archive anything. A write fills its own fields lazily: <code>memory</code> stores the value each top-level key had before its first write of the turn (a second write to the same key does not overwrite the capture), <code>notices</code> the retired notice and its slot, <code>purged</code> the whole purged turn, raw messages included. Bounds: 8 turns and 40k characters, newest entry always kept; the oldest <em>whole</em> entry goes first.</p>
+<h3>What a rollback restores</h3>
+<p>Journal entries at/after the boundary unwind newest-first: memory keys, retired notices (un-retired by text, re-pinned at their slot), purged turns. Then the structure is rebuilt: <code>pending</code> becomes the boundary entry&#39;s snapshot, pulling raw messages back out of the archive for a turn the span auto-archived and restoring the snapshot&#39;s age; leftover <code>pending</code>/<code>archive</code> ids at/after the boundary are dropped, and <code>seenTurns</code> and <code>history</code> are filtered to <code>id &lt; to</code>. The marker clears, the journal truncates, and <code>lastUndo</code> records what happened for <code>/context</code>.</p>
+<p>The <code>## Undo</code> line is rendered for the turn the rollback landed in only: <code>lastUndo.seen</code> holds that turn id, and <code>noteTurn</code> deletes the entry when a different turn arrives. Deterministic per record, so a retried pass renders the same bytes.</p>
+<h3>What it cannot restore</h3>
+<p>An <em>archive trim</em> is irreversible: <code>trimArchive</code> drops raw messages to hold the caps, and the journal does not keep second copies. A pending turn whose raw messages are gone cannot be rebuilt, and <code>lost</code> counts it instead of fabricating one. Writes from turns older than the retained journal are not rolled back. <code>/context purge</code> bypasses the journal (a known gap). And a host compaction that shortens the transcript never triggers a rollback: only the dedicated event does.</p>
+</section>
+<section id="config-keys-ui">
+<h2>Config keys / UI</h2>
+<table><thead><tr><th>Thing</th><th>Default</th><th>Effect</th></tr></thead><tbody><tr><td><code>MAX_UNDO_TURNS</code></td><td>8</td><td>journal entries kept; not a config key</td></tr><tr><td><code>MAX_UNDO_CHARS</code></td><td>40000</td><td>serialized journal size; oldest whole entry dropped; not a config key</td></tr><tr><td><code>## Undo</code></td><td>-</td><td>one section in the memory block for the turn after a rollback</td></tr><tr><td><code>/context</code></td><td>-</td><td><code>last undo: ...</code> and <code>undo journal: N turn(s), oldest ...</code> lines</td></tr></tbody></table>
+</section>
+<section id="tests-that-pin-it">
+<h2>Tests that pin it</h2>
+<h3>The journal and the event</h3>
+<ul><li>&quot;a staged revert is not applied: /redo can still cancel it&quot;</li><li>&quot;a committed event without a boundary is ignored&quot;</li><li>&quot;a committed revert names the session and the boundary&quot;</li><li>&quot;a committed revert is queued on the record&quot;, &quot;a later boundary does not widen an earlier one&quot;, &quot;an earlier boundary replaces a later one&quot;</li><li>&quot;a turn writes one journal entry&quot;, &quot;a key written twice still rolls back to the turn&#39;s start&quot;, &quot;the undo restores the captured value&quot;</li><li>&quot;the journal keeps only the newest turns&quot;, &quot;the newest turn is the one that survives&quot;, &quot;the byte cap drops the oldest whole entry&quot;</li><li>&quot;a boundary past the journal keeps every entry&quot;, &quot;and leaves turns older than the boundary alone&quot;</li></ul>
+<h3>The rollback, the line and the subscription</h3>
+<ul><li>&quot;an auto-archived turn returns to pending&quot;, &quot;its raw messages come out of the archive with it&quot;, &quot;the archive no longer holds the restored turn&quot;, &quot;seenTurns drops the undone turn&quot;, &quot;nothing is counted dropped when the turn was only moved&quot;</li><li>&quot;a turn still pending gets its age back from the snapshot&quot;, &quot;a pending turn with no raw left is counted as lost&quot;, &quot;a purged turn is put back&quot;</li><li>&quot;a retired notice is pinned again&quot;, &quot;the retirement is cleared with it&quot;</li><li>&quot;a pass journals each turn once&quot;, &quot;the journal is in turn order&quot;, &quot;the undone turn&#39;s memory write is rolled back&quot;, &quot;a write from the turn before the boundary survives&quot;</li><li>&quot;seenTurns drops the undone turn&quot; (integration), &quot;the revert marker is cleared in the same pass&quot;, &quot;lastUndo records what was restored&quot;</li><li>&quot;the memory block tells the model about the undo&quot;, &quot;the pass that applies the undo renders it immediately&quot;, &quot;/context reports the last undo&quot;, &quot;a later user turn drops the undo line&quot;, &quot;and the memory block stops carrying it&quot;</li><li>&quot;a revert to the first turn restores the empty goal&quot;, &quot;and the facts written after it are gone&quot;, &quot;the journal is emptied when the first turn is reverted&quot;</li><li>&quot;a committed revert is queued on its record&quot;, &quot;a staged revert queues nothing&quot;, &quot;an event from another directory is ignored&quot;, &quot;an event without a location is accepted&quot;</li></ul>
+</section>
+<section id="related">
+<h2>Related</h2>
+<ul><li><code>context-handoff.html</code> - the pass that applies the rollback.</li><li><code>memory-tool.html</code> - the writes the journal inverts.</li><li><code>archive.html</code> - pending, eviction and the caps the undo cannot reverse.</li></ul>
+</section>
+</article>
+
+</body>
+</html>

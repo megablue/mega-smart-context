@@ -95,6 +95,24 @@ export interface ModelDomain {
   transform(callback: (editor: any) => void): Promise<Registration>
 }
 
+/** One event the host broadcasts. Only `type` and `data` are read. */
+export interface PluginEvent {
+  readonly type: string
+  readonly data?: any
+  readonly [key: string]: any
+}
+
+/**
+ * The host's event stream, as `ctx.event` hands it over.
+ *
+ * The plugin only needs the session lifecycle events, but the stream is the whole
+ * bus: every event arrives and the caller filters by `type`. The signal ends the
+ * iteration on dispose.
+ */
+export interface EventDomain {
+  subscribe(options?: { signal?: AbortSignal }): AsyncIterable<PluginEvent>
+}
+
 /** Everything `setup` is handed. */
 export interface PluginContext {
   readonly location: { readonly directory: string; readonly [key: string]: any }
@@ -105,6 +123,11 @@ export interface PluginContext {
   readonly model?: ModelDomain
   /** Plugin-scoped durable KV. Optional: a host without one degrades to memory. */
   readonly storage?: StorageDomain
+  /**
+   * The host's event bus. Optional: a host without one simply never hears about
+   * a revert, and the record is left alone rather than guessed at.
+   */
+  readonly event?: EventDomain
 }
 
 /** The `context` hook's event: the assembled request, mutable before dispatch. */

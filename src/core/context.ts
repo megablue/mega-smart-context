@@ -20,6 +20,7 @@ import { estimateTokens, memoryChars, messageChars, messagesChars } from "./meas
 import { POLICY, NOTICE_HEADING, renderMemory, renderNotices } from "./prompts.ts"
 import { trimHistory, upsertNotices, type SessionStore } from "./state.ts"
 import type { Message, PassSample, SessionRecord, SystemPart } from "./types.ts"
+import { applyRevert, noteTurn, undoLine } from "./undo.ts"
 import {
   MEMORY_MESSAGE_ID,
   erodeToolResults,
@@ -114,6 +115,12 @@ export async function buildPayload(input: ContextInput, deps: ContextDeps): Prom
   const split = splitNotices(clean)
   const raw = split.rest
   const spans = turnSpans(raw)
+  // A committed host revert lands here, before the window and the change
+  // detection run: the record must speak about the transcript the host kept,
+  // and the same pass must already see the corrected pending/archive lists.
+  // Only the dedicated event sets the marker, so a host compaction (which also
+  // shortens the transcript) can never roll the memory back.
+  const undo = record.revert === undefined ? undefined : applyRevert(record, record.revert, now())
   const window = selectWorkingWindow(raw, {
     workingTokens: config.workingTokens,
     charsPerToken: config.charsPerToken,
@@ -127,6 +134,15 @@ export async function buildPayload(input: ContextInput, deps: ContextDeps): Prom
   const working = erodeToolResults(workingRaw, config.maxResultChars).messages
 
   const currentIds = window.turns.map((span) => span.id)
+  if (undo !== undefined) {
+    // The undo line is rendered for the turn the rollback landed in; noteTurn
+    // clears it once a newer user turn arrives.
+    record.lastUndo = { ...undo, seen: currentIds[currentIds.length - 1] }
+    if (config.debug) deps.warn?.(`context ${input.sessionID}: ${undoLine(undo)}`)
+  }
+  // Snapshot pending before this pass can evict, age or auto-archive anything.
+  noteTurn(record, currentIds[currentIds.length - 1], now())
+
   const bootstrap = record.seenTurns.length === 0
   const changed = !bootstrap && !sameTurns(record.seenTurns, currentIds)
 
