@@ -128,6 +128,31 @@ export interface PluginContext {
    * a revert, and the record is left alone rather than guessed at.
    */
   readonly event?: EventDomain
+  /**
+   * Plugin RPC: a named portable definition the TUI half can call by id. Optional
+   * for the same reason as the other domains - a host without it still gets the
+   * tool, the pass and `/context`, and only the dialog reports the gap.
+   */
+  readonly rpc?: RpcDomain
+}
+
+/** A registered RPC, disposed with the plugin. */
+export interface RpcRegistration {
+  dispose(): Promise<void>
+}
+
+/**
+ * The registration half of the host's RPC domain.
+ *
+ * The definition is the shared module's `STATUS_RPC`; the handler map is keyed by
+ * its method names. Loose on purpose, like the rest of this file: the plugin
+ * does not import the host's schema library.
+ */
+export interface RpcDomain {
+  register(
+    definition: unknown,
+    handlers: Record<string, (input: any, context: any) => Promise<unknown>>,
+  ): Promise<RpcRegistration>
 }
 
 /** The `context` hook's event: the assembled request, mutable before dispatch. */

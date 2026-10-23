@@ -28,11 +28,25 @@ import { messageChars, messagesChars } from "../src/core/measure.ts"
 import { NOTICE_HEADING, POLICY, renderMemory, renderStats } from "../src/core/prompts.ts"
 import { emptyMemory } from "../src/core/schema.ts"
 import {
+  PURGE_ACTION,
+  RESUME_ACTION,
+  STATUS_RPC,
+  isPurgeRequest,
+  isStatsReply,
+  isStatsRequest,
+  statsOf,
+  statsReplySchema,
+  statusBar,
+  statusRows,
+  turnLabel,
+} from "../src/core/status.ts"
+import {
   MAX_UNDO_CHARS,
   MAX_UNDO_TURNS,
   applyRevert,
   captureMemory,
   noteTurn,
+  purgeWithUndo,
   queueRevert,
   revertTarget,
 } from "../src/core/undo.ts"
@@ -147,6 +161,7 @@ function makeHost(options = {}) {
   const commands = []
   const replies = []
   const synthetics = []
+  const rpcs = []
   const storage = new Map()
   const ctx = {
     location: { directory: root },
@@ -215,8 +230,14 @@ function makeHost(options = {}) {
         return { dispose: async () => {} }
       },
     },
+    rpc: {
+      async register(definition, handlers) {
+        rpcs.push({ definition, handlers })
+        return { dispose: async () => {} }
+      },
+    },
   }
-  return { ctx, hooks, tools, commands, replies, synthetics, storage }
+  return { ctx, hooks, tools, commands, replies, synthetics, rpcs, storage }
 }
 
 const { default: plugin } = await import(pathToFileURL(resolve(root, "server.ts")).href)
@@ -228,6 +249,10 @@ ok(typeof host.hooks.context === "function", "the context hook is registered")
 ok(typeof host.hooks.compaction === "function", "the compaction hook is registered")
 ok(host.tools.length === 1 && host.tools[0].name === "smart_context", "smart_context is registered")
 ok(host.commands.length === 1 && host.commands[0].name === "context", "/context is registered")
+ok(
+  host.rpcs.length === 1 && host.rpcs[0].definition === STATUS_RPC,
+  "the server registers the status RPC from the shared definition",
+)
 
 const tool = host.tools[0]
 const callContext = { sessionID: "s1", agent: "build", messageID: "m", id: "t", signal: new AbortController().signal }
@@ -1305,9 +1330,19 @@ ok(
 )
 
 /** A TUI context just real enough for `tui.ts`: no renderer, no host. */
-function makeTui(options, state) {
+function makeTui(options, state, scene = {}) {
   const toasts = []
-  const seen = { fetches: 0, listeners: 0 }
+  const seen = {
+    fetches: 0,
+    listeners: 0,
+    commands: [],
+    dialogs: [],
+    synthetic: [],
+    purges: [],
+    stats: 0,
+    rpcDefinition: undefined,
+  }
+  const answers = [...(scene.answers ?? [])]
   const context = {
     options,
     storage: {
@@ -1318,7 +1353,50 @@ function makeTui(options, state) {
         },
       ],
     },
-    ui: { toast: { show: (toast) => toasts.push(toast) } },
+    client: {
+      rpc: (definition) => {
+        seen.rpcDefinition = definition
+        return {
+          stats: async () => {
+            seen.stats += 1
+            if (scene.statsError !== undefined) throw new Error(scene.statsError)
+            return scene.reply
+          },
+          purge: async (input) => {
+            seen.purges.push(input)
+            return scene.purgeReply ?? { ok: true, text: `purged ${input.turn}` }
+          },
+        }
+      },
+      session: {
+        synthetic: async (input) => {
+          seen.synthetic.push(input)
+          return {}
+        },
+      },
+    },
+    keymap: {
+      layer: (factory) => {
+        seen.commands.push(...(factory().commands ?? []))
+      },
+    },
+    ui: {
+      toast: { show: (toast) => toasts.push(toast) },
+      dialog: {
+        alert: async (options) => {
+          seen.dialogs.push({ kind: "alert", ...options })
+        },
+        confirm: async (options) => {
+          seen.dialogs.push({ kind: "confirm", ...options })
+          return scene.confirm ?? true
+        },
+        select: async (options) => {
+          seen.dialogs.push({ kind: "select", ...options })
+          return answers.shift()
+        },
+      },
+      router: { current: () => scene.route ?? { type: "session", sessionID: "ses_tui" } },
+    },
     data: {
       on: () => {
         seen.listeners += 1
@@ -1382,6 +1460,157 @@ await setupTui(tuiFour.context)
 await new Promise((done) => setTimeout(done, 50))
 ok(fetchCount === fetchesBeforeOptOut, "updateCheck:false performs no request")
 ok(tuiFour.toasts.length === 0, "updateCheck:false says nothing")
+
+// ---------------------------------------------------------------------------
+// The status bridge and the TUI dialog it feeds
+// ---------------------------------------------------------------------------
+
+const statusConfig = resolveConfig({})
+const statusRecord = blankRecord()
+statusRecord.memory.goal = "ship the status dialog"
+statusRecord.pending = [
+  { id: "msg_p", gist: "a pending\nturn", chars: 10, messages: [], createdAt: 2, age: 0 },
+]
+statusRecord.archive = [{ id: "msg_a", gist: "the archived turn", chars: 20, createdAt: 1 }]
+statusRecord.lastReport = {
+  workingTokens: 21_000,
+  workingTurns: 3,
+  droppedTurns: 41,
+  hostSystemTokens: 4_200,
+  hostSystemParts: 5,
+}
+const statusReply = statsOf(statusRecord, statusConfig, "0.1.99")
+
+ok(
+  statusReply.version === "0.1.99" &&
+    statusReply.pending[0].id === "msg_p" &&
+    statusReply.archive[0].raw === false,
+  "statsOf reports the record and whether each turn keeps its raw messages",
+)
+ok(
+  statusReply.workingTokens === 21_000 && statusReply.overBudget === true,
+  "statsOf carries the last pass's working numbers and the over-cap flag",
+)
+ok(
+  statusReply.memoryCap === statusConfig.memoryTokens && statusReply.workingCap === statusConfig.workingTokens,
+  "statsOf reports the caps the server enforces",
+)
+ok(
+  statsReplySchema["~standard"].validate(statusReply).issues === undefined,
+  "the stats reply matches the schema the host validates",
+)
+ok(
+  isStatsRequest({ sessionID: "s" }) && !isStatsRequest({ sessionID: "" }) && !isStatsRequest({}),
+  "a stats request needs a non-empty session id",
+)
+ok(
+  isPurgeRequest({ sessionID: "s", turn: "t" }) && !isPurgeRequest({ sessionID: "s" }),
+  "a purge request needs a turn",
+)
+ok(
+  STATUS_RPC.id === "mega-smart-context" &&
+    Object.keys(STATUS_RPC.methods).sort().join(",") === "purge,stats",
+  "both halves share one RPC id and two methods",
+)
+ok(statusBar(15_000, 20_000) === "████████░░", "a bar fills to its ratio")
+ok(statusBar(25_000, 20_000) === "██████████", "a bar over cap fills every cell")
+ok(turnLabel("  line one\n\nline two  ") === "line one line two", "a gist label collapses to one line")
+ok(
+  turnLabel("x".repeat(100), 10).endsWith("…") && turnLabel("x".repeat(100), 10).length === 10,
+  "a long gist label is cut with an ellipsis",
+)
+
+const statusRowsReply = statusRows(statusReply)
+ok(
+  statusRowsReply[0].title.startsWith("memory ") && statusRowsReply[1].title.startsWith("working "),
+  "the status rows lead with the two budgets",
+)
+ok(
+  statusRowsReply[1].title.includes("over cap") && statusRowsReply[1].description.includes("current turn"),
+  "the working row explains the normal over-cap case",
+)
+ok(
+  statusRowsReply.some((row) => row.value === RESUME_ACTION) &&
+    statusRowsReply.some((row) => row.value === PURGE_ACTION && row.disabled !== true),
+  "the dialog offers resume and purge",
+)
+ok(
+  statusRows({ ...statusReply, pending: [], archive: [] }).find((row) => row.value === PURGE_ACTION).disabled === true,
+  "purge is disabled when there is nothing to purge",
+)
+const noHostReply = statsOf(
+  { ...statusRecord, lastReport: { workingTokens: 0, workingTurns: 0, droppedTurns: 0 } },
+  statusConfig,
+)
+ok(
+  noHostReply.hostSystemTokens === undefined &&
+    statusRows(noHostReply).every((row) => !row.title.startsWith("host system")),
+  "a host-system line drops out when the pass did not measure one",
+)
+
+const statusScene = makeTui(
+  { updateCheck: false },
+  { checkedAt: 0, latest: "", notified: "" },
+  { reply: statusReply, answers: [RESUME_ACTION] },
+)
+await setupTui(statusScene.context)
+const statusCommand = statusScene.seen.commands.find((command) => command.id === "mega-smart-context.status")
+ok(statusCommand !== undefined, "the status command is registered even with updateCheck:false")
+await statusCommand.run()
+ok(statusScene.seen.rpcDefinition === STATUS_RPC, "the command builds its client from the shared definition")
+const statusDialog = statusScene.seen.dialogs.find((dialog) => dialog.kind === "select")
+ok(
+  statusDialog !== undefined && statusDialog.title.includes("0.1.99") && statusDialog.options[0].disabled === true,
+  "the dialog is titled with the version and opens on the status rows",
+)
+ok(
+  statusScene.seen.synthetic.length === 1 && statusScene.seen.synthetic[0].resume === true,
+  "resume sends a synthetic cue with no user message",
+)
+ok(
+  statusScene.seen.synthetic[0].text === RESUMED_TEXT && statusScene.toasts.at(-1).message.includes("resumed"),
+  "resume uses the same cue as /context and reports it",
+)
+
+const purgeScene = makeTui(
+  { updateCheck: false },
+  {},
+  { reply: statusReply, answers: [PURGE_ACTION, "msg_p"] },
+)
+await setupTui(purgeScene.context)
+await purgeScene.seen.commands.find((command) => command.id === "mega-smart-context.status").run()
+ok(
+  purgeScene.seen.dialogs.filter((dialog) => dialog.kind === "select").length === 2 &&
+    purgeScene.seen.dialogs.at(-1).kind === "confirm",
+  "purge asks which turn, then confirms before writing",
+)
+ok(
+  purgeScene.seen.purges.length === 1 &&
+    purgeScene.seen.purges[0].turn === "msg_p" &&
+    purgeScene.toasts.at(-1).message === "purged msg_p",
+  "purge sends the chosen turn and reports the reply",
+)
+
+const homeScene = makeTui({ updateCheck: false }, {}, { route: { type: "home" } })
+await setupTui(homeScene.context)
+await homeScene.seen.commands.find((command) => command.id === "mega-smart-context.status").run()
+ok(
+  homeScene.seen.dialogs[0].kind === "alert" && homeScene.seen.dialogs[0].message.includes("Open a session"),
+  "outside a session the dialog says why it cannot read a record",
+)
+ok(homeScene.seen.stats === 0, "outside a session no RPC is attempted")
+
+const errorScene = makeTui(
+  { updateCheck: false },
+  {},
+  { reply: statusReply, statsError: "RPC is unavailable: mega-smart-context" },
+)
+await setupTui(errorScene.context)
+await errorScene.seen.commands.find((command) => command.id === "mega-smart-context.status").run()
+ok(
+  errorScene.seen.dialogs[0].kind === "alert" && errorScene.seen.dialogs[0].message.includes("did not answer"),
+  "an RPC failure becomes a dialog, not a crash",
+)
 
 stopTui()
 globalThis.fetch = realFetch
@@ -1591,6 +1820,52 @@ ok(eventHost.storage.get("session/ev-staged") === undefined, "a staged revert qu
 ok(eventHost.storage.get("session/ev-other") === undefined, "an event from another directory is ignored")
 ok(eventHost.storage.get("session/ev-last")?.revert?.to === "u5", "an event without a location is accepted")
 await disposeEvents()
+
+// The RPC handlers the TUI calls, driven directly. The host's routing is the
+// only link this does not cover; the live check calls /api/rpc/<id>/<method>.
+const rpcHost = makeHost()
+const disposeRpc = await plugin.setup(rpcHost.ctx)
+const statusRpc = rpcHost.rpcs[0]
+const rpcSeeded = blankRecord()
+rpcSeeded.pending = [
+  { id: "msg_p", gist: "a pending turn", chars: 10, messages: [], createdAt: 2, age: 0 },
+]
+await rpcHost.storage.set("session/s-rpc", rpcSeeded)
+const rpcStats = await statusRpc.handlers.stats({ sessionID: "s-rpc" })
+ok(
+  rpcStats.pending.length === 1 && rpcStats.pending[0].id === "msg_p",
+  "the RPC reads the record the server half owns",
+)
+ok(isStatsReply(rpcStats), "the RPC reply is the shape the dialog renders")
+const rpcPurged = await statusRpc.handlers.purge({ sessionID: "s-rpc", turn: "msg_p" })
+ok(rpcPurged.ok === true && rpcPurged.text === "purged msg_p", "the RPC purges the named turn")
+const rpcStored = await rpcHost.storage.get("session/s-rpc")
+ok(
+  rpcStored.pending.length === 0 &&
+    (rpcStored.undo ?? []).some((entry) => (entry.purged ?? []).some((item) => item.entry.id === "msg_p")),
+  "an RPC purge is journaled like the tool's",
+)
+const rpcMissing = await statusRpc.handlers.purge({ sessionID: "s-rpc", turn: "nope" })
+ok(rpcMissing.ok === false && rpcMissing.text === "no turn nope", "the RPC reports a turn that is not there")
+await disposeRpc()
+
+// `/context purge` and the tool share purgeWithUndo, so the command's purge is
+// journaled too (it was the known undo gap before the dialog needed it).
+const purgeStore = new SessionStore()
+const commandRecord = blankRecord()
+commandRecord.archive = [{ id: "msg_c", gist: "context purge", chars: 5, createdAt: 1 }]
+await purgeStore.save("s-cmd", commandRecord)
+await runContextCommand("s-cmd", "purge msg_c", {
+  store: purgeStore,
+  config: statusConfig,
+  reply: async () => {},
+})
+const afterCommand = await purgeStore.load("s-cmd")
+ok(afterCommand.archive.length === 0, "/context purge removes the turn")
+ok(
+  (afterCommand.undo ?? []).some((entry) => (entry.purged ?? []).some((item) => item.entry.id === "msg_c")),
+  "/context purge is journaled, so a later undo can restore it",
+)
 
 await dispose()
 console.log(`smoke: ${passed} assertions passed`)

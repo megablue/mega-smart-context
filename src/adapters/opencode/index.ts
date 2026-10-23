@@ -26,7 +26,8 @@ import { createContextCommand } from "./command.ts"
 import { resolveHostConfig } from "./config.ts"
 import { createFsFeatureMap, runContextTransform } from "./context.ts"
 import { SessionStore, sameDirectory } from "../../core/state.ts"
-import { queueRevert, revertTarget } from "../../core/undo.ts"
+import { STATUS_RPC, statsOf, type PurgeRequest, type StatsRequest } from "../../core/status.ts"
+import { purgeWithUndo, queueRevert, revertTarget } from "../../core/undo.ts"
 import { createSmartContextTool } from "./tool.ts"
 import { readPluginVersion } from "./version.ts"
 import { sweepOrphanedSessions } from "./sessions.ts"
@@ -127,6 +128,33 @@ export async function setup(ctx: PluginContext): Promise<() => Promise<void>> {
     } catch (error) {
       // A host without a command registry still gets the tool and the pass.
       warn("the /context command could not be registered: " + messageOf(error))
+    }
+  }
+
+  // The TUI half cannot read this half's record: its storage is a separate
+  // per-plugin JSON file, not the host's KV. The status dialog therefore asks
+  // over the host's plugin RPC, and these two handlers are the only bridge. A
+  // host without the domain, or one whose registry refuses the definition, still
+  // gets every other surface; only the dialog reports the gap.
+  if (ctx.rpc !== undefined) {
+    try {
+      registrations.push(
+        await ctx.rpc.register(STATUS_RPC, {
+          stats: async (input: StatsRequest) => {
+            return statsOf(await store.load(input.sessionID), config, version)
+          },
+          purge: async (input: PurgeRequest) => {
+            const removed = await store.mutate(input.sessionID, (record) =>
+              purgeWithUndo(record, input.turn, Date.now()),
+            )
+            return removed
+              ? { ok: true, text: `purged ${input.turn}` }
+              : { ok: false, text: `no turn ${input.turn}` }
+          },
+        }),
+      )
+    } catch (error) {
+      warn("the status RPC could not be registered: " + messageOf(error))
     }
   }
 

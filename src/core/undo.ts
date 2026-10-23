@@ -26,6 +26,7 @@
  * @module mega-smart-context/undo
  */
 
+import { purgeTurn } from "./archive.ts"
 import { MEMORY_KEYS } from "./schema.ts"
 import type {
   ArchivedTurn,
@@ -234,6 +235,32 @@ export function capturePurge(
   const target = entryFor(record, now)
   target.purged = [...(target.purged ?? []), { list, index, entry: clone(entry) }]
   trimUndo(record)
+}
+
+/**
+ * Purge one turn and journal it, whichever surface asked.
+ *
+ * The tool always journaled its purges; `/context purge` and the TUI's purge row
+ * went straight to `purgeTurn`, so a later `/undo` could not put those turns
+ * back. Keeping the sequence here - look up both lists first, then remove, then
+ * capture the entry that vanished - is what makes the gap impossible to reopen
+ * from a new surface.
+ *
+ * Returns whether the turn existed. The caller owns the save, because the three
+ * callers persist through the same store but not at the same point in their own
+ * flow.
+ */
+export function purgeWithUndo(record: SessionRecord, turn: string, now: number): boolean {
+  const pendingIndex = record.pending.findIndex((entry) => entry.id === turn)
+  const archiveIndex = record.archive.findIndex((entry) => entry.id === turn)
+  const pendingEntry = pendingIndex < 0 ? undefined : record.pending[pendingIndex]
+  const archiveEntry = archiveIndex < 0 ? undefined : record.archive[archiveIndex]
+  if (!purgeTurn(record, turn)) return false
+  // The whole entry (raw messages included) is kept for the undo: once purged,
+  // nothing else in the record can reconstruct it.
+  if (pendingEntry !== undefined) capturePurge(record, "pending", pendingEntry, pendingIndex, now)
+  else if (archiveEntry !== undefined) capturePurge(record, "archive", archiveEntry, archiveIndex, now)
+  return true
 }
 
 function restoreMemory(record: SessionRecord, entry: UndoEntry): number {

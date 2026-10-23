@@ -10,11 +10,12 @@
  * @module mega-smart-context/command
  */
 
-import { archivePending, purgeTurn, recall } from "./archive.ts"
+import { archivePending, recall } from "./archive.ts"
 import type { ResolvedConfig } from "./config.ts"
 import { renderStats } from "./prompts.ts"
 import { MEMORY_KEYS } from "./schema.ts"
 import type { SessionStore } from "./state.ts"
+import { purgeWithUndo } from "./undo.ts"
 import { RESUMED_TEXT } from "./view.ts"
 
 export interface CommandDeps {
@@ -95,7 +96,9 @@ export async function runContextCommand(sessionID: string, args: string, deps: C
 
   if (text.startsWith("purge ")) {
     const turn = text.slice("purge ".length).trim()
-    const removed = purgeTurn(record, turn)
+    // Journaled like the tool's purge: the TUI offers the same action, and a
+    // purge that a later /undo cannot restore would be a hole either way.
+    const removed = purgeWithUndo(record, turn, deps.now?.() ?? Date.now())
     if (removed) await deps.store.save(sessionID, record)
     await deps.reply(sessionID, removed ? `purged ${turn}` : `no turn ${turn}`)
     return

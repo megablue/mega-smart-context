@@ -100,6 +100,7 @@ The update check is the only network call the plugin makes, and it runs in the T
 - The model writes memory with the `smart_context` tool: `patch`, `read`, `stats`, `ref`, `archive`, `purge`, `recall`, `expand`.
 - A subagent can read its spawning session's archive without importing it: `recall`/`expand` with `from:"parent"`. The field is read-only and never reaches a writing action, and the reply tells the child how many characters its caller can actually keep.
 - `/context` prints the current memory and archive, and carries the control actions a user needs; the subcommands are in [The `/context` command](#the-context-command).
+- The palette command `Context status` opens the same numbers as a dialog, with `Resume` and `Purge a turn…` below them; see [The TUI status dialog](#the-tui-status-dialog).
 - `/undo` is followed: when the host commits a revert, the plugin rolls its own record back with it - memory written in the undone turn is undone, notices it retired are pinned again, purged turns come back, and the memory block says so for that turn. The journal covers the last eight turns; see "Undo" in the SPEC.
 
 Every request starts with a `<smart-context>` block. If `goal` is empty, the model is told to write the request there before the raw first message leaves the working window.
@@ -120,6 +121,19 @@ Every request starts with a `<smart-context>` block. If `goal` is empty, the mod
 An unknown subcommand prints the usage line. Apart from `resume`, a `/context` reply arrives as a real user turn, so it counts toward the working window and can age a pending eviction.
 
 After `/undo`, the status report adds two lines: `last undo:` (the boundary turn it rolled back to, how many memory keys were restored, how many turns were dropped, and a `not restorable` count when the journal could only do part of the job) and `undo journal:` (how many turns `/undo` would roll back now, and the oldest one it still covers).
+
+## The TUI status dialog
+
+`Context status` (palette id `mega-smart-context.status`) shows the same numbers as `/context` without spending a turn: memory and working usage against their caps, turns kept and dropped, pending/archive/ref counts, and the host system size when the last pass measured one. It is a pull - one call when you run the command, nothing rendered continuously, and no request ever made from a render path.
+
+Below the numbers are two actions:
+
+| Action | Effect |
+| --- | --- |
+| `Resume` | the same cue `/context resume` sends, through the host's synthetic channel - no user message and no new turn |
+| `Purge a turn…` | lists the pending and archived turns, asks which one, confirms, then deletes it from the record. Journaled like the tool's purge, so `/undo` can put it back |
+
+The two halves of the plugin keep separate stores, so the dialog reads the session record over the host's plugin RPC (`stats`, `purge`). If the host has no RPC bridge, or the open route is not a session, the dialog says why instead of failing; an RPC error is reported the same way. The command id is the keybind key if you want a shortcut - no default binding is claimed. A first install may need a restart before the command appears.
 
 ## Installer
 
@@ -143,7 +157,7 @@ npm run analyze       # read a recorded session back: enabled payload vs the dis
 ## Where the details live
 
 - [`docs/SPEC.md`](docs/SPEC.md) — the user-visible behavior in full.
-- [`docs/features/`](docs/features/index.html) — the feature map for this plugin itself: the handoff, the memory tool, the archive, subagents, refs, compaction, the install and the analyzer.
+- [`docs/features/`](docs/features/index.html) — the feature map for this plugin itself: the handoff, the memory tool, the archive, subagents, refs, compaction, the install, the analyzer, and the terminal half (status dialog and update toast).
 - [`AGENTS.md`](AGENTS.md) — how to work on the plugin.
 - [`HANDOFF.md`](HANDOFF.md) — where things currently stand.
 

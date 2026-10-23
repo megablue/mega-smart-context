@@ -16,13 +16,13 @@
  * @module mega-smart-context/memory-tool
  */
 
-import { archivePending, findArchived, purgeQuery, purgeTurn, recall } from "./archive.ts"
+import { archivePending, findArchived, purgeQuery, recall } from "./archive.ts"
 import type { ResolvedConfig } from "./config.ts"
 import { estimateTokens, formatTokens, memoryChars } from "./measure.ts"
 import { budgetOf, noticePreview, renderMemory, renderStats } from "./prompts.ts"
 import { MEMORY_KEYS, applyPatch, parsePatch } from "./schema.ts"
 import { retireNotice } from "./state.ts"
-import { captureMemory, captureNotice, capturePurge } from "./undo.ts"
+import { captureMemory, captureNotice, capturePurge, purgeWithUndo } from "./undo.ts"
 import type { SessionStore } from "./state.ts"
 import type { FeatureMapPort, Memory, SessionRecord } from "./types.ts"
 import { refVerdict } from "./refs.ts"
@@ -285,15 +285,7 @@ function purge(
   const turn = str(request.turn)
   const query = str(request.query)
   if (turn !== undefined) {
-    const pendingIndex = record.pending.findIndex((entry) => entry.id === turn)
-    const archiveIndex = record.archive.findIndex((entry) => entry.id === turn)
-    const pendingEntry = pendingIndex < 0 ? undefined : record.pending[pendingIndex]
-    const archiveEntry = archiveIndex < 0 ? undefined : record.archive[archiveIndex]
-    const removed = purgeTurn(record, turn)
-    // The whole entry (raw messages included) is kept for the undo: once purged,
-    // nothing else in the record can reconstruct it.
-    if (removed && pendingEntry !== undefined) capturePurge(record, "pending", pendingEntry, pendingIndex, now)
-    else if (removed && archiveEntry !== undefined) capturePurge(record, "archive", archiveEntry, archiveIndex, now)
+    const removed = purgeWithUndo(record, turn, now)
     return { text: removed ? `purged ${turn}` : `smart_context: no turn ${JSON.stringify(turn)}`, ok: removed }
   }
   if (query !== undefined) {
