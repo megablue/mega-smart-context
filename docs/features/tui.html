@@ -111,7 +111,7 @@ hr{border:0;border-top:1px solid var(--line);margin:2rem 0}
 <li><code>workingTokens</code> includes the current turn, which is always kept, so an over-cap bar is normal mid-turn. The block paints the working line as a warning (never the whole block) and the dialog's description says why.</li>
 <li>One bar is <code>statusBarParts</code>, split into filled and empty: a single string cannot colour half a line. <code>statusBar</code> stays for the dialog's plain rows.</li>
 <li>The panel claim is guarded twice: the module is imported only when <code>ui.panel</code> exists (an additive claim aimed at a path the host does not publish appends to the nearest surviving ancestor) and its render checks <code>input.name</code> (every plugin&#39;s claim sees every open panel).</li>
-<li>The panel has not been seen in a live TUI yet. Smoke pins <code>panelSections</code>/<code>panelText</code>, the sparkline, the retire schema and the dialog&#39;s <code>panel:</code> row; the first real open is the host render, not this text.</li>
+<li>The panel, the block and every click target are now seen in a live TUI (10/25): the palette command&#39;s panel row opened the full report, so the guarded claim does resolve on a host that publishes <code>ui.panel</code>, and the click targets fire. Smoke still pins <code>panelSections</code>/<code>panelText</code>, the sparkline and the retire schema; what the host draws is the one thing it cannot pin.</li>
 </ul>
 </section>
 <section id="config-ui">
