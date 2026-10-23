@@ -104,12 +104,14 @@ function Sidebar(props: { host: SidebarHost; sessionID: string }): JSX.Element {
 /**
  * Claim `sidebar.content` and return the release.
  *
- * `prepend` puts the block above every section the host appends to the sidebar,
- * so the numbers do not drift down as other plugins add theirs.
+ * `append` makes the block the last item inside the sidebar's scrollable list,
+ * so it sits after every section the host and other plugins put there. That is
+ * deliberately not `sidebar.footer`: the footer is a fixed strip at the bottom
+ * of the panel, outside the list, and the numbers belong in the list.
  */
 export function registerSidebar(host: SidebarHost): () => void {
   const claim: SidebarClaim = {
-    prepend: "sidebar.content",
+    append: "sidebar.content",
     render: (input) => <Sidebar host={host} sessionID={input.sessionID} />,
   }
   return host.context.ui.slot(claim)

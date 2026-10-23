@@ -138,7 +138,7 @@ The two halves of the plugin keep separate stores, so the dialog reads the sessi
 
 ### The sidebar block
 
-The same numbers also sit in the TUI sidebar (`sidebar.content`): the build, a memory bar, a working-window bar marked when it is over cap, turns kept and dropped, pending/archive/ref counts, and the host system size when a pass measured one. Gists, notice text and the archive list stay out - the block never grows with the session.
+The same numbers also sit in the TUI sidebar, appended to `sidebar.content` so they are the last item in its scrollable list: the build, a memory bar, a working-window bar marked when it is over cap, turns kept and dropped, pending/archive/ref counts, and the host system size when a pass measured one. Gists, notice text and the archive list stay out - the block never grows with the session.
 
 Under it are `[status]` (opens the dialog), `[resume]` (asks first, then sends the cue) and `[purge]` (the same list and confirmation as the dialog). The block renders from a per-session mirror that is pulled once when the session is shown, once after each idle pass, and again after a purge; at most one pull per session is in flight, a repeat inside fifteen seconds is skipped, and the mirror keeps the thirty-two most recent sessions. Renders never call the RPC.
 

@@ -1763,8 +1763,10 @@ ok(
 const slotScene = makeTui({ updateCheck: false }, {}, { reply: statusReply, withSlots: true })
 const stopSlots = await setupTui(slotScene.context)
 ok(
-  slotScene.seen.slots.length === 0 || slotScene.seen.slots[0].prepend === "sidebar.content",
-  "the sidebar claims sidebar.content when the TUI can render it, and claims nothing when it cannot",
+  slotScene.seen.slots.length === 0 ||
+    (slotScene.seen.slots[0].append === "sidebar.content" &&
+      slotScene.seen.slots[0].prepend === undefined),
+  "the sidebar appends to sidebar.content when the TUI can render it, and claims nothing when it cannot",
 )
 ok(
   slotScene.seen.slots.length > 0 || slotScene.seen.memory === 0,

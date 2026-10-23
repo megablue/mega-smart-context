@@ -41,7 +41,7 @@ hr{border:0;border-top:1px solid var(--line);margin:2rem 0}
 <ul>
 <li>One palette command, <b>Context status</b> (id <code>mega-smart-context.status</code>), opens a <code>dialog.select</code>: a memory bar, a working-window bar, turns kept and dropped, pending/archive/ref counts, the host-system size when the last pass measured one, a line saying whether the sidebar is drawing, then <b>Resume</b> and <b>Purge a turn…</b>.</li>
 <li>It pulls: one <code>stats</code> RPC when the command runs, and one refresh before the purge list.</li>
-<li>The <b>sidebar block</b> claims <code>sidebar.content</code> and draws the same reply as five short lines plus <code>[status] [resume] [purge]</code>. It renders from an ephemeral per-session store that is filled by a pull, never by the render.</li>
+<li>The <b>sidebar block</b> appends to <code>sidebar.content</code>, so it is the last item inside the sidebar&#39;s scrollable list (the panel&#39;s bottom edge would be <code>sidebar.footer</code>), and draws the same reply as five short lines plus <code>[status] [resume] [purge]</code>. It renders from an ephemeral per-session store that is filled by a pull, never by the render.</li>
 <li><b>Resume</b> sends the plugin's cue through <code>client.session.synthetic</code> - the same channel as <code>/context resume</code>, so no user message and no new turn. The click asks first; the dialog row does not.</li>
 <li><b>Purge</b> lists the pending then archived turns, confirms, and deletes the chosen one through the server half. The deletion is journaled, so <code>/undo</code> can put it back.</li>
 <li>The same entrypoint runs the once-a-day update toast, independently of the dialog and the block. <code>updateCheck</code> and <code>sidebar</code> do not gate the command.</li>
@@ -96,7 +96,7 @@ hr{border:0;border-top:1px solid var(--line);margin:2rem 0}
 <tr><td><code>mega-smart-context.status</code> (keymap id)</td><td>unbound</td><td>the <b>Context status</b> palette command; the id is the keybind key</td></tr>
 <tr><td><code>enabled</code></td><td><code>true</code></td><td>when false the plugin returns before registering the command (and every other surface)</td></tr>
 <tr><td><code>updateCheck</code></td><td><code>true</code></td><td>the once-a-day update request and toast only; the dialog is registered either way</td></tr>
-<tr><td><code>sidebar</code></td><td><code>true</code></td><td>claim <code>sidebar.content</code> and draw the block; when false no slot is claimed and no mirror is created</td></tr>
+<tr><td><code>sidebar</code></td><td><code>true</code></td><td>append to <code>sidebar.content</code> and draw the block; when false no slot is claimed and no mirror is created</td></tr>
 <tr><td>Resume / Purge</td><td>-</td><td>dialog actions; resume spends no user turn, purge asks for the turn and then confirms</td></tr>
 </tbody>
 </table>
@@ -116,7 +116,7 @@ hr{border:0;border-top:1px solid var(--line);margin:2rem 0}
 <li>&quot;the sidebar shows the host system size only when a pass measured one&quot;, &quot;a reply without a version does not leave a dangling v&quot;, &quot;an over-cap bar fills every cell and never overflows the width&quot;, &quot;only the over-cap working line carries the alert tone&quot;, &quot;a window inside its cap paints no alert tone&quot;.</li>
 <li>&quot;a snapshot is stale only after the window, and always when absent&quot;, &quot;a snapshot without a time is stale&quot;, &quot;the sidebar pulls a session once&quot;, &quot;a second ask inside the window does not pull again&quot;, &quot;an ask after the window pulls again&quot;, &quot;a forced ask pulls even inside the window&quot;.</li>
 <li>&quot;two asks at once share one pull&quot;, &quot;the pull writes the session it was asked about&quot;, &quot;a host without the bridge pulls nothing&quot;, &quot;a failed pull leaves the mirror alone&quot;, &quot;the mirror drops the oldest pulls first&quot;, &quot;a mirror inside the bound drops nothing&quot;.</li>
-<li>&quot;the sidebar claims sidebar.content when the TUI can render it, and claims nothing when it cannot&quot;, &quot;a sidebar that cannot render leaves the ephemeral store unmade&quot;, &quot;a host with slots still opens the status dialog&quot;, &quot;the dialog says whether the sidebar is drawing&quot;, &quot;teardown releases the claim it made&quot;, &quot;sidebar:false claims no slot and makes no store&quot;.</li>
+<li>&quot;the sidebar appends to sidebar.content when the TUI can render it, and claims nothing when it cannot&quot;, &quot;a sidebar that cannot render leaves the ephemeral store unmade&quot;, &quot;a host with slots still opens the status dialog&quot;, &quot;the dialog says whether the sidebar is drawing&quot;, &quot;teardown releases the claim it made&quot;, &quot;sidebar:false claims no slot and makes no store&quot;.</li>
 </ul>
 <h3>The command, the dialog and the RPC</h3>
 <ul>
