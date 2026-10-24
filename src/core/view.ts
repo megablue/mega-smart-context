@@ -159,6 +159,34 @@ export function noticeOf(message: Message | undefined): { id: string; text: stri
   return host?.kind === "notice" ? { id: host.id, text: host.text } : undefined
 }
 
+/** Which mode a host reminder announces. The two are mutually exclusive. */
+export type ModeReminder = "plan" | "build"
+
+/** The clause that identifies each mode reminder. Both are re-emitted verbatim. */
+const PLAN_MODE_CLAUSE = "You are in Plan mode"
+const BUILD_MODE_CLAUSE = "You are NO LONGER in Plan mode"
+
+/**
+ * Which mode a reminder announces, if it is one.
+ *
+ * These are the only two notices that contradict each other: the Build text says
+ * the Plan restrictions no longer apply, so a record that pins every distinct
+ * text holds a stale imperative under the live one — in a real session the Plan
+ * block (468 B of "do not implement, tell the user to switch agents") outlived
+ * the Build switch and read as the instruction. `state.ts` retires the older
+ * one.
+ *
+ * A substring match, because the raw text starts `<system-reminder>` followed by
+ * a newline. Gated on the reminder shape so prose that talks about Plan mode
+ * (a nudge, a human question) can never classify.
+ */
+export function modeReminderOf(text: string): ModeReminder | undefined {
+  if (!text.startsWith("<system-reminder>")) return undefined
+  if (text.includes(BUILD_MODE_CLAUSE)) return "build"
+  if (text.includes(PLAN_MODE_CLAUSE)) return "plan"
+  return undefined
+}
+
 /**
  * Pull the host's notices out of a payload.
  *

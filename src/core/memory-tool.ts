@@ -315,6 +315,10 @@ function purge(
  * pass skips that text while the host's window still holds a copy of it. A new
  * emission under a new id clears the retirement, because a re-emitted instruction
  * is live again.
+ *
+ * The plan/build pair never reaches this rail with both sides listed: those two
+ * texts contradict each other and `state.ts` retires the older one as it folds
+ * them, so the model is never asked to arbitrate a mode switch it cannot see.
  */
 function notice(
   record: SessionRecord,

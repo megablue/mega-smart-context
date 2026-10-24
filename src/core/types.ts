@@ -178,7 +178,13 @@ export interface Notice {
   id: string
   /** The notice text, verbatim up to a head-keep bound, with a truncation marker. */
   text: string
-  /** When the plugin first recorded this text (`Date.now()`); never moves. */
+  /**
+   * When the plugin first saw the newest occurrence of this text.
+   *
+   * It moves only when a new host message carries the text, so the heading dates
+   * the live emission rather than the first one, and a re-run over the same
+   * transcript still lands on the same bytes.
+   */
   at: number
 }
 

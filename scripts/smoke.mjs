@@ -71,7 +71,7 @@ import {
 import { MAX_HISTORY, MAX_NOTICES, MAX_NOTICE_CHARS, MAX_RETIRED, SessionStore, pruneOrphans, retireNotice, sameDirectory, trimHistory, upsertNotices } from "../src/core/state.ts"
 import { extractHtmlSection, extractSection, htmlToText, pageCandidates } from "../src/core/refs.ts"
 import { deriveVersion, readVersionBase } from "../src/core/version.ts"
-import { balanceCuts, erodeToolResults, hostMessageOf, isHostCue, isHostJob, isHostMessage, isHostTail, isRealUser, noticeOf, RESUMED_TEXT, selectWorkingWindow, splitNotices, turnSpans } from "../src/core/view.ts"
+import { balanceCuts, erodeToolResults, hostMessageOf, isHostCue, isHostJob, isHostMessage, isHostTail, isRealUser, modeReminderOf, noticeOf, RESUMED_TEXT, selectWorkingWindow, splitNotices, turnSpans } from "../src/core/view.ts"
 import { livenessFromError } from "../src/adapters/opencode/sessions.ts"
 import { readPluginVersion } from "../src/adapters/opencode/version.ts"
 import {
@@ -452,8 +452,9 @@ const p1 = await noticePass("n", withNotices)
 ok(p1.messages.every((message) => !JSON.stringify(message).includes("system-reminder")), "the notice is not in the payload")
 const pinned = p1.system.find((part) => part.text.startsWith(NOTICE_HEADING))
 ok(pinned !== undefined, "the notices are pinned into a system part")
-ok(pinned.text.includes("n-plan") && pinned.text.includes("n-build"), "both notices are listed")
-ok(pinned.text.indexOf("n-build") < pinned.text.indexOf("n-plan"), "the newest notice is listed first")
+ok(pinned.text.includes("n-build"), "the live mode reminder is pinned")
+ok(!pinned.text.includes("n-plan"), "the superseded mode reminder is not pinned beside it")
+ok((pinned.text.match(/^### /gmu) ?? []).length === 1, "the mode pair leaves exactly one heading")
 ok(p1.system[p1.system.length - 1].text.startsWith(NOTICE_HEADING), "the pinned notices are the last system part")
 ok(
   p1.system.findIndex((part) => part.text === POLICY) < p1.system.length - 1,
@@ -469,11 +470,30 @@ ok(
   "the notices stay last on a re-pass over the previous system parts",
 )
 const nrec = await noticeStore.load("n")
-ok(nrec.notices.length === 2, "the record pins each distinct notice once")
+ok(
+  nrec.notices.length === 1 && nrec.notices[0].id === "n-build",
+  "the record pins only the live mode reminder",
+)
+ok(
+  (nrec.retired ?? []).some((entry) => entry.id === "n-plan" && entry.text === PLAN_NOTICE),
+  "the superseded reminder is retired, so the window cannot re-add it",
+)
 const atBefore = JSON.stringify(nrec.notices)
 await noticePass("n", withNotices)
 const nrec2 = await noticeStore.load("n")
 ok(JSON.stringify(nrec2.notices) === atBefore, "a re-run leaves the pinned notices byte-identical")
+
+// The host re-emits a mode instead of withdrawing one: the other side returns.
+await noticePass("n", [...withNotices, noticeMsg("n-plan2", PLAN_NOTICE)])
+const backRec = await noticeStore.load("n")
+ok(
+  backRec.notices.length === 1 && backRec.notices[0].id === "n-plan2",
+  "re-emitting the superseded mode brings it back and retires the other",
+)
+ok(
+  (backRec.retired ?? []).some((entry) => entry.id === "n-build" && entry.text === BUILD_NOTICE),
+  "the mode it replaced is retired in turn",
+)
 
 // A mode switch carries no user turn: it must not age a pending turn out.
 const ageStore = new SessionStore()
@@ -497,13 +517,23 @@ ok(afterC.archive.length === 0, "a mode switch does not archive a pending turn")
 
 // action:notice — list, refuse the newest, retire an older one.
 const toolDeps = { store: noticeStore, config: noticeConfig }
-const toolWindow = [user("u1", "hi"), noticeMsg("n-old", PLAN_NOTICE), noticeMsg("n-new", BUILD_NOTICE)]
+const NUDGE_NOTICE = "Your last response hit the output token limit. Break the remaining work into smaller pieces."
+const toolWindow = [
+  user("u1", "hi"),
+  noticeMsg("n-nudge", NUDGE_NOTICE),
+  noticeMsg("n-old", PLAN_NOTICE),
+  noticeMsg("n-new", BUILD_NOTICE),
+]
 await noticePass("notice-tool", toolWindow)
 const listOut = await runMemoryTool({ sessionID: "notice-tool", action: "notice" }, toolDeps)
-ok(listOut.ok && listOut.text.includes("n-old") && listOut.text.includes("n-new"), "action:notice lists the pinned notices")
+ok(
+  listOut.ok && listOut.text.includes("n-nudge") && listOut.text.includes("n-new"),
+  "action:notice lists the pinned notices",
+)
+ok(!listOut.text.includes("n-old"), "the superseded mode reminder is not listed")
 const refuseNewest = await runMemoryTool({ sessionID: "notice-tool", action: "notice", remove: "n-new" }, toolDeps)
 ok(!refuseNewest.ok && /newest/.test(refuseNewest.text), "the newest notice refuses removal")
-const removeOlder = await runMemoryTool({ sessionID: "notice-tool", action: "notice", remove: "n-old" }, toolDeps)
+const removeOlder = await runMemoryTool({ sessionID: "notice-tool", action: "notice", remove: "n-nudge" }, toolDeps)
 ok(removeOlder.ok, "an older notice can be removed")
 const remaining = await noticeStore.load("notice-tool")
 ok(remaining.notices.length === 1 && remaining.notices[0].id === "n-new", "only the retired notice is gone")
@@ -540,26 +570,32 @@ ok(
   afterReadd.notices.length === 1 && afterReadd.notices[0].id === "n-new",
   "a retired notice is not re-added while its text is still in the window",
 )
-const reemitted = await noticePass("notice-tool", [...toolWindow, noticeMsg("n-old2", PLAN_NOTICE)])
+const reemitted = await noticePass("notice-tool", [...toolWindow, noticeMsg("n-nudge2", NUDGE_NOTICE)])
 ok(reemitted !== undefined, "a second emission of the retired text is still a notice")
 const afterReemit = await noticeStore.load("notice-tool")
 ok(afterReemit.notices.length === 2, "the same text emitted under a new id returns")
-ok(afterReemit.notices[afterReemit.notices.length - 1].id === "n-old2", "the returning notice is the newest")
-ok((afterReemit.retired ?? []).length === 0, "the retirement clears once the text is re-emitted")
+ok(afterReemit.notices[afterReemit.notices.length - 1].id === "n-nudge2", "the returning notice is the newest")
+ok(
+  !(afterReemit.retired ?? []).some((entry) => entry.text === NUDGE_NOTICE),
+  "the retirement clears once the text is re-emitted",
+)
+ok(afterReemit.notices[0].id === "n-new", "the live mode reminder survives every nudge")
 
 // Recency: re-seeing a text moves it to the end, so the rail protects the live one.
-const recWindow = [user("u1", "hi"), noticeMsg("r-plan", PLAN_NOTICE)]
+const NOTICE_A = "<system-reminder>\nNote A\n</system-reminder>"
+const NOTICE_B = "<system-reminder>\nNote B\n</system-reminder>"
+const recWindow = [user("u1", "hi"), noticeMsg("r-a", NOTICE_A)]
 await noticePass("recency", recWindow)
-const recWindow2 = [...recWindow, noticeMsg("r-build", BUILD_NOTICE)]
+const recWindow2 = [...recWindow, noticeMsg("r-b", NOTICE_B)]
 await noticePass("recency", recWindow2)
-const recWindow3 = [...recWindow2, noticeMsg("r-plan2", PLAN_NOTICE)]
+const recWindow3 = [...recWindow2, noticeMsg("r-a2", NOTICE_A)]
 await noticePass("recency", recWindow3)
 const recRec = await noticeStore.load("recency")
-ok(recRec.notices[recRec.notices.length - 1].id === "r-plan2", "a re-seen notice moves to the end")
-ok(recRec.notices[0].id === "r-build", "the text seen least recently is first")
-const recRefuse = await runMemoryTool({ sessionID: "recency", action: "notice", remove: "r-plan2" }, toolDeps)
+ok(recRec.notices[recRec.notices.length - 1].id === "r-a2", "a re-seen notice moves to the end")
+ok(recRec.notices[0].id === "r-b", "the text seen least recently is first")
+const recRefuse = await runMemoryTool({ sessionID: "recency", action: "notice", remove: "r-a2" }, toolDeps)
 ok(!recRefuse.ok && /newest/.test(recRefuse.text), "the rail refuses the text the host emitted most recently")
-const recAllow = await runMemoryTool({ sessionID: "recency", action: "notice", remove: "r-build" }, toolDeps)
+const recAllow = await runMemoryTool({ sessionID: "recency", action: "notice", remove: "r-b" }, toolDeps)
 ok(recAllow.ok, "the stale text is removable")
 
 // The fold rules, directly: skip a retired generation, return on a new one.
@@ -567,6 +603,27 @@ const skipped = upsertNotices([], [{ id: "s1", text: PLAN_NOTICE }], 1, [{ id: "
 ok(skipped.notices.length === 0 && skipped.retired.length === 1, "a found text whose newest occurrence is retired is skipped")
 const returns = upsertNotices([], [{ id: "s2", text: PLAN_NOTICE }], 1, [{ id: "s1", text: PLAN_NOTICE }])
 ok(returns.notices.length === 1 && returns.retired.length === 0, "a new id clears the retirement and returns the text")
+
+// The heading dates the live emission, not the first sight.
+const firstSight = upsertNotices([], [{ id: "d1", text: NOTICE_A }], 100)
+ok(firstSight.notices[0].at === 100, "a notice is dated when it is first seen")
+const reSeen = upsertNotices(firstSight.notices, [{ id: "d2", text: NOTICE_A }], 500)
+ok(reSeen.notices[0].at === 500 && reSeen.notices[0].id === "d2", "a re-emission moves the date with the id")
+const sameGeneration = upsertNotices(reSeen.notices, [{ id: "d2", text: NOTICE_A }], 900)
+ok(sameGeneration.notices[0].at === 500, "a re-run over the same generation keeps the date")
+const legacy = upsertNotices([{ id: "d3", text: NOTICE_A, at: 0 }], [{ id: "d3", text: NOTICE_A }], 700)
+ok(legacy.notices[0].at === 700, "a record written before the date existed heals on the next pass")
+
+// Mode classification is gated on the reminder shape.
+ok(modeReminderOf(PLAN_NOTICE) === "plan", "the plan reminder classifies as plan")
+ok(modeReminderOf(BUILD_NOTICE) === "build", "the build reminder classifies as build")
+ok(modeReminderOf(NOTICE_A) === undefined, "an ordinary reminder is not a mode")
+ok(modeReminderOf("You are in Plan mode.") === undefined, "prose about plan mode is not a mode reminder")
+
+// One fold decides the pair, whichever side came last.
+const buildFirst = upsertNotices([], [{ id: "m1", text: BUILD_NOTICE }, { id: "m2", text: PLAN_NOTICE }], 1)
+ok(buildFirst.notices.length === 1 && buildFirst.notices[0].id === "m2", "the later mode wins whatever the order")
+ok(buildFirst.retired[0].id === "m1", "the earlier mode is retired")
 let retirements = []
 for (let index = 0; index < MAX_RETIRED + 5; index += 1) {
   retirements = retireNotice(retirements, { id: `rt${index}`, text: `note ${index}`, at: 0 })

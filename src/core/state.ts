@@ -18,6 +18,7 @@ import { emptyMemory, normalizeMemory } from "./schema.ts"
 import type { ArchivedTurn, Notice, PassSample, PendingTurn, RetiredNotice, SessionRecord, StoragePort } from "./types.ts"
 import { isPlainObject, messageOf } from "./types.ts"
 import { normalizeLastUndo, normalizeRevert, normalizeUndo } from "./undo.ts"
+import { modeReminderOf, type ModeReminder } from "./view.ts"
 
 /** How many sessions the store keeps before the oldest is evicted. */
 export const MAX_SESSIONS = 64
@@ -218,9 +219,11 @@ export interface NoticeFold {
  * Fold the notices found in one pass into the record's list.
  *
  * Dedupe is by exact text: the host re-sends the same notice on every request
- * while a mode is active, so a re-run must not append a second copy, and `at`
- * never moves. The id does move — to the newest occurrence in the transcript —
- * because that is the generation a retirement is checked against.
+ * while a mode is active, so a re-run must not append a second copy. Both the id
+ * and the date follow the newest occurrence — the id because that is the
+ * generation a retirement is checked against, the date because a heading that
+ * says "seen three days ago" over a reminder the host emitted a minute ago is
+ * worse than no date at all.
  *
  * Order is recency, not first sight: the host emits the same two texts all
  * session, so first-sight order freezes and the rail ends up protecting a stale
@@ -232,6 +235,11 @@ export interface NoticeFold {
  * what makes a removal stick while the text is still in the window. The
  * retirement is dropped once a new emission of the same text carries a new id,
  * so a genuinely live instruction still returns.
+ *
+ * The one exception to "keep every distinct text" is the mode pair: a Plan
+ * reminder and a Build reminder cannot both be true, so the older one is retired
+ * here (`collapseModeNotices`). Every other notice — the output-limit nudge
+ * included — is kept and retired by the model.
  */
 export function upsertNotices(
   existing: ReadonlyArray<Notice>,
@@ -264,15 +272,65 @@ export function upsertNotices(
     }
     const previous = byText.get(entry.text)
     drop(entry.text)
-    byText.set(entry.text, { id: entry.id, text: previous?.text ?? headKeepNotice(entry.text), at: previous?.at ?? at })
+    byText.set(entry.text, {
+      id: entry.id,
+      text: previous?.text ?? headKeepNotice(entry.text),
+      // The date follows the newest emission, because `id` does. Keeping the
+      // first-sight time made a reminder the host emitted a minute ago read
+      // "seen 2026-10-20" whenever the text had been seen days earlier. A zero
+      // (a record written before `at` existed) heals on this pass instead of
+      // pinning "(unknown)" for the rest of the session.
+      at: previous !== undefined && previous.id === entry.id && previous.at > 0 ? previous.at : at,
+    })
     order.push(entry.text)
   }
 
   const notices = order.map((text) => byText.get(text)).filter((notice): notice is Notice => notice !== undefined)
+  const live = collapseModeNotices(notices, nextRetired)
   return {
-    notices: notices.length > MAX_NOTICES ? notices.slice(notices.length - MAX_NOTICES) : notices,
-    retired: nextRetired,
+    notices: live.notices.length > MAX_NOTICES ? live.notices.slice(live.notices.length - MAX_NOTICES) : live.notices,
+    retired: live.retired,
   }
+}
+
+/**
+ * Pin only the newest mode reminder.
+ *
+ * A Plan and a Build reminder can never both be in force, and the host re-emits
+ * them rather than withdrawing one, so pinning every distinct text leaves the
+ * superseded mode sitting in the block. One real session showed the failure:
+ * after a switch to Build, the pin held the Build reminder (dated by its first
+ * sight, two days old) and then the Plan reminder (dated later), and the model
+ * read the stale 468-byte "do not implement, tell the user to switch agents"
+ * as the instruction and refused to edit.
+ *
+ * Supersession is scoped to those two texts, not to "keep the latest notice":
+ * the output-token-limit nudge rides the same list and is a one-shot
+ * instruction, so it neither retires a mode nor is retired by one. The older
+ * mode is retired exactly the way the model retires one — same list, same
+ * per-generation rule — so a later emission of that mode brings it back and
+ * retires the other.
+ */
+function collapseModeNotices(
+  notices: ReadonlyArray<Notice>,
+  retired: ReadonlyArray<RetiredNotice>,
+): { notices: Notice[]; retired: RetiredNotice[] } {
+  let liveMode: ModeReminder | undefined
+  for (let index = notices.length - 1; index >= 0 && liveMode === undefined; index -= 1) {
+    liveMode = modeReminderOf(notices[index].text)
+  }
+  if (liveMode === undefined) return { notices: [...notices], retired: [...retired] }
+  const kept: Notice[] = []
+  let nextRetired = [...retired]
+  for (const notice of notices) {
+    const mode = modeReminderOf(notice.text)
+    if (mode !== undefined && mode !== liveMode) {
+      nextRetired = retireNotice(nextRetired, notice)
+      continue
+    }
+    kept.push(notice)
+  }
+  return { notices: kept, retired: nextRetired }
 }
 
 /**
