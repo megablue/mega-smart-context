@@ -54,8 +54,15 @@ export const PANEL_ARCHIVE_ROWS = 12
 /** The eight heights a sparkline cell can take. */
 export const SPARK_CHARS = "▁▂▃▄▅▆▇█"
 
-/** Cells in one bar. Ten is readable at a sidebar-ish width and leaves the numbers room. */
-export const STATUS_BAR_WIDTH = 10
+/**
+ * Cells in one bar.
+ *
+ * Eighteen is about double the old ten and still fits the sidebar block at the
+ * observed width: the `mem ` label, the bar and the widest numbers (`*122k / 40k`)
+ * come to 35 cells, so the flexible gap before the numbers keeps a few cells of
+ * slack. A narrower sidebar is one constant away from a shorter bar.
+ */
+export const STATUS_BAR_WIDTH = 18
 
 /** One dialogs entry: the shape `dialog.select` takes, minus anything host-specific. */
 export interface StatusRow {
@@ -542,10 +549,15 @@ export interface StatusSpan {
 export interface SidebarLine {
   readonly spans: ReadonlyArray<StatusSpan>
   /**
-   * Put the first and last span at opposite edges of the block, so a header's
-   * version sits at the right edge whatever the sidebar's width is. Only a
-   * renderer can do that (it is a layout, not a byte); `sidebarText` falls back
-   * to a single space between the spans.
+   * Push the LAST span to the right edge of the block; every span before it
+   * stays together on the left. That is how a header's version and a budget
+   * line's numbers reach the block's own border whatever the sidebar's width is.
+   *
+   * Only a renderer can do that (it is a layout, not a byte), and it has to be a
+   * spacer rather than `space-between`: a budget line has four spans and
+   * `space-between` would pull the label, the filled cells and the empty cells
+   * apart too. `sidebarText` falls back to a single space where the gap would
+   * stretch.
    */
   readonly spread?: boolean
 }
@@ -578,9 +590,20 @@ function meterNumbers(value: number, cap: number, over: boolean, widths: MeterWi
   return `${over ? "*" : " "}${valueText} / ${capText}`
 }
 
+/**
+ * One budget line: the label and the bar stay left, the numbers go to the right
+ * edge.
+ *
+ * `spread` is what asks for that: the renderer keeps everything before the last
+ * span together and lets the gap before it absorb the width, so the numbers sit
+ * on the block's own right border rather than where a guess puts them. That is
+ * also why the bar is a fixed length - the slack lives between the bar and the
+ * numbers, and a longer bar would eat into it.
+ */
 function meterLine(label: string, value: number, cap: number, over: boolean, widths: MeterWidths): SidebarLine {
   const { filled, empty } = statusBarParts(value, cap)
   return {
+    spread: true,
     spans: [
       { text: `${label} `, tone: "muted" },
       { text: filled, tone: over ? "alert" : "meter" },
@@ -643,14 +666,20 @@ export function sidebarLines(reply: StatsReply): SidebarLine[] {
 /**
  * The whole block as plain text, which is what a test can compare.
  *
- * A `spread` line is a layout, not a string: with no width to spread across this
- * joins its spans with one space ("Mega Smart Context v0.1.30"), the same way it
- * looks when the renderer has no room to push the version to the right edge.
+ * A `spread` line is a layout, not a string: with no width to stretch across,
+ * this joins the left spans with nothing and puts one space where the flexible
+ * gap sits ("Mega Smart Context v0.1.30", "mem ████░░ 18.5k / 36k"), the same
+ * way it looks when the renderer has no room to push the last span right.
  */
 export function sidebarText(reply: StatsReply): string {
-  return sidebarLines(reply)
-    .map((line) => line.spans.map((span) => span.text).join(line.spread === true ? " " : ""))
-    .join("\n")
+  return sidebarLines(reply).map(flatLine).join("\n")
+}
+
+/** One line with its spans joined, and the stretch rendered as a single space. */
+function flatLine(line: SidebarLine): string {
+  const texts = line.spans.map((span) => span.text)
+  if (line.spread !== true || texts.length < 2) return texts.join("")
+  return `${texts.slice(0, -1).join("")} ${texts[texts.length - 1]}`
 }
 
 /**

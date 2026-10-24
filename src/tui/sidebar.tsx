@@ -21,7 +21,7 @@
 
 import type { JSX } from "@opentui/solid"
 import { For, Show, createEffect, createMemo, on } from "solid-js"
-import { sidebarLines, type SidebarLine, type StatsReply } from "../core/status.ts"
+import { sidebarLines, type SidebarLine, type StatusSpan, type StatsReply } from "../core/status.ts"
 import type { SidebarHost } from "./context.ts"
 import { toneAttributes, toneColor } from "./theme.ts"
 
@@ -45,17 +45,34 @@ interface SidebarClaim {
 }
 
 function Line(props: { host: SidebarHost; line: SidebarLine }): JSX.Element {
+  // A `spread` line pushes its LAST span to the right edge: everything before it
+  // renders together, then a flexible spacer absorbs the width, then the span.
+  // `justifyContent="space-between"` would be the shorter spelling, but a budget
+  // line has four spans and that would pull the label, the filled cells and the
+  // empty cells apart as well.
+  const head = (): ReadonlyArray<StatusSpan> =>
+    props.line.spread === true ? props.line.spans.slice(0, -1) : props.line.spans
+  const tail = (): StatusSpan | undefined =>
+    props.line.spread === true ? props.line.spans[props.line.spans.length - 1] : undefined
   return (
-    // `space-between` is what right-aligns a header's version: the box already
-    // spans the sidebar's width, so the two spans sit against opposite edges.
-    <box flexDirection="row" justifyContent={props.line.spread === true ? "space-between" : undefined}>
-      <For each={props.line.spans}>
+    <box flexDirection="row">
+      <For each={head()}>
         {(span) => (
           <text fg={toneColor(props.host.context, span.tone)} attributes={toneAttributes(span.tone)}>
             {span.text}
           </text>
         )}
       </For>
+      <Show when={tail()}>
+        {(span: () => StatusSpan) => (
+          <>
+            <box flexGrow={1} />
+            <text fg={toneColor(props.host.context, span().tone)} attributes={toneAttributes(span().tone)}>
+              {span().text}
+            </text>
+          </>
+        )}
+      </Show>
     </box>
   )
 }

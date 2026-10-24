@@ -39,6 +39,7 @@ import {
   PURGE_ACTION,
   RESUME_ACTION,
   SIDEBAR_STALE_MS,
+  STATUS_BAR_WIDTH,
   STATUS_RPC,
   ageLabel,
   isNoticeRequest,
@@ -1783,8 +1784,17 @@ ok(
     Object.keys(STATUS_RPC.methods).sort().join(",") === "notice,purge,stats",
   "both halves share one RPC id and three methods",
 )
-ok(statusBar(15_000, 20_000) === "████████░░", "a bar fills to its ratio")
-ok(statusBar(25_000, 20_000) === "██████████", "a bar over cap fills every cell")
+const quarterBar = statusBarParts(15_000, 20_000)
+ok(
+  quarterBar.filled.length === Math.round(STATUS_BAR_WIDTH * 0.75) &&
+    quarterBar.filled.length + quarterBar.empty.length === STATUS_BAR_WIDTH &&
+    quarterBar.empty === "░".repeat(STATUS_BAR_WIDTH - quarterBar.filled.length),
+  "a bar fills to its ratio at the shared width",
+)
+ok(
+  statusBar(25_000, 20_000) === "█".repeat(STATUS_BAR_WIDTH),
+  "a bar over cap fills every cell",
+)
 ok(turnLabel("  line one\n\nline two  ") === "line one line two", "a gist label collapses to one line")
 ok(
   turnLabel("x".repeat(100), 10).endsWith("…") && turnLabel("x".repeat(100), 10).length === 10,
@@ -1889,7 +1899,9 @@ ok(
 )
 const bars = statusBarParts(statusReply.workingTokens, statusReply.workingCap)
 ok(
-  bars.filled.length + bars.empty.length === 10 && bars.filled === "█".repeat(10) && bars.empty === "",
+  bars.filled.length + bars.empty.length === STATUS_BAR_WIDTH &&
+    bars.filled === "█".repeat(STATUS_BAR_WIDTH) &&
+    bars.empty === "",
   "an over-cap bar fills every cell and never overflows the width",
 )
 const alertLines = sidebarLines(statusReply).filter((line) => line.spans.some((span) => span.tone === "alert"))
@@ -1907,6 +1919,25 @@ const sidebarMeters = sidebarBody
 ok(
   sidebarMeters.length === 2 && sidebarMeters[0].indexOf("/") === sidebarMeters[1].indexOf("/"),
   "the two budget lines align their value, slash and cap",
+)
+const meterSidebar = sidebarLines(statusReply).filter(
+  (line) => line.spans[0]?.text === "mem " || line.spans[0]?.text === "win ",
+)
+ok(
+  meterSidebar.length === 2 && meterSidebar.every((line) => line.spread === true),
+  "both budget lines ask the renderer to put their numbers on the right edge",
+)
+ok(
+  meterSidebar.every((line) => line.spans[1].text.length + line.spans[2].text.length === STATUS_BAR_WIDTH),
+  "each budget line draws the shared bar width",
+)
+ok(
+  meterSidebar.every((line) => /\/ \d+k?$/.test(line.spans[line.spans.length - 1].text)),
+  "the numbers are a budget line's last span, which is what the renderer pushes right",
+)
+ok(
+  sidebarMeters.every((line) => /\/ \d+k?$/.test(line)),
+  "the flat form of a budget line still ends with its cap",
 )
 const wideSidebar = sidebarText({
   ...statusReply,
