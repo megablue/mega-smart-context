@@ -104,6 +104,15 @@ export interface StatsRequest {
  */
 export interface StatsReply {
   readonly version?: string
+  /**
+   * When the record behind this reply was last written, in ms since the epoch.
+   *
+   * A reply built without a clock (the smoke test, an older caller) omits both
+   * this and `ageMs`; the block then draws no freshness line rather than a lie.
+   */
+  readonly updatedAt?: number
+  /** How old that write was when the reply was built, for the "measured" line. */
+  readonly ageMs?: number
   readonly memoryTokens: number
   readonly memoryCap: number
   readonly workingTokens: number
@@ -221,6 +230,8 @@ export function isPurgeRequest(value: unknown): value is PurgeRequest {
 export function isStatsReply(value: unknown): value is StatsReply {
   if (!isRecord(value)) return false
   if (value.version !== undefined && typeof value.version !== "string") return false
+  if (value.updatedAt !== undefined && !isCount(value.updatedAt)) return false
+  if (value.ageMs !== undefined && !isCount(value.ageMs)) return false
   const required = [
     "memoryTokens",
     "memoryCap",
@@ -295,11 +306,26 @@ export const STATUS_RPC = {
   events: {},
 } as const
 
-/** Build the reply the TUI renders. `version` is the loaded build's own number. */
-export function statsOf(record: SessionRecord, config: ResolvedConfig, version?: string): StatsReply {
+/**
+ * Build the reply the TUI renders.
+ *
+ * `version` is the loaded build's own number. `now` is the moment the reply is
+ * built: when it is given, the reply carries the record's stamp and its age, so
+ * a block can say how old the numbers are. It is optional because the reply is
+ * also built in tests and by callers with no clock.
+ */
+export function statsOf(
+  record: SessionRecord,
+  config: ResolvedConfig,
+  version?: string,
+  now?: number,
+): StatsReply {
   const report = budgetOf(record, config)
   return {
     ...(version === undefined ? {} : { version }),
+    ...(now === undefined
+      ? {}
+      : { updatedAt: record.updatedAt, ageMs: Math.max(0, now - record.updatedAt) }),
     memoryTokens: report.memoryTokens,
     memoryCap: report.memoryCap,
     workingTokens: report.workingTokens,
@@ -456,6 +482,34 @@ export function statusRows(reply: StatsReply): StatusRow[] {
  */
 export const SIDEBAR_STALE_MS = 15_000
 
+/**
+ * How old a reply's record must be before the panel says so.
+ *
+ * The sidebar always carries the line (it took the slot of the host-system size,
+ * which the glance did not need). The panel is opened on purpose and usually
+ * reads a record written seconds ago, where "measured just now" is only noise;
+ * it shows the line once a minute has passed without a write.
+ */
+export const PANEL_MEASURED_STALE_MS = 60_000
+
+/**
+ * How old a reply's numbers are, in words a narrow block can hold.
+ *
+ * Coarse on purpose: the line exists to make a frozen mirror visible, not to be
+ * a stopwatch, and rounding down keeps "1m ago" from appearing at 61 seconds.
+ */
+export function ageLabel(ageMs: number): string {
+  const ms = Number.isFinite(ageMs) ? Math.max(0, ageMs) : 0
+  if (ms < 5_000) return "just now"
+  const seconds = Math.floor(ms / 1_000)
+  if (seconds < 60) return `${seconds}s ago`
+  const minutes = Math.floor(seconds / 60)
+  if (minutes < 60) return `${minutes}m ago`
+  const hours = Math.floor(minutes / 60)
+  if (hours < 24) return `${hours}h ago`
+  return `${Math.floor(hours / 24)}d ago`
+}
+
 /** One pulled reply and the moment it arrived. */
 export interface StatusSnapshot {
   readonly reply: StatsReply
@@ -537,13 +591,18 @@ function meterLine(label: string, value: number, cap: number, over: boolean, wid
 }
 
 /**
- * The sidebar's block: a title, the two budgets, and two count lines.
+ * The sidebar's block: a title, the two budgets, two count lines and how old the
+ * numbers are.
  *
  * Deliberately nothing that grows with the session: no gists, no notice text, no
  * archive list. Those live behind the dialog, where the user asked for them.
  * Over cap is painted as a warning on the working line only - `workingTokens`
  * includes the current turn, which is always kept, so a long turn sits over cap
  * by design and a red block would be crying wolf.
+ *
+ * The host-system size is not here: it is outside this plugin's budget and the
+ * glance cannot act on it, so its line carries the freshness instead. The dialog
+ * and the panel still print it.
  */
 export function sidebarLines(reply: StatsReply): SidebarLine[] {
   const widths = meterWidths(reply)
@@ -571,11 +630,11 @@ export function sidebarLines(reply: StatsReply): SidebarLine[] {
       ],
     },
   ]
-  if (reply.hostSystemTokens !== undefined) {
+  if (reply.ageMs !== undefined) {
+    // This line took the slot the host-system size used to occupy: a size the
+    // glance cannot act on was less useful than knowing how old the numbers are.
     lines.push({
-      spans: [
-        { text: `host ~${formatTokens(reply.hostSystemTokens)} est · not counted`, tone: "muted" },
-      ],
+      spans: [{ text: `measured ${ageLabel(reply.ageMs)}`, tone: "muted" }],
     })
   }
   return lines
@@ -679,6 +738,11 @@ export function panelSections(reply: StatsReply): PanelSection[] {
           tone: "muted",
         },
       ],
+    })
+  }
+  if (reply.ageMs !== undefined && reply.ageMs >= PANEL_MEASURED_STALE_MS) {
+    budget.push({
+      spans: [{ text: `measured ${ageLabel(reply.ageMs)}`, tone: "muted" }],
     })
   }
 

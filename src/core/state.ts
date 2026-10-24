@@ -461,6 +461,40 @@ export function normalizeRecord(value: unknown, now: number): SessionRecord {
   return record
 }
 
+/** How a read may treat this instance's cached copy. */
+export interface LoadOptions {
+  /** Read storage even when this instance already holds the session. */
+  readonly fresh?: boolean
+}
+
+/**
+ * Another instance wrote the session after this copy was read.
+ *
+ * The host loads the server half more than once per run, so two stores can own
+ * the same KV key at the same time. `save` refuses to overwrite a newer record
+ * and adopts the stored copy instead; `mutate` retries once on the fresh copy
+ * and then throws this, so a user action says "try again" rather than landing on
+ * a record that lost an edit.
+ */
+export class StoreConflictError extends Error {
+  readonly sessionID: string
+
+  constructor(sessionID: string) {
+    super(
+      `another plugin instance wrote session ${sessionID} while this copy was being changed; ` +
+        "nothing was saved — try again",
+    )
+    this.name = "StoreConflictError"
+    this.sessionID = sessionID
+  }
+}
+
+/** The stamp a stored value carries, without normalizing the whole record. */
+function storedUpdatedAt(value: unknown): number | undefined {
+  if (!isPlainObject(value)) return undefined
+  return typeof value.updatedAt === "number" ? value.updatedAt : undefined
+}
+
 /**
  * The session store.
  *
@@ -468,6 +502,12 @@ export function normalizeRecord(value: unknown, now: number): SessionRecord {
  * the context pass can otherwise interleave a load-modify-save and lose one of
  * the two writes. A storage failure is logged and the in-memory copy remains the
  * truth for this process — a store that cannot persist must not break a turn.
+ *
+ * The cache is per instance, and a run can load this plugin twice: an instance
+ * that read a session before another instance saved it would otherwise keep
+ * returning (and later writing) its old copy forever. `load(..., { fresh: true })`
+ * skips the cache for display reads, and `save` refuses a record older than the
+ * stored one.
  */
 export class SessionStore {
   private readonly cache = new Map<string, SessionRecord>()
@@ -484,10 +524,18 @@ export class SessionStore {
     this.directory = options.directory
   }
 
-  /** Load a record, or an empty one when this session has never been seen. */
-  async load(sessionID: string): Promise<SessionRecord> {
+  /**
+   * Load a record, or an empty one when this session has never been seen.
+   *
+   * `fresh` ignores the cached copy and reads the KV again, replacing the entry.
+   * It is for display paths (an RPC reply, `/context`) that must show what is
+   * stored rather than what this instance last saw. A failed read keeps the
+   * cached copy: a transient storage error is not a reason to forget a session.
+   */
+  async load(sessionID: string, options: LoadOptions = {}): Promise<SessionRecord> {
     const cached = this.cache.get(sessionID)
-    if (cached !== undefined) {
+    // A store with no storage has nothing newer to be fresh from.
+    if (cached !== undefined && (options.fresh !== true || this.storage === undefined)) {
       // Touch: Map iteration order is the LRU order.
       this.cache.delete(sessionID)
       this.cache.set(sessionID, cached)
@@ -499,6 +547,7 @@ export class SessionStore {
         stored = await this.storage.get(keyOf(sessionID))
       } catch (error) {
         this.warn("storage read failed; keeping this session in memory: " + messageOf(error))
+        if (cached !== undefined) return cached
       }
     }
     const record = normalizeRecord(stored, this.now())
@@ -506,8 +555,34 @@ export class SessionStore {
     return record
   }
 
-  /** Persist a record and touch its LRU position. */
-  async save(sessionID: string, record: SessionRecord): Promise<void> {
+  /**
+   * Persist a record and touch its LRU position.
+   *
+   * Returns `false` when the stored copy is newer than the one handed in: the
+   * stored record wins, the local copy is dropped, and the cache takes the
+   * stored one so this instance stops being stale. The caller's record is not
+   * written and not mutated further. A read that fails is not a conflict — the
+   * write goes through, because an unreadable store must not block a turn.
+   */
+  async save(sessionID: string, record: SessionRecord): Promise<boolean> {
+    const localAt = record.updatedAt
+    if (this.storage !== undefined) {
+      try {
+        const stored = await this.storage.get(keyOf(sessionID))
+        const storedAt = storedUpdatedAt(stored)
+        if (storedAt !== undefined && storedAt > localAt) {
+          const fresh = normalizeRecord(stored, this.now())
+          this.cache.delete(sessionID)
+          this.cache.set(sessionID, fresh)
+          this.warn(
+            `session ${sessionID} was written by another instance (${storedAt} > ${localAt}); the stored record wins`,
+          )
+          return false
+        }
+      } catch (error) {
+        this.warn("storage read failed before writing; keeping the local copy: " + messageOf(error))
+      }
+    }
     record.updatedAt = this.now()
     if (record.directory === undefined && this.directory !== undefined) record.directory = this.directory
     this.cache.delete(sessionID)
@@ -520,6 +595,7 @@ export class SessionStore {
       }
     }
     await this.trim()
+    return true
   }
 
   /**
@@ -528,14 +604,21 @@ export class SessionStore {
    * The callback may mutate the record in place; the return value is passed
    * through. A callback that throws leaves the record unsaved, which is the safe
    * direction: the next pass starts from the last good record.
+   *
+   * The read is always fresh and the write is guarded: when another instance has
+   * written in the meantime, the callback runs once more on that copy. It is safe
+   * to repeat because the first attempt was never saved.
    */
   async mutate<T>(sessionID: string, fn: (record: SessionRecord) => T | Promise<T>): Promise<T> {
     const previous = this.locks.get(sessionID) ?? Promise.resolve()
     const run = async (): Promise<T> => {
-      const record = await this.load(sessionID)
-      const result = await fn(record)
-      await this.save(sessionID, record)
-      return result
+      for (let attempt = 0; ; attempt += 1) {
+        const record = await this.load(sessionID, { fresh: true })
+        const result = await fn(record)
+        if (await this.save(sessionID, record)) return result
+        // The save refused and the cache now holds the newer stored record.
+        if (attempt >= 1) throw new StoreConflictError(sessionID)
+      }
     }
     const next = previous.then(run, run)
     this.locks.set(

@@ -24,6 +24,7 @@ import { budgetOf, noticePreview, renderMemory, renderStats } from "./prompts.ts
 import { MEMORY_KEYS, applyPatch, parsePatch } from "./schema.ts"
 import { captureMemory, capturePurge, purgeWithUndo } from "./undo.ts"
 import type { SessionStore } from "./state.ts"
+import { StoreConflictError } from "./state.ts"
 import type { FeatureMapPort, Memory, SessionRecord } from "./types.ts"
 import { refVerdict } from "./refs.ts"
 import { turnOutline, turnPage } from "./view.ts"
@@ -344,6 +345,26 @@ function notice(
   if (!outcome.ok) return { text: `smart_context: ${outcome.text}`, ok: false }
   return { text: outcome.text + "\n" + usage(record, config), ok: true }
 }
+/**
+ * Run one mutating action under the store's lock.
+ *
+ * `mutate` already retries once when another instance wrote in between; a second
+ * loss is a real conflict, and the model hears it as a normal failed call instead
+ * of a tool crash. Nothing was written in that case.
+ */
+async function mutateOutcome(
+  deps: MemoryToolDeps,
+  sessionID: string,
+  fn: (record: SessionRecord) => MemoryToolOutcome | Promise<MemoryToolOutcome>,
+): Promise<MemoryToolOutcome> {
+  try {
+    return await deps.store.mutate(sessionID, fn)
+  } catch (error) {
+    if (error instanceof StoreConflictError) return { text: `smart_context: ${error.message}`, ok: false }
+    throw error
+  }
+}
+
 export async function runMemoryTool(
   request: MemoryToolRequest,
   deps: MemoryToolDeps,
@@ -368,15 +389,15 @@ export async function runMemoryTool(
       return { text: renderStats(record, deps.config) + "\n" + usage(record, deps.config), ok: true }
     }
     case "patch":
-      return deps.store.mutate(sessionID, (record) => patch(record, request, deps.config, nowOf(deps)))
+      return mutateOutcome(deps, sessionID, (record) => patch(record, request, deps.config, nowOf(deps)))
     case "ref":
-      return deps.store.mutate(sessionID, (record) => addRef(record, request, deps))
+      return mutateOutcome(deps, sessionID, (record) => addRef(record, request, deps))
     case "archive":
-      return deps.store.mutate(sessionID, (record) => archive(record, request, deps))
+      return mutateOutcome(deps, sessionID, (record) => archive(record, request, deps))
     case "purge":
-      return deps.store.mutate(sessionID, (record) => purge(record, request, deps.config, nowOf(deps)))
+      return mutateOutcome(deps, sessionID, (record) => purge(record, request, deps.config, nowOf(deps)))
     case "notice":
-      return deps.store.mutate(sessionID, (record) => notice(record, request, deps.config, nowOf(deps)))
+      return mutateOutcome(deps, sessionID, (record) => notice(record, request, deps.config, nowOf(deps)))
     case "recall": {
       if (request.lost !== true) {
         return {

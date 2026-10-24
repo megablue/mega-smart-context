@@ -25,7 +25,7 @@ import { messageOf } from "../../core/types.ts"
 import { createContextCommand } from "./command.ts"
 import { resolveHostConfig } from "./config.ts"
 import { createFsFeatureMap, runContextTransform } from "./context.ts"
-import { SessionStore, sameDirectory } from "../../core/state.ts"
+import { SessionStore, sameDirectory, StoreConflictError } from "../../core/state.ts"
 import { STATUS_RPC, statsOf, type NoticeRequest, type PurgeRequest, type StatsRequest } from "../../core/status.ts"
 import { retirePinned } from "../../core/notices.ts"
 import { purgeWithUndo, queueRevert, revertTarget } from "../../core/undo.ts"
@@ -142,18 +142,34 @@ export async function setup(ctx: PluginContext): Promise<() => Promise<void>> {
       registrations.push(
         await ctx.rpc.register(STATUS_RPC, {
           stats: async (input: StatsRequest) => {
-            return statsOf(await store.load(input.sessionID), config, version)
+            // Fresh on purpose: the host can load this half more than once, and a
+            // cached copy from another instance made the block paint a number that
+            // stopped being true hours earlier. One KV read per pull is cheap.
+            const record = await store.load(input.sessionID, { fresh: true })
+            return statsOf(record, config, version, Date.now())
           },
           purge: async (input: PurgeRequest) => {
-            const removed = await store.mutate(input.sessionID, (record) =>
-              purgeWithUndo(record, input.turn, Date.now()),
-            )
-            return removed
-              ? { ok: true, text: `purged ${input.turn}` }
-              : { ok: false, text: `no turn ${input.turn}` }
+            try {
+              const removed = await store.mutate(input.sessionID, (record) =>
+                purgeWithUndo(record, input.turn, Date.now()),
+              )
+              return removed
+                ? { ok: true, text: `purged ${input.turn}` }
+                : { ok: false, text: `no turn ${input.turn}` }
+            } catch (error) {
+              if (error instanceof StoreConflictError) return { ok: false, text: error.message }
+              throw error
+            }
           },
           notice: async (input: NoticeRequest) => {
-            return store.mutate(input.sessionID, (record) => retirePinned(record, input.id, Date.now()))
+            try {
+              return await store.mutate(input.sessionID, (record) =>
+                retirePinned(record, input.id, Date.now()),
+              )
+            } catch (error) {
+              if (error instanceof StoreConflictError) return { ok: false, text: error.message }
+              throw error
+            }
           },
         }),
       )

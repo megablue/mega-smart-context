@@ -15,6 +15,7 @@ import type { ResolvedConfig } from "./config.ts"
 import { renderStats } from "./prompts.ts"
 import { MEMORY_KEYS } from "./schema.ts"
 import type { SessionStore } from "./state.ts"
+import { StoreConflictError } from "./state.ts"
 import { purgeWithUndo } from "./undo.ts"
 import { RESUMED_TEXT } from "./view.ts"
 
@@ -38,7 +39,9 @@ const USAGE = "usage: /context [status|now|resume|memory <key>|recall <query>|pu
 
 export async function runContextCommand(sessionID: string, args: string, deps: CommandDeps): Promise<void> {
   const text = args.trim()
-  const record = await deps.store.load(sessionID)
+  // Fresh: another instance may own the session's last write, and the report the
+  // user asked for must be what is stored, not what this instance last saw.
+  const record = await deps.store.load(sessionID, { fresh: true })
 
   if (text.length === 0 || text === "status") {
     await deps.reply(sessionID, renderStats(record, deps.config, deps.version))
@@ -46,17 +49,33 @@ export async function runContextCommand(sessionID: string, args: string, deps: C
   }
 
   if (text === "now") {
-    let archived = 0
-    for (const pending of [...record.pending]) {
-      const entry = archivePending(record, pending.id, pending.gist, true, {
-        now: deps.now?.() ?? Date.now(),
-        maxTurns: deps.config.archiveMaxTurns,
-        maxChars: deps.config.archiveMaxChars,
+    const now = deps.now?.() ?? Date.now()
+    let archived: number
+    try {
+      archived = await deps.store.mutate(sessionID, (fresh) => {
+        let count = 0
+        for (const pending of [...fresh.pending]) {
+          const entry = archivePending(fresh, pending.id, pending.gist, true, {
+            now,
+            maxTurns: deps.config.archiveMaxTurns,
+            maxChars: deps.config.archiveMaxChars,
+          })
+          if (entry !== undefined) count += 1
+        }
+        return count
       })
-      if (entry !== undefined) archived += 1
+    } catch (error) {
+      if (error instanceof StoreConflictError) {
+        await deps.reply(sessionID, error.message)
+        return
+      }
+      throw error
     }
-    await deps.store.save(sessionID, record)
-    await deps.reply(sessionID, `archived ${archived} pending turn(s)\n\n` + renderStats(record, deps.config, deps.version))
+    const after = await deps.store.load(sessionID, { fresh: true })
+    await deps.reply(
+      sessionID,
+      `archived ${archived} pending turn(s)\n\n` + renderStats(after, deps.config, deps.version),
+    )
     return
   }
 
@@ -98,9 +117,20 @@ export async function runContextCommand(sessionID: string, args: string, deps: C
     const turn = text.slice("purge ".length).trim()
     // Journaled like the tool's purge: the TUI offers the same action, and a
     // purge that a later /undo cannot restore would be a hole either way.
-    const removed = purgeWithUndo(record, turn, deps.now?.() ?? Date.now())
-    if (removed) await deps.store.save(sessionID, record)
-    await deps.reply(sessionID, removed ? `purged ${turn}` : `no turn ${turn}`)
+    try {
+      const removed = await deps.store.mutate(sessionID, (fresh) =>
+        purgeWithUndo(fresh, turn, deps.now?.() ?? Date.now()),
+      )
+      await deps.reply(sessionID, removed ? `purged ${turn}` : `no turn ${turn}`)
+    } catch (error) {
+      // Another instance wrote between the read and the save; it retried once and
+      // still lost, so the user hears the truth instead of a silent no-op.
+      if (error instanceof StoreConflictError) {
+        await deps.reply(sessionID, error.message)
+        return
+      }
+      throw error
+    }
     return
   }
 

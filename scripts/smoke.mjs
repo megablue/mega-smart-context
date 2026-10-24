@@ -33,12 +33,14 @@ import { NOTICE_HEADING, POLICY, renderMemory, renderStats } from "../src/core/p
 import { emptyMemory } from "../src/core/schema.ts"
 import {
   PANEL_ACTION,
+  PANEL_MEASURED_STALE_MS,
   PANEL_NAME,
   PRODUCT_NAME,
   PURGE_ACTION,
   RESUME_ACTION,
   SIDEBAR_STALE_MS,
   STATUS_RPC,
+  ageLabel,
   isNoticeRequest,
   isPurgeRequest,
   isStatsReply,
@@ -69,7 +71,7 @@ import {
   queueRevert,
   revertTarget,
 } from "../src/core/undo.ts"
-import { MAX_HISTORY, MAX_NOTICES, MAX_NOTICE_CHARS, MAX_RETIRED, SessionStore, pruneOrphans, retireNotice, sameDirectory, trimHistory, upsertNotices } from "../src/core/state.ts"
+import { MAX_HISTORY, MAX_NOTICES, MAX_NOTICE_CHARS, MAX_RETIRED, SessionStore, StoreConflictError, pruneOrphans, retireNotice, sameDirectory, trimHistory, upsertNotices } from "../src/core/state.ts"
 import { extractHtmlSection, extractSection, htmlToText, pageCandidates } from "../src/core/refs.ts"
 import { deriveVersion, readVersionBase } from "../src/core/version.ts"
 import { balanceCuts, erodeToolResults, gistText, hostMessageOf, isHostCue, isHostJob, isHostMessage, isHostTail, isRealUser, modeReminderOf, noticeOf, RESUMED_TEXT, selectWorkingWindow, splitNotices, turnSpans } from "../src/core/view.ts"
@@ -1035,6 +1037,102 @@ await stampStore.save("stamped", await stampStore.load("stamped"))
 ok(stamped.get("session/stamped").directory === root, "a saved record is stamped with its directory")
 
 // ---------------------------------------------------------------------------
+// Store: a fresh read, and a write that refuses to overwrite a newer copy
+//
+// The host can load the server half more than once per run, and each instance
+// has its own cache. The ODT block painted a number that had stopped being true
+// because the answering instance never re-read storage.
+// ---------------------------------------------------------------------------
+
+function memoryStorage(map) {
+  return {
+    async get(key) {
+      return map.get(key)
+    },
+    async set(key, value) {
+      map.set(key, value)
+    },
+    async remove(key) {
+      map.delete(key)
+    },
+    async scan() {
+      return { entries: [] }
+    },
+  }
+}
+
+const sharedMap = new Map()
+const sharedWarn = []
+let sharedClock = 1_000
+const sharedOptions = { now: () => sharedClock, warn: (line) => sharedWarn.push(line) }
+const storeA = new SessionStore(memoryStorage(sharedMap), sharedOptions)
+const storeB = new SessionStore(memoryStorage(sharedMap), sharedOptions)
+
+const a1 = await storeA.load("pair")
+a1.memory.goal = "A1"
+await storeA.save("pair", a1)
+const b1 = await storeB.load("pair")
+ok(b1.memory.goal === "A1", "a first read in another instance sees the stored record")
+
+sharedClock = 2_000
+const a2 = await storeA.load("pair", { fresh: true })
+a2.memory.goal = "A2"
+await storeA.save("pair", a2)
+ok((await storeB.load("pair")).memory.goal === "A1", "a cached read does not see another instance's later write")
+ok(
+  (await storeB.load("pair", { fresh: true })).memory.goal === "A2",
+  "a fresh read replaces the cached copy with the stored one",
+)
+
+sharedClock = 3_000
+const staleCopy = { ...b1, memory: { ...b1.memory, goal: "B-stale" }, updatedAt: 1_000 }
+ok(
+  (await storeB.save("pair", staleCopy)) === false,
+  "a save refuses to overwrite a record written after its copy was read",
+)
+ok(sharedMap.get("session/pair").memory.goal === "A2", "the newer stored record survives the refused save")
+ok((await storeB.load("pair")).memory.goal === "A2", "the refused instance adopts the stored record")
+ok(
+  sharedWarn.some((line) => line.includes("another instance")),
+  "a refused write is logged instead of silently dropping the edit",
+)
+ok(
+  (await storeB.mutate("pair", (record) => record.memory.goal)) === "A2",
+  "a mutation starts from the stored record, not from this instance's cache",
+)
+
+let retried = 0
+const retriedOutcome = await storeB.mutate("race", async (record) => {
+  if (retried === 0) {
+    retried += 1
+    sharedClock += 1
+    const other = await storeA.load("race", { fresh: true })
+    other.memory.goal = "won"
+    await storeA.save("race", other)
+  }
+  record.memory.goal = `${record.memory.goal}+mine`
+  return record.memory.goal
+})
+ok(
+  retriedOutcome === "won+mine" && retried === 1,
+  "a write that loses the race is retried once on the newer record",
+)
+
+let attempts = 0
+await assert.rejects(
+  storeB.mutate("clash", async (record) => {
+    attempts += 1
+    sharedClock += 1
+    const other = await storeA.load("clash", { fresh: true })
+    other.memory.goal = `n${attempts}`
+    await storeA.save("clash", other)
+    record.memory.goal = "mine"
+  }),
+  (error) => error instanceof StoreConflictError,
+)
+ok(attempts === 2, "a second loss in a row is thrown after one retry, with nothing written")
+
+// ---------------------------------------------------------------------------
 // Unit: the feature-map readers (Markdown and the generated HTML)
 // ---------------------------------------------------------------------------
 
@@ -1651,7 +1749,8 @@ statusRecord.lastReport = {
   hostSystemTokens: 4_200,
   hostSystemParts: 5,
 }
-const statusReply = statsOf(statusRecord, statusConfig, "0.1.99")
+// The clock is explicit so the freshness line is a pinned string, not a race.
+const statusReply = statsOf(statusRecord, statusConfig, "0.1.99", statusRecord.updatedAt + 6 * 60_000)
 
 ok(
   statusReply.version === "0.1.99" &&
@@ -1758,8 +1857,31 @@ ok(
   "the sidebar counts turns, pending, archive and refs",
 )
 ok(
-  sidebarBody.includes("host ~4.2k est · not counted") && !sidebarText(noHostReply).includes("host ~"),
-  "the sidebar shows the host system size only when a pass measured one",
+  statusReply.updatedAt === statusRecord.updatedAt && statusReply.ageMs === 6 * 60_000,
+  "a reply built with a clock carries the record's stamp and how old it is",
+)
+ok(
+  statsOf(statusRecord, statusConfig).updatedAt === undefined &&
+    !isStatsReply({ ...statusReply, ageMs: -1 }),
+  "a reply built without a clock omits the age, and a negative age is refused",
+)
+ok(
+  sidebarBody.includes("measured 6m ago") && !sidebarBody.includes("host ~"),
+  "the sidebar says how old its numbers are instead of the host system size",
+)
+ok(
+  !sidebarText(noHostReply).includes("measured "),
+  "a reply with no clock draws no freshness line rather than a guessed one",
+)
+ok(
+  ageLabel(0) === "just now" && ageLabel(4_999) === "just now" && ageLabel(42_000) === "42s ago",
+  "a fresh reply reads 'just now' and seconds keep counting up",
+)
+ok(
+  ageLabel(6 * 60_000) === "6m ago" &&
+    ageLabel(3 * 3_600_000) === "3h ago" &&
+    ageLabel(2 * 86_400_000) === "2d ago",
+  "the age line moves from minutes to hours to days",
 )
 ok(
   !sidebarText({ ...statusReply, version: undefined }).includes(" v0.1.99"),
@@ -1864,6 +1986,12 @@ ok(
 ok(
   panelBody.includes("passes ") && panelBody.includes("3 samples · peak 5k"),
   "the panel draws the pass sparkline with its peak",
+)
+ok(
+  !panelBody.includes("measured ") &&
+    panelText({ ...panelReply, ageMs: 10_000 }).indexOf("measured") === -1 &&
+    panelText({ ...panelReply, ageMs: PANEL_MEASURED_STALE_MS + 60_000 }).includes("measured 2m ago"),
+  "the panel says how old the record is only once a minute has passed without a write",
 )
 ok(
   !panelText({ ...panelReply, notices: [], history: [], lastUndo: undefined, undoTurns: 0 }).includes("[retire]") &&
