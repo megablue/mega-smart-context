@@ -17,14 +17,14 @@
 import { estimateTokens, messageChars } from "./measure.ts"
 import type { ArchivedTurn, Message, PendingTurn, SessionRecord } from "./types.ts"
 import type { TurnSpan } from "./view.ts"
-import { renderTurnFull } from "./view.ts"
+import { gistText, renderTurnFull } from "./view.ts"
 
 export const DEFAULT_ARCHIVE_MAX_TURNS = 200
 export const DEFAULT_ARCHIVE_MAX_CHARS = 400_000
 
 /** What a turn is, in the one line the model sees before deciding. */
 export function mechanicalGist(span: TurnSpan, charsPerToken: number): string {
-  const user = span.userText.replace(/\s+/g, " ").trim().slice(0, 90) || "(no text)"
+  const user = gistText(span.userText)
   const tools = span.tools.length > 0 ? [...new Set(span.tools)].join(", ") : "no tools"
   const tokens = estimateTokens(span.chars, charsPerToken)
   return `turn ${span.id}: ${user} · tools: ${tools} · ~${tokens} est`
@@ -44,7 +44,14 @@ function charsOfMessages(messages: ReadonlyArray<Message>): number {
   return total
 }
 
-function findPending(record: SessionRecord, id: string): PendingTurn | undefined {
+/**
+ * A turn still waiting in the eviction queue.
+ *
+ * Exported because `expand` reads it: the raw messages are still in the record,
+ * so a turn the window dropped is readable before the model decides whether to
+ * archive it.
+ */
+export function findPending(record: SessionRecord, id: string): PendingTurn | undefined {
   return record.pending.find((entry) => entry.id === id)
 }
 

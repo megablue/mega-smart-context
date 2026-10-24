@@ -22,6 +22,7 @@ import { pathToFileURL } from "node:url"
 
 import { TextAttributes } from "@opentui/core"
 
+import { mechanicalGist } from "../src/core/archive.ts"
 import { parseLayer, resolveConfig } from "../src/core/config.ts"
 import { buildPayload } from "../src/core/context.ts"
 import { runMemoryTool } from "../src/core/memory-tool.ts"
@@ -71,7 +72,7 @@ import {
 import { MAX_HISTORY, MAX_NOTICES, MAX_NOTICE_CHARS, MAX_RETIRED, SessionStore, pruneOrphans, retireNotice, sameDirectory, trimHistory, upsertNotices } from "../src/core/state.ts"
 import { extractHtmlSection, extractSection, htmlToText, pageCandidates } from "../src/core/refs.ts"
 import { deriveVersion, readVersionBase } from "../src/core/version.ts"
-import { balanceCuts, erodeToolResults, hostMessageOf, isHostCue, isHostJob, isHostMessage, isHostTail, isRealUser, modeReminderOf, noticeOf, RESUMED_TEXT, selectWorkingWindow, splitNotices, turnSpans } from "../src/core/view.ts"
+import { balanceCuts, erodeToolResults, gistText, hostMessageOf, isHostCue, isHostJob, isHostMessage, isHostTail, isRealUser, modeReminderOf, noticeOf, RESUMED_TEXT, selectWorkingWindow, splitNotices, turnSpans } from "../src/core/view.ts"
 import { livenessFromError } from "../src/adapters/opencode/sessions.ts"
 import { readPluginVersion } from "../src/adapters/opencode/version.ts"
 import {
@@ -1296,6 +1297,51 @@ const deep = await runMemoryTool({ sessionID: "child-9", action: "recall", query
 ok(deep.ok && deep.text.includes('turn:"p4"'), "recall finds a term past the old forty-thousand cap")
 const deepAt = /@(\d+) /.exec(deep.text)
 ok(Number(deepAt?.[1] ?? 0) > 40_000, "a deep snippet reports its real offset")
+
+// A pending turn is readable too: its raw sits in the record from the moment the
+// window drops it, so a turn is not lost just because nobody archived it yet.
+const pendingTurn = [user("p5", 'the spec says: add a new option "overlay"'), assistant("pa5", "Noted.")]
+await parentStore.mutate("parent-9", (record) => {
+  record.pending.push({ id: "p5", gist: "a pending spec", chars: 200, createdAt: 0, age: 1, messages: pendingTurn })
+})
+const pendingRead = await runMemoryTool({ sessionID: "parent-9", action: "expand", turn: "p5" }, parentDeps)
+ok(pendingRead.ok && pendingRead.text.includes('add a new option "overlay"'), "expand reads a pending turn's raw")
+ok(pendingRead.text.includes("pending turn") && pendingRead.text.includes("keepRaw:true"), "a pending read says it is not durable")
+const pendingOutline = await runMemoryTool({ sessionID: "parent-9", action: "expand", turn: "p5", mode: "outline" }, parentDeps)
+ok(pendingOutline.ok && pendingOutline.text.includes("@0 [user]"), "a pending turn has an outline too")
+const pendingRecall = await runMemoryTool({ sessionID: "parent-9", action: "recall", query: "overlay", lost: true }, parentDeps)
+ok(!pendingRecall.text.includes('turn:"p5"'), "recall stays archive-only; a pending turn is read with expand")
+const missingTurn = await runMemoryTool({ sessionID: "parent-9", action: "expand", turn: "nope" }, parentDeps)
+ok(
+  !missingTurn.ok && missingTurn.text.includes("pending eviction queue") && missingTurn.text.includes("Pending:"),
+  "a missing expansion names both places it looked",
+)
+
+// A gist-only archive reports what it cost: the raw is gone and expand can only
+// return the gist. The warning is the last moment the choice can be undone.
+await parentStore.mutate("archive-c", (record) => {
+  record.pending.push({ id: "pc", gist: "mechanical", chars: 10, createdAt: 0, age: 0, messages: [user("pc", "spec"), assistant("pac", "ok")] })
+  record.pending.push({ id: "pc2", gist: "mechanical", chars: 10, createdAt: 0, age: 0, messages: [user("pc2", "spec"), assistant("pac2", "ok")] })
+})
+const droppedRaw = await runMemoryTool({ sessionID: "archive-c", action: "archive", turn: "pc", gist: "my gist" }, parentDeps)
+ok(droppedRaw.ok && droppedRaw.text.includes("gist only; the raw was discarded"), "a gist-only archive warns that the raw is gone")
+ok(droppedRaw.text.includes("expand will show only this gist"), "the warning says what expand will return now")
+const afterDrop = await runMemoryTool({ sessionID: "archive-c", action: "expand", turn: "pc" }, parentDeps)
+ok(afterDrop.ok && afterDrop.text.includes("gist only"), "the archived entry really has no raw left")
+const keptRaw = await runMemoryTool({ sessionID: "archive-c", action: "archive", turn: "pc2", gist: "my gist", keepRaw: true }, parentDeps)
+ok(keptRaw.ok && keptRaw.text.includes("gist + raw") && !keptRaw.text.includes("discarded"), "keeping the raw is reported plainly")
+
+// The mechanical gist is a head AND a tail: a head-only 90-char cut once threw
+// away the one word a spec's whole plan hung on.
+const spec = `${"preamble. ".repeat(20)}add a new option "overlay" to the tray menu`
+const cut = gistText(spec)
+ok(cut.length <= 163 && cut.startsWith("preamble."), "a mechanical gist keeps the head for context")
+ok(cut.endsWith('"overlay" to the tray menu'), "the gist keeps the tail where the decisive word sits")
+ok(cut.includes("…"), "a cut gist marks what it skipped")
+ok(gistText("  one   line ") === "one line", "a short gist is just the collapsed text")
+ok(gistText("   ") === "(no text)", "an empty turn still gets a placeholder")
+const gistSpan = { id: "m1", turn: 1, startIdx: 0, endIdx: 1, userText: spec, tools: ["bash"], chars: 900 }
+ok(mechanicalGist(gistSpan, 4).includes('"overlay"'), "the eviction gist carries the decisive word")
 
 // The host path: the fixture gives every "child*" session the parent "parent-1".
 // Give that parent a real archive: four passes over a growing transcript — one to

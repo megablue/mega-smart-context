@@ -16,7 +16,7 @@
  * @module mega-smart-context/memory-tool
  */
 
-import { archivePending, findArchived, purgeQuery, recall } from "./archive.ts"
+import { archivePending, findArchived, findPending, purgeQuery, recall } from "./archive.ts"
 import type { ResolvedConfig } from "./config.ts"
 import { estimateTokens, formatTokens, memoryChars } from "./measure.ts"
 import { retirePinned } from "./notices.ts"
@@ -73,10 +73,10 @@ export const TOOL_HELP = `smart_context actions:
 - patch { patch } - merge a patch (maps merge, lists replace, null resets)
 - stats - memory/working/archive usage
 - ref { page, section, gist } - store a feature-map pointer and compare costs
-- archive { turn, gist, keepRaw? } - move a pending turn to the archive
+- archive { turn, gist, keepRaw? } - move a pending turn to the archive; without keepRaw the raw is discarded
 - purge { turn? | query? } - delete a pending/archived turn, or matching entries
 - recall { query, lost:true, limit?, from? } - search the archive only when a fact is missing; from:"parent" searches the spawning session's archive
-- expand { turn, mode?, offset?, limit?, from? } - read an archived turn: one honest page, or mode:"outline" for its map
+- expand { turn, mode?, offset?, limit?, from? } - read an archived or pending turn: one honest page, or mode:"outline" for its map
 - notice { remove? } - list the pinned host notices, or drop a superseded one`
 
 function str(value: unknown): string | undefined {
@@ -270,8 +270,10 @@ function archive(record: SessionRecord, request: MemoryToolRequest, deps: Memory
   }
   return {
     text:
-      `archived ${turn} (${entry.messages === undefined ? "gist only" : "gist + raw"})\n` +
-      usage(record, deps.config),
+      entry.messages === undefined
+        ? `archived ${turn} (gist only; the raw was discarded, so expand will show only this gist)\n` +
+          usage(record, deps.config)
+        : `archived ${turn} (gist + raw)\n` + usage(record, deps.config),
     ok: true,
   }
 }
@@ -426,9 +428,20 @@ export async function runMemoryTool(
       const target = await targetRecord(deps, request, sessionID)
       if (isOutcome(target)) return target
       const entry = findArchived(target, turn)
-      if (entry === undefined) return { text: `smart_context: no archived turn ${JSON.stringify(turn)}`, ok: false }
-      if (entry.messages === undefined) {
-        return { text: `${entry.gist}\n(gist only; no raw messages were kept)`, ok: true }
+      const waiting = entry === undefined ? findPending(target, turn) : undefined
+      if (entry === undefined && waiting === undefined) {
+        const pending = target.pending.map((item) => item.id).join(", ") || "none"
+        return {
+          text:
+            `smart_context: no turn ${JSON.stringify(turn)} in the archive or the pending eviction queue. ` +
+            `Pending: ${pending}`,
+          ok: false,
+        }
+      }
+      const gist = entry?.gist ?? waiting?.gist ?? ""
+      const messages = entry !== undefined ? entry.messages : waiting?.messages
+      if (messages === undefined || messages.length === 0) {
+        return { text: `${gist}\n(gist only; no raw messages were kept)`, ok: true }
       }
       const mode = str(request.mode) ?? "page"
       if (mode !== "page" && mode !== "outline") {
@@ -438,13 +451,20 @@ export async function runMemoryTool(
         }
       }
       const { budget, hint } = expandBudget(deps.config, request.from === "parent")
+      // A pending read is not durable: the queue entry can be purged, and the
+      // point of reading it is to decide whether to archive it with the raw.
+      const note =
+        waiting === undefined
+          ? ""
+          : `\n(pending turn: read from the eviction queue, which is not durable. Archive it with keepRaw:true to keep this raw.)`
+      const room = Math.max(200, budget - note.length)
       const offset = typeof request.offset === "number" && Number.isFinite(request.offset) ? request.offset : undefined
       const limit = typeof request.limit === "number" && Number.isFinite(request.limit) ? request.limit : undefined
       const text =
         mode === "outline"
-          ? turnOutline(entry.messages, { budget })
-          : turnPage(entry.messages, { offset, limit, budget }).text
-      return { text: text + hint, ok: true }
+          ? turnOutline(messages, { budget: room })
+          : turnPage(messages, { offset, limit, budget: room }).text
+      return { text: text + note + hint, ok: true }
     }
     default:
       return { text: TOOL_HELP, ok: false }

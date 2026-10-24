@@ -436,9 +436,29 @@ export function erodeToolResults(
   return { messages: out, eroded }
 }
 
+/**
+ * How much of a turn's own words a mechanical gist keeps: a head for context and
+ * a tail for the decisive word.
+ *
+ * A head-only cut at 90 characters silently dropped the word a spec hung on
+ * ("add a new option \"o…"), and a gist is written once, at eviction, so a later
+ * reader cannot recover what it dropped. The tail costs 43 characters and is
+ * where a name, a path or a verdict usually lands.
+ */
+export const GIST_HEAD_CHARS = 120
+export const GIST_TAIL_CHARS = 40
+
+/** The one-line cut of a user's text that a gist and the eviction preview share. */
+export function gistText(raw: string): string {
+  const text = raw.replace(/\s+/g, " ").trim()
+  if (text.length === 0) return "(no text)"
+  if (text.length <= GIST_HEAD_CHARS + GIST_TAIL_CHARS) return text
+  return `${text.slice(0, GIST_HEAD_CHARS)} … ${text.slice(-GIST_TAIL_CHARS)}`
+}
+
 /** A one-line, mechanical preview of a turn for the pending-eviction notice. */
 export function previewOf(span: TurnSpan, charsPerToken: number): string {
-  const user = span.userText.replace(/\s+/g, " ").trim().slice(0, 90) || "(no text)"
+  const user = gistText(span.userText)
   const tools = span.tools.length > 0 ? [...new Set(span.tools)].join(", ") : "no tools"
   const tokens = formatTokens(estimateTokens(span.chars, charsPerToken))
   return `user: ${JSON.stringify(user)} · tools: ${tools} · ~${tokens} est`

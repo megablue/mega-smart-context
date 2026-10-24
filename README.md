@@ -99,6 +99,7 @@ The update check is the only network call the plugin makes, and it runs in the T
 ## Use
 
 - The model writes memory with the `smart_context` tool: `patch`, `read`, `stats`, `ref`, `archive`, `purge`, `recall`, `expand`.
+- A turn that left the working window is readable before it is archived: `expand` looks in the archive first and then in the pending queue, and says when a read is not durable. `archive` without `keepRaw` warns that the raw is now gone, so `expand` can only return the gist.
 - A subagent can read its spawning session's archive without importing it: `recall`/`expand` with `from:"parent"`. The field is read-only and never reaches a writing action, and the reply tells the child how many characters its caller can actually keep.
 - `/context` prints the current memory and archive, and carries the control actions a user needs; the subcommands are in [The `/context` command](#the-context-command).
 - The palette command `Context status` opens the same numbers as a dialog, with `Resume` and `Purge a turn…` below them, and the TUI sidebar carries a short block of the same numbers with clickable `status` / `resume` / `purge`; see [The TUI status dialog](#the-tui-status-dialog).
