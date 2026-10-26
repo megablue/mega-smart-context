@@ -8,6 +8,10 @@
  *   registry's `codemode: false` entries, so a tool registered without one is
  *   reachable through `execute` but never by name. The `context` hook also puts
  *   this definition into `event.tools` for the same reason.
+ * - The flag is exclusive, not additive: `codemode: false` keeps this tool out
+ *   of the Code Mode catalog, so `tools.smart_context(...)` inside `execute`
+ *   answers "Unknown tool" (the host has one flag per tool, not two
+ *   registrations). The policy says so in as many words.
  * - A result that declares `output` without an output schema comes back to the
  *   model as `Tool result declared output without an output schema` and the call
  *   is lost. This tool returns text content only, so it declares no output.

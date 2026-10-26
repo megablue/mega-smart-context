@@ -45,6 +45,10 @@ the working budget (verbatim), and the current turn.
   only the keys that changed. Maps merge; lists replace; \`null\` resets a key (or
   deletes one map entry). Unknown keys are dropped and an over-cap write is
   rejected rather than silently trimmed.
+- \`smart_context\` is a direct tool: call it by name, never as
+  \`tools.smart_context(...)\` inside \`execute\`. The Code Mode catalog does not
+  contain it, so such a call comes back as "Unknown tool" and nothing is written.
+  Batch independent direct calls in one assistant message instead.
 - Before a turn leaves the window it appears under "Pending eviction". Archive it
   with a one-line gist (action:"archive", optionally keepRaw:true) or purge it
   (action:"purge"). With auto-archive on, an unhandled turn is archived under a

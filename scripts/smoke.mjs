@@ -464,6 +464,12 @@ ok(
   p1.system.findIndex((part) => part.text === POLICY) < p1.system.length - 1,
   "the policy sits before the pinned notices",
 )
+ok(
+  POLICY.includes("`smart_context` is a direct tool") &&
+    POLICY.includes("tools.smart_context") &&
+    POLICY.includes("inside `execute`"),
+  "the policy says smart_context is a direct tool, not a Code Mode one",
+)
 const p2 = await noticePass("n", withNotices, p1.system)
 ok(
   p2.system.filter((part) => part.text.startsWith(NOTICE_HEADING)).length === 1,
