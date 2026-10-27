@@ -363,6 +363,32 @@ export interface PassSample {
   modelContext?: number
 }
 
+/**
+ * The model a pass ran with, in the host's own terms.
+ *
+ * `providerID` is optional because a host that names only the model still gets
+ * a usable stamp: a bare id is a valid `modelProfiles` key.
+ */
+export interface ModelStamp {
+  readonly providerID: string
+  readonly id: string
+  readonly variant?: string
+}
+
+/**
+ * A manual profile choice for one session.
+ *
+ * Absent means auto: the model mapping and then the default profile decide.
+ * `profile` pins a named bundle and `base` pins the plain config; neither is
+ * cleared by a model change, only by choosing auto.
+ */
+export interface ProfilePin {
+  readonly mode: "profile" | "base"
+  /** The profile name; present only with `mode:"profile"`. */
+  readonly name?: string
+  readonly at: number
+}
+
 export interface SessionRecord {
   version: 1
   memory: Memory
@@ -403,6 +429,21 @@ export interface SessionRecord {
   undo?: UndoEntry[]
   /** What the last applied undo changed. Cleared on the next user turn. */
   lastUndo?: LastUndo
+  /**
+   * A manual profile choice for this session, or absent for auto.
+   *
+   * Neither kind of pin expires on its own: only choosing auto clears it, so a
+   * model change cannot silently undo the user's pick.
+   */
+  profile?: ProfilePin
+  /**
+   * The model the last pass ran with.
+   *
+   * The tool, `/context` and the status RPC have no request event, so they
+   * re-derive an automatic profile from this stamp. A pass that names no model
+   * leaves the previous stamp alone rather than guessing.
+   */
+  lastModel?: ModelStamp
   /**
    * The plugin instance's directory when this record was last written.
    *

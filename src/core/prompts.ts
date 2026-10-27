@@ -13,6 +13,7 @@
 
 import { estimateTokens, formatTokens, memoryChars } from "./measure.ts"
 import { isMemoryEmpty } from "./schema.ts"
+import { choiceLabel, chooseProfile, configForRecord, modelLabel } from "./profiles.ts"
 import type { ResolvedConfig } from "./config.ts"
 import type { SessionRecord } from "./types.ts"
 
@@ -90,20 +91,23 @@ export interface BudgetReport {
 
 /** Measure the current record. The working numbers come from the last pass. */
 export function budgetOf(record: SessionRecord, config: ResolvedConfig): BudgetReport {
-  const memoryTokens = estimateTokens(memoryChars(record.memory), config.charsPerToken)
+  // The caps a session is actually held to, not the install's: a profile is a
+  // real budget change, and every surface must report the numbers enforced.
+  const effective = configForRecord(config, record)
+  const memoryTokens = estimateTokens(memoryChars(record.memory), effective.charsPerToken)
   const workingTokens = record.lastReport?.workingTokens ?? 0
   return {
     memoryTokens,
     workingTokens,
     totalTokens: memoryTokens + workingTokens,
-    memoryCap: config.memoryTokens,
-    workingCap: config.workingTokens,
+    memoryCap: effective.memoryTokens,
+    workingCap: effective.workingTokens,
     refs: record.memory.refs.length,
     pending: record.pending.length,
     archive: record.archive.length,
     workingTurns: record.lastReport?.workingTurns ?? 0,
     droppedTurns: record.lastReport?.droppedTurns ?? 0,
-    overBudget: memoryTokens > config.memoryTokens || workingTokens > config.workingTokens,
+    overBudget: memoryTokens > effective.memoryTokens || workingTokens > effective.workingTokens,
     goalEmpty: record.memory.goal.trim().length === 0,
     modelContext: record.lastReport?.modelContext,
     hostSystemTokens: record.lastReport?.hostSystemTokens,
@@ -261,8 +265,10 @@ export function renderNotices(record: SessionRecord): string | undefined {
  */
 export function renderStats(record: SessionRecord, config: ResolvedConfig, version?: string): string {
   const report = budgetOf(record, config)
+  const profile = chooseProfile(config, record.profile, record.lastModel)
   const lines = [
     `${PRODUCT_NAME}${version === undefined ? "" : ` v${version}`} · ${budgetLine(report)}`,
+    `profile: ${choiceLabel(profile)}${record.lastModel === undefined ? "" : ` · ${modelLabel(record.lastModel)}`}`,
     `window: ${report.workingTurns} turns kept, ${report.droppedTurns} dropped · over budget: ${report.overBudget ? "yes" : "no"}`,
   ]
   if (record.lastUndo !== undefined) {

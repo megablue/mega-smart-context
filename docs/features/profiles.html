@@ -1,0 +1,136 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="generator" content="opencode-feature-map">
+<title>Profiles - one bundle of per-session settings — feature map</title>
+<style>
+:root{color-scheme:light dark;--fg:#1d2433;--muted:#5b6475;--bg:#fff;--line:#d8dee9;--accent:#0b6e99;--warn:#8a5a00;--code:#f4f6fa}
+@media (prefers-color-scheme:dark){:root{--fg:#e6eaf2;--muted:#9aa4b8;--bg:#11151c;--line:#2b3342;--accent:#6cc4e8;--warn:#e0b25c;--code:#1a202a}}
+*{box-sizing:border-box}
+body{margin:0 auto;max-width:60rem;padding:2rem 1.25rem 4rem;background:var(--bg);color:var(--fg);font:16px/1.6 system-ui,-apple-system,Segoe UI,sans-serif}
+h1,h2,h3{line-height:1.25;margin:2rem 0 .75rem}
+h1{font-size:1.9rem;border-bottom:2px solid var(--line);padding-bottom:.4rem}
+h2{font-size:1.35rem}
+h3{font-size:1.08rem;color:var(--muted)}
+p,ul,ol,table,pre,blockquote{margin:.75rem 0}
+a{color:var(--accent)}
+code{background:var(--code);padding:.1em .3em;border-radius:.25rem;font-size:.92em}
+pre{background:var(--code);border:1px solid var(--line);border-radius:.4rem;padding:.8rem 1rem;overflow:auto}
+pre code{background:none;padding:0}
+pre.verbatim{border-left:4px solid var(--warn)}
+pre.verbatim::before{content:"verbatim — " attr(data-why);display:block;color:var(--warn);font:600 .78rem/1.4 ui-monospace,monospace;margin-bottom:.5rem;white-space:pre-wrap}
+pre.pseudo{border-left:4px solid var(--accent)}
+pre.mermaid{background:var(--bg);border:1px dashed var(--line)}
+p.status{color:var(--muted);font-size:.92rem}
+table{border-collapse:collapse;width:100%}
+th,td{border:1px solid var(--line);padding:.4rem .6rem;text-align:left;vertical-align:top}
+th{background:var(--code)}
+blockquote{margin-left:0;padding-left:1rem;border-left:3px solid var(--line);color:var(--muted)}
+hr{border:0;border-top:1px solid var(--line);margin:2rem 0}
+.lede{color:var(--muted)}
+</style>
+</head>
+<body>
+<article class="map">
+<h1>Profiles - one bundle of per-session settings</h1>
+<p class="status">Status: shipped (v0.1.40) - Read when: a profile or a model mapping, <code>defaultProfile</code>, &quot;switch the budget for this session&quot;, &quot;the caps moved with the model&quot;, or the sidebar's <code>[profile]</code> target.</p>
+<section id="what-it-does">
+<h2>What it does</h2>
+<ul>
+<li>Names a partial config - a <em>profile</em> - in the same user config file, and applies it to one session's budget: memory, working window, erosion, archive bounds, refs and <code>charsPerToken</code>.</li>
+<li>Chooses it three ways: a manual pin from the sidebar or <code>/context profile</code>, a <code>modelProfiles</code> mapping for the model in use, or <code>defaultProfile</code> when nothing else matches.</li>
+<li>Keeps a manual pin until the user picks <strong>auto</strong>: changing the model never clears it, and neither does a restart.</li>
+<li>Makes the switch <em>real</em>: the effective config decides the window, the erosion, the memory cap and the archive bounds of the next pass - not just what the dialog prints.</li>
+<li>Shows the choice everywhere: a <code>profile</code> line in the sidebar block, a row in the status dialog and the panel, a line in <code>/context</code>, and the <code>profile</code> RPC method.</li>
+</ul>
+<p><code>docs/SPEC.md</code> owns the user-visible behavior; this page owns the mechanism.</p>
+</section>
+<section id="map">
+<h2>Map</h2>
+<ul>
+<li><code>src/core/config.ts</code> - <code>SESSION_KEYS</code>, <code>SessionOverrides</code>, <code>ResolvedConfig.profiles/modelProfiles/defaultProfile</code>, <code>parseProfiles</code>, <code>parseModelProfiles</code>, <code>coerceValue</code>, and the post-merge reference check in <code>resolveConfig</code>.</li>
+<li><code>src/core/profiles.ts</code> - <code>ModelStamp</code>, <code>ProfileChoice</code>, <code>ProfileSource</code>, <code>stampModel</code>, <code>modelKeys</code>, <code>modelLabel</code>, <code>chooseProfile</code>, <code>applyProfile</code>, <code>configForRecord</code>, <code>choiceLabel</code>, <code>profileNames</code>, <code>profileSummary</code>.</li>
+<li><code>src/core/types.ts</code> - <code>ProfilePin</code>, <code>ModelStamp</code>, <code>SessionRecord.profile/lastModel</code>; <code>src/core/state.ts</code> - <code>normalizeProfilePin</code>, <code>normalizeModelStamp</code>.</li>
+<li><code>src/core/context.ts</code> - stamps <code>lastModel</code>, calls <code>chooseProfile</code> + <code>applyProfile</code> once at the top of <code>buildPayload</code>.</li>
+<li><code>src/core/prompts.ts</code> - <code>budgetOf</code> measures against the effective caps; <code>renderStats</code> prints <code>profile: ...</code>.</li>
+<li><code>src/core/memory-tool.ts</code> - one cached caller load, <code>configForRecord</code>, and the derived config passed to <code>patch</code>/<code>addRef</code>/<code>archive</code>/<code>purge</code>/<code>notice</code>/<code>recall</code>/<code>expand</code>.</li>
+<li><code>src/core/command.ts</code> - <code>profileReport</code> and the <code>/context profile [auto|base|&lt;name&gt;]</code> branch.</li>
+<li><code>src/core/status.ts</code> - <code>PROFILE_ACTION</code>, <code>StatusProfile</code>, <code>StatsReply.profile</code>, <code>ProfileMode</code>, <code>ProfileRequest/Reply</code>, <code>isProfileRequest</code>, <code>profileRequestSchema</code>, <code>STATUS_RPC.methods.profile</code>, the dialog row, the sidebar line and the panel row.</li>
+<li><code>src/adapters/opencode/index.ts</code> - the <code>profile</code> RPC handler on the same <code>store.mutate</code>/conflict path as purge and notice.</li>
+<li><code>tui.ts</code> - <code>profileOptions</code>, <code>openProfile</code>, the dialog's <code>PROFILE_ACTION</code> branch, the sidebar action; <code>src/tui/sidebar.tsx</code> - the <code>[profile]</code> target; <code>src/tui/context.ts</code> - <code>StatusClient.profile</code>.</li>
+<li><code>options.json</code> - <code>profiles: {}</code>, <code>modelProfiles: {}</code>, <code>defaultProfile: ""</code>.</li>
+</ul>
+</section>
+<section id="how-why">
+<h2>How &amp; why</h2>
+<h3>What a profile may set</h3>
+<p>A profile is a partial config limited to <code>SESSION_KEYS</code>: <code>memoryTokens</code>, <code>workingTokens</code>, <code>charsPerToken</code>, <code>evictionLead</code>, <code>autoArchive</code>, <code>archiveMaxTurns</code>, <code>archiveMaxChars</code>, <code>parentArchive</code>, <code>expandDigestChars</code>, <code>refs</code>, <code>maxResultChars</code>. The process and install keys - <code>enabled</code>, <code>subagents</code>, <code>manualCommand</code>, <code>updateCheck</code>, <code>sidebar</code>, <code>debug</code> - are refused, with the same strictness as an unknown top-level key. A model picking a profile must not be able to decide whether the sidebar exists.</p>
+<p>Validation reuses <code>coerceValue</code>, so a profile's numbers go through the identical clamps as the top level (<code>memoryTokens</code> floor 1000, <code>workingTokens</code> floor 500, <code>charsPerToken</code> 2-8, <code>archiveMaxChars</code> floor 10000, <code>maxResultChars</code> floor 200). Profile names are letters, digits, dot, dash or underscore; they end up in dialog rows and JSON keys.</p>
+<h3>The selection order</h3>
+<p>Exactly four steps, first match wins, in <code>chooseProfile</code>:</p>
+<ol>
+<li>a manual pin on the record - <code>{ mode: "profile", name }</code> or <code>{ mode: "base" }</code>;</li>
+<li>a <code>modelProfiles</code> entry for the request's model;</li>
+<li><code>defaultProfile</code>;</li>
+<li>the base config.</li>
+</ol>
+<p>The pin is checked before the model on purpose: a manual switch is the user speaking, and a mapping is only a default. A pin has no expiry - <code>record.profile</code> is cleared only by picking <code>auto</code> - so switching models, restarting, or letting the session idle cannot undo it.</p>
+<p>Model keys are tried most specific first: <code>provider/model#variant</code>, then <code>provider/model</code>, then a bare <code>model</code> (<code>modelKeys</code> also accepts <code>model#variant</code>). That lets a variant pin a different budget from the same model without one.</p>
+<h3>Where the effective config is derived</h3>
+<p>The pass stamps <code>record.lastModel</code> from <code>event.model</code>, then resolves the choice and merges the profile's keys over the base for that pass only. The record never stores the effective config - it stores the two inputs (pin and model stamp) that reproduce the same answer, which is why a config edit or a downgrade cannot leave a half-applied budget behind.</p>
+<p>Every other surface re-derives through <code>configForRecord(config, record)</code>: the tool (one cached load at the top of <code>runMemoryTool</code>), <code>/context</code>, <code>budgetOf</code>/<code>renderStats</code>, <code>statsOf</code> and the panel. A pass that names no model leaves the previous stamp alone, so one odd request cannot silently flip an automatic session back to the default.</p>
+<p>A pin that names a profile the config no longer defines is not an error at load (the record is data, not config): the session runs the base and every surface says <code>base · &lt;name&gt; is not configured</code> until the user picks a profile or auto.</p>
+<h3>The surfaces and the write path</h3>
+<p>The sidebar draws <code>profile &lt;name&gt; · auto|pinned|default</code> directly under the header and adds a <code>[profile]</code> target to the action row; the target opens a <code>dialog.select</code> whose rows are <code>auto</code>, <code>base</code> and every named profile with its overrides (<code>profileSummary</code>). The panel's Budget section shows the profile, the model and, for a pin, &quot;pinned until you pick auto&quot;. <code>/context profile</code> prints the inventory; <code>/context profile auto|base|&lt;name&gt;</code> writes it without a TUI.</p>
+<p>All three write paths - the dialog, <code>/context</code> and the RPC - go through the store's lock and the same conflict handling as purge and notice, and all reply &quot;applies from the next pass&quot;: the request already in flight was measured against the old caps. The RPC re-checks the name against the loaded config, so a picker row whose profile was just deleted is refused rather than pinned.</p>
+</section>
+<section id="config-keys-ui">
+<h2>Config keys / UI</h2>
+<table><thead><tr><th>Thing</th><th>Default</th><th>Effect</th></tr></thead><tbody>
+<tr><td><code>profiles</code></td><td><code>{}</code></td><td>name to a body of <code>SESSION_KEYS</code>; merged across config layers by name</td></tr>
+<tr><td><code>modelProfiles</code></td><td><code>{}</code></td><td><code>provider/model</code> (or bare id, or <code>#variant</code>) to a profile name; a mapping to a missing profile is a load error</td></tr>
+<tr><td><code>defaultProfile</code></td><td><code>&quot;&quot;</code></td><td>the fallback for an auto session; empty means the base config</td></tr>
+<tr><td>profile body</td><td>-</td><td>only the eleven session keys, clamped like the top level</td></tr>
+<tr><td><code>record.profile</code></td><td>absent (auto)</td><td><code>{ mode: &quot;profile&quot;, name, at }</code> or <code>{ mode: &quot;base&quot;, at }</code>; </td></tr>
+<tr><td><code>record.lastModel</code></td><td>absent</td><td><code>{ providerID, id, variant? }</code>, stamped by the pass</td></tr>
+<tr><td><code>/context profile</code></td><td>-</td><td>list the inventory; <code>auto</code>, <code>base</code> or a name sets the pin</td></tr>
+<tr><td><code>[profile]</code></td><td>-</td><td>the sidebar target; the dialog also has &quot;Switch profile...&quot;</td></tr>
+<tr><td><code>profile</code> RPC</td><td>-</td><td><code>{ sessionID, mode: &quot;auto&quot;|&quot;base&quot;|&quot;profile&quot;, name? }</code> to <code>{ ok, text }</code></td></tr>
+</tbody></table>
+</section>
+<section id="tests-that-pin-it">
+<h2>Tests that pin it</h2>
+<h3>The config and the selection</h3>
+<ul>
+<li>&quot;a profile parses and keeps its name&quot;, &quot;a profile's numbers are clamped by the same rules as the top-level keys&quot;, &quot;only the per-session keys are profile-able&quot;</li>
+<li>&quot;profiles and model mappings merge across config layers by name&quot;, &quot;a profile may not set a process key&quot;, &quot;a profile's value has to have the right type&quot;, &quot;a profile name has to be usable as a dialog row&quot;</li>
+<li>&quot;a model mapping may not name a profile that does not exist&quot;, &quot;the default profile may not be missing either&quot;, &quot;a model mapping's value is a profile name&quot;</li>
+<li>&quot;a model stamp reads the host's model reference&quot;, &quot;a stamp without an id is no stamp&quot;, &quot;the model keys go from most to least specific&quot;, &quot;a model label is provider/id plus the variant&quot;</li>
+<li>&quot;a model mapping chooses a profile automatically&quot;, &quot;a manual pin wins over the model mapping&quot;, &quot;a base pin runs the plain config even when the model maps to a profile&quot;, &quot;the default profile answers when no model mapping matches&quot;, &quot;with no mapping and no default, the base config runs&quot;, &quot;a pin that outlived its profile falls back to base and says which name is missing&quot;</li>
+<li>&quot;a profile merges its session keys and leaves the install keys alone&quot;, &quot;a profile summary lists exactly the keys it sets, in a fixed order&quot;</li>
+</ul>
+<h3>The pass, the surfaces and the write path</h3>
+<ul>
+<li>&quot;a mapped profile's working cap decides the window, not the base cap&quot;, &quot;the pass stamps the model it ran with&quot;, &quot;the pass measures against the profile's caps&quot;, &quot;a pin survives a model change and keeps running the pinned profile&quot;, &quot;configForRecord re-derives the profile from the record alone&quot;</li>
+<li>&quot;statsOf reports the profile and the caps it enforces&quot;, &quot;a reply carrying a profile still matches the schema the host validates&quot;, &quot;/context prints the profile, how it was chosen and the model&quot;, &quot;the sidebar says which profile the session runs on&quot;, &quot;the panel says which profile and model are in force&quot;, &quot;the dialog shows the profile and offers the switch&quot;</li>
+<li>&quot;a profile request needs a mode and, for a named pick, a name&quot;, &quot;the profile request matches the schema the host validates&quot;</li>
+<li>&quot;/context profile lists the choice, the profiles and the mappings&quot;, &quot;/context profile &lt;name&gt; pins the session&quot;, &quot;/context profile auto clears the pin and the model decides again&quot;, &quot;an unknown profile is refused before any write&quot;</li>
+<li>&quot;the RPC refuses a profile the config does not define&quot;, &quot;the RPC pins the named profile on that one session&quot;, &quot;the RPC's auto clears the pin&quot;</li>
+<li>&quot;the picker lists auto, base and every named profile&quot;, &quot;auto explains itself and a row shows the profile's own overrides&quot;, &quot;the picker's choice goes to the RPC as a named pin&quot;, &quot;the switch is reported in a toast&quot;</li>
+</ul>
+</section>
+<section id="related">
+<h2>Related</h2>
+<ul>
+<li><code>context-handoff.html</code> - the pass that resolves the profile and measures with it.</li>
+<li><code>memory-tool.html</code> - the tool whose caps the effective config moves.</li>
+<li><code>archive.html</code> - the eviction and archive bounds a profile can change.</li>
+<li><code>tui.html</code> - the sidebar line, the dialog row and the panel row.</li>
+</ul>
+</section>
+</article>
+
+</body>
+</html>

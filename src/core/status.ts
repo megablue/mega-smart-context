@@ -19,6 +19,7 @@
 import type { ResolvedConfig } from "./config.ts"
 import { formatTokens } from "./measure.ts"
 import { PRODUCT_NAME, budgetOf, noticePreview } from "./prompts.ts"
+import { choiceLabel, chooseProfile, modelLabel, type ProfileSource } from "./profiles.ts"
 import type { SessionRecord } from "./types.ts"
 
 /**
@@ -34,6 +35,8 @@ export const STATUS_RPC_ID = "mega-smart-context"
 /** The two actions the dialog offers below the status rows. */
 export const RESUME_ACTION = "resume"
 export const PURGE_ACTION = "purge"
+/** The dialog value that opens the profile picker. */
+export const PROFILE_ACTION = "profile"
 
 /**
  * The panel's selected-content name. The host hands every `session.panel` claim
@@ -100,6 +103,19 @@ export interface StatusUndo {
   readonly lost: number
 }
 
+/**
+ * The profile a session runs on, as it crosses the process boundary.
+ *
+ * `source` is where it came from, not what the user last clicked: `model` and
+ * `default` both mean auto. `missing` names a pin the config no longer defines.
+ */
+export interface StatusProfile {
+  readonly name?: string
+  readonly source: ProfileSource
+  readonly model?: string
+  readonly missing?: string
+}
+
 export interface StatsRequest {
   readonly sessionID: string
 }
@@ -142,6 +158,11 @@ export interface StatsReply {
   readonly lastUndo?: StatusUndo
   /** Journal entries still waiting for an undo. */
   readonly undoTurns: number
+  /**
+   * The profile in force. Optional so a reply from an older build still parses;
+   * this build always fills it.
+   */
+  readonly profile?: StatusProfile
 }
 
 export interface PurgeRequest {
@@ -161,6 +182,25 @@ export interface NoticeRequest {
 }
 
 export interface NoticeReply {
+  readonly ok: boolean
+  readonly text: string
+}
+
+/** Choose this session's profile: auto, the base config, or a named bundle. */
+export type ProfileMode = "auto" | "base" | "profile"
+
+/**
+ * A manual switch. `auto` clears the pin, `base` pins the plain config, and
+ * `profile` pins a name. A pin survives a model change; only `auto` clears it.
+ */
+export interface ProfileRequest {
+  readonly sessionID: string
+  readonly mode: ProfileMode
+  /** Required with `mode:"profile"`; ignored otherwise. */
+  readonly name?: string
+}
+
+export interface ProfileReply {
   readonly ok: boolean
   readonly text: string
 }
@@ -219,6 +259,16 @@ function isUndo(value: unknown): value is StatusUndo {
   )
 }
 
+function isProfile(value: unknown): value is StatusProfile {
+  return (
+    isRecord(value) &&
+    (value.name === undefined || (typeof value.name === "string" && value.name.length > 0)) &&
+    (value.source === "pin" || value.source === "model" || value.source === "default" || value.source === "base") &&
+    (value.model === undefined || typeof value.model === "string") &&
+    (value.missing === undefined || typeof value.missing === "string")
+  )
+}
+
 /** The request guards reject an empty session id, not just a wrong type. */
 export function isStatsRequest(value: unknown): value is StatsRequest {
   return isRecord(value) && typeof value.sessionID === "string" && value.sessionID.length > 0
@@ -259,6 +309,7 @@ export function isStatsReply(value: unknown): value is StatsReply {
   if (!Array.isArray(value.history) || !value.history.every(isCount)) return false
   if (value.lastUndo !== undefined && !isUndo(value.lastUndo)) return false
   if (!isCount(value.undoTurns)) return false
+  if (value.profile !== undefined && !isProfile(value.profile)) return false
   return true
 }
 
@@ -280,6 +331,17 @@ export function isNoticeReply(value: unknown): value is NoticeReply {
   return isRecord(value) && typeof value.ok === "boolean" && typeof value.text === "string"
 }
 
+export function isProfileRequest(value: unknown): value is ProfileRequest {
+  if (!isRecord(value) || typeof value.sessionID !== "string" || value.sessionID.length === 0) return false
+  if (value.mode !== "auto" && value.mode !== "base" && value.mode !== "profile") return false
+  if (value.mode === "profile") return typeof value.name === "string" && value.name.length > 0
+  return value.name === undefined || typeof value.name === "string"
+}
+
+export function isProfileReply(value: unknown): value is ProfileReply {
+  return isRecord(value) && typeof value.ok === "boolean" && typeof value.text === "string"
+}
+
 function schema<T>(name: string, accept: (value: unknown) => value is T): StatusSchema<T> {
   return {
     "~standard": {
@@ -297,6 +359,8 @@ export const purgeRequestSchema = schema("purge input", isPurgeRequest)
 export const purgeReplySchema = schema("purge output", isPurgeReply)
 export const noticeRequestSchema = schema("notice input", isNoticeRequest)
 export const noticeReplySchema = schema("notice output", isNoticeReply)
+export const profileRequestSchema = schema("profile input", isProfileRequest)
+export const profileReplySchema = schema("profile output", isProfileReply)
 
 /**
  * The portable definition. The id is the plugin's: the host routes
@@ -309,6 +373,7 @@ export const STATUS_RPC = {
     stats: { input: statsRequestSchema, output: statsReplySchema },
     purge: { input: purgeRequestSchema, output: purgeReplySchema },
     notice: { input: noticeRequestSchema, output: noticeReplySchema },
+    profile: { input: profileRequestSchema, output: profileReplySchema },
   },
   events: {},
 } as const
@@ -328,6 +393,7 @@ export function statsOf(
   now?: number,
 ): StatsReply {
   const report = budgetOf(record, config)
+  const profile = chooseProfile(config, record.profile, record.lastModel)
   return {
     ...(version === undefined ? {} : { version }),
     ...(now === undefined
@@ -376,6 +442,12 @@ export function statsOf(
           },
         }),
     undoTurns: (record.undo ?? []).length,
+    profile: {
+      ...(profile.name === undefined ? {} : { name: profile.name }),
+      source: profile.source,
+      ...(profile.missing === undefined ? {} : { missing: profile.missing }),
+      ...(record.lastModel === undefined ? {} : { model: modelLabel(record.lastModel) }),
+    },
   }
 }
 
@@ -452,6 +524,17 @@ export function statusRows(reply: StatsReply): StatusRow[] {
       disabled: true,
     },
   ]
+  if (reply.profile !== undefined) {
+    rows.splice(2, 0, {
+      title: `profile ${choiceLabel(reply.profile)}`,
+      value: "",
+      description:
+        reply.profile.model === undefined
+          ? "one named bundle of this session's settings"
+          : `this session's settings · model ${reply.profile.model}`,
+      disabled: true,
+    })
+  }
   if (reply.hostSystemTokens !== undefined) {
     rows.push({
       title: `host system ~${formatTokens(reply.hostSystemTokens)} est (${reply.hostSystemParts ?? 0} parts) · not counted`,
@@ -460,6 +543,11 @@ export function statusRows(reply: StatsReply): StatusRow[] {
       disabled: true,
     })
   }
+  rows.push({
+    title: "Switch profile…",
+    value: PROFILE_ACTION,
+    description: "auto follows the model; base is the plain config; a pin stays until you pick auto",
+  })
   rows.push({
     title: "Resume",
     value: RESUME_ACTION,
@@ -653,6 +741,12 @@ export function sidebarLines(reply: StatsReply): SidebarLine[] {
       ],
     },
   ]
+  if (reply.profile !== undefined) {
+    // Right under the header: the one setting the glance can act on, and the
+    // `[profile]` target below switches it. `base` is still worth saying, because
+    // it is the answer to "which bundle is this session on?".
+    lines.splice(1, 0, { spans: [{ text: `profile ${choiceLabel(reply.profile)}`, tone: "muted" }] })
+  }
   if (reply.ageMs !== undefined) {
     // This line took the slot the host-system size used to occupy: a size the
     // glance cannot act on was less useful than knowing how old the numbers are.
@@ -757,6 +851,12 @@ export function panelSections(reply: StatsReply): PanelSection[] {
       spans: meterLine("win", reply.workingTokens, reply.workingCap, reply.overBudget, widths).spans,
     },
   ]
+  if (reply.profile !== undefined) {
+    const spans: StatusSpan[] = [{ text: `profile ${choiceLabel(reply.profile)}`, tone: "value" }]
+    if (reply.profile.model !== undefined) spans.push({ text: ` · model ${reply.profile.model}`, tone: "muted" })
+    if (reply.profile.source === "pin") spans.push({ text: " · pinned until you pick auto", tone: "muted" })
+    budget.push({ spans })
+  }
   if (reply.hostSystemTokens !== undefined) {
     budget.push({
       spans: [

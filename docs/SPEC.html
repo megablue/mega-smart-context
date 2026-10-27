@@ -158,6 +158,12 @@ img{max-width:100%;height:auto}
 <p>A tool result is shortened by keeping a head, a tail and a marker with the number of missing characters. The tool call and its result keep their ids and their order. A turn that alone exceeds the working budget is still kept; <code>/context</code> and <code>action:&quot;stats&quot;</code> report <code>OVER CAP</code> and the policy asks the model to fold sooner.</p>
 <p>When the host reports a model context size, the plugin also warns when memory plus working would exceed 90% of it. It does not silently shrink either side.</p>
 </section>
+<section id="profiles">
+<h2>Profiles</h2>
+<p>A profile is a named bundle of the session-level settings - the budgets above, the erosion, the archive bounds, <code>refs</code> and <code>charsPerToken</code> - defined in the same <code>~/.config/opencode/mega-smart-context.json</code>. It applies to one session at a time and never covers the install keys: <code>enabled</code>, <code>subagents</code>, <code>manualCommand</code>, <code>updateCheck</code>, <code>sidebar</code> and <code>debug</code> cannot be set by a profile.</p>
+<p>A session runs on the first of: a manual pin, a <code>modelProfiles</code> entry for the model in use (<code>provider/model#variant</code>, then <code>provider/model</code>, then a bare model id), <code>defaultProfile</code>, or the base config. A manual pin stays in force until the user picks <strong>auto</strong>; changing the model does not clear it. Choosing a profile changes the real caps from the next pass, and <code>/context</code>, the status dialog, the sidebar and the panel all report the profile in force with the caps it sets.</p>
+<p>The block shows <code>profile lean · auto</code> (or <code>pinned</code>/<code>default</code>/<code>base</code>) under its header and carries a <strong>[profile]</strong> target; the dialog offers <strong>Switch profile…</strong> with <code>auto</code>, <code>base</code> and every named profile; the panel shows the profile and model read-only. <code>/context profile</code> prints the inventory and <code>/context profile auto|base|&lt;name&gt;</code> sets the pin without a TUI. A pin that names a profile the config no longer defines leaves the session on the base and says so.</p>
+</section>
 <section id="eviction-and-the-archive">
 <h2>Eviction and the archive</h2>
 <p>A turn that leaves the working window becomes <strong>pending</strong>. The model sees it under &quot;Pending eviction&quot; and chooses one of:</p>
@@ -203,14 +209,14 @@ img{max-width:100%;height:auto}
 </section>
 <section id="the-status-dialog">
 <h2>The status dialog</h2>
-<p>The terminal half registers a palette command, <strong>Context status</strong> (id <code>mega-smart-context.status</code>; the id is the keybind key, and no default binding is claimed). Running it asks the server half for that session&#39;s numbers and opens a dialog: memory and working usage against their caps (a long turn is kept past the working cap by design, and the row says so), turns kept and dropped, pending/archive/reference counts, and the host system size when the last pass measured one. The status rows are not selectable, so the selection lands on the two actions.</p>
-<p><strong>Resume</strong> sends the same cue as <code>/context resume</code> through the host&#39;s synthetic channel: no user message, no new turn, and no pending eviction aged. <strong>Purge a turn…</strong> lists the pending and then the archived turns with their ids, asks for confirmation, and removes the chosen one from the record; the transcript is not touched, and the removal is journaled so <code>/undo</code> restores it. The list is re-read before it is shown, so a pass that archived or purged something in the meantime cannot leave a stale entry behind.</p>
+<p>The terminal half registers a palette command, <strong>Context status</strong> (id <code>mega-smart-context.status</code>; the id is the keybind key, and no default binding is claimed). Running it asks the server half for that session&#39;s numbers and opens a dialog: memory and working usage against their caps (a long turn is kept past the working cap by design, and the row says so), turns kept and dropped, pending/archive/reference counts, and the host system size when the last pass measured one. The status rows are not selectable, so the selection lands on the actions. A profile row reports the bundle in force (for example <code>profile deep · pinned</code>).</p>
+<p><strong>Resume</strong> sends the same cue as <code>/context resume</code> through the host&#39;s synthetic channel: no user message, no new turn, and no pending eviction aged. <strong>Purge a turn…</strong> lists the pending and then the archived turns with their ids, asks for confirmation, and removes the chosen one from the record; the transcript is not touched, and the removal is journaled so <code>/undo</code> restores it. The list is re-read before it is shown, so a pass that archived or purged something in the meantime cannot leave a stale entry behind. <strong>Switch profile...</strong> offers <code>auto</code>, <code>base</code> and every named profile with its overrides; the choice is saved on that session only and applies from the next pass.</p>
 <p>The numbers cross a process boundary: the terminal half&#39;s durable store is its own JSON file, not the server&#39;s KV, so the dialog reads the record over the host&#39;s plugin RPC (<code>stats</code>, <code>purge</code> and <code>notice</code>). The pull happens when the command runs, never from a render path. With no open session the dialog says to open one; on a host without the RPC bridge, and on an RPC error, it says which of the two is missing instead of throwing. <code>updateCheck:false</code> does not remove the command.</p>
 </section>
 <section id="the-sidebar-block">
 <h2>The sidebar block</h2>
 <p>The terminal half also appends to <code>sidebar.content</code> - last inside the sidebar&#39;s scrollable list, not the panel&#39;s bottom edge - and draws the same reply as a short block: a header of the plugin&#39;s name with its version against the block&#39;s right edge, a memory bar, a working-window bar, turns kept and dropped, pending/archive/reference counts, and how old the numbers are (<code>measured 6m ago</code>). The age line took the slot the host system size used to occupy: a size outside this plugin&#39;s budget is not something the glance can act on, while an old number is. Each bar is eighteen cells long and its numbers ride the same right edge as the version, so a wider sidebar widens the gap rather than the bar. The two bars&#39; numbers are right-aligned to a shared column, and an over-cap working line carries a <code>*</code> in the gutter before its value. The block&#39;s title is bold, matching the host&#39;s own section headers - the panel uses the same bold for its header and section titles - and the numbers stay plain. Gists, notice text and the archive list are deliberately absent: the block never grows with the session, and the dialog is where those are asked for.</p>
-<p>Under the block are three words that act: <strong>[status]</strong> opens the dialog, <strong>[resume]</strong> asks and then sends the resume cue, and <strong>[purge]</strong> opens the purge list and its confirmation. Mouse clicks are optional: every action is still reachable from the palette command.</p>
+<p>Under the header the block names the profile in force (<code>profile lean · auto</code>, <code>pinned</code> for a manual pick), and under the numbers are four words that act: <strong>[status]</strong> opens the dialog, <strong>[profile]</strong> opens the profile picker, <strong>[resume]</strong> asks and then sends the resume cue, and <strong>[purge]</strong> opens the purge list and its confirmation. Mouse clicks are optional: every action is still reachable from the palette command.</p>
 <p>The block renders from an ephemeral per-session mirror that a pull fills: once when the session is shown, once after each idle pass, and again after a purge. At most one pull per session is in flight, a pull inside fifteen seconds is skipped, and the mirror keeps the thirty-two most recently read sessions. The render path never calls the RPC. Every pull reads the session record from storage rather than from the answering instance&#39;s cache, and a write refuses to overwrite a record another instance wrote later, so a block cannot paint a number that a different instance has already replaced; when a write is refused twice in a row, the action reports the conflict instead of silently doing nothing. A host without the slot API or without the JSX runtime keeps the dialog and reports <code>sidebar: unavailable</code> in it; <code>sidebar:false</code> turns the block off but leaves the panel&#39;s shared mirror available.</p>
 </section>
 <section id="the-session-panel">
@@ -419,6 +425,24 @@ img{max-width:100%;height:auto}
 <td><code>debug</code></td>
 <td><code>false</code></td>
 <td>bool - log pass decisions to stderr</td>
+<td>config file</td>
+</tr>
+<tr>
+<td><code>profiles</code></td>
+<td><code>{}</code></td>
+<td>object - named bundles of the session keys (budgets, erosion, archive bounds, <code>refs</code>, <code>charsPerToken</code>); the install keys are refused</td>
+<td>config file</td>
+</tr>
+<tr>
+<td><code>modelProfiles</code></td>
+<td><code>{}</code></td>
+<td>object - <code>provider/model#variant</code>, <code>provider/model</code> or a bare model id to a profile name; auto selects it</td>
+<td>config file</td>
+</tr>
+<tr>
+<td><code>defaultProfile</code></td>
+<td><code>&quot;&quot;</code></td>
+<td>string - the profile an auto session falls back to; empty runs the base config</td>
 <td>config file</td>
 </tr>
 </tbody>

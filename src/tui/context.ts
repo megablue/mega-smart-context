@@ -53,6 +53,11 @@ export interface StatusClient {
   readonly stats: (input: { readonly sessionID: string }) => Promise<StatsReply>
   readonly purge: (input: { readonly sessionID: string; readonly turn: string }) => Promise<{ ok: boolean; text: string }>
   readonly notice: (input: { readonly sessionID: string; readonly id: string }) => Promise<{ ok: boolean; text: string }>
+  readonly profile: (input: {
+    readonly sessionID: string
+    readonly mode: "auto" | "base" | "profile"
+    readonly name?: string
+  }) => Promise<{ ok: boolean; text: string }>
 }
 
 /** The colours the sidebar paints with; the host owns the actual theme. */
@@ -147,6 +152,7 @@ export interface SidebarHost {
   readonly refresh: (sessionID: string, force?: boolean) => void
   readonly actions: {
     readonly status: (sessionID: string) => void
+    readonly profile: (sessionID: string) => void
     readonly resume: (sessionID: string) => void
     readonly purge: (sessionID: string) => void
   }

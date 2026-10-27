@@ -91,6 +91,24 @@ The settings a user normally touches:
 | `updateCheck` | `true` | ask GitHub once a day for a newer version (one TUI toast per release) |
 | `sidebar` | `true` | draw the block in the TUI sidebar (`sidebar:false` removes it, keeps the dialog) |
 | `debug` | `false` | log pass decisions to stderr |
+| `profiles` | `{}` | named bundles of the session-level settings (see below) |
+| `modelProfiles` | `{}` | `provider/model` (or `#variant`, or a bare model id) to a profile name |
+| `defaultProfile` | `""` | the profile an auto session falls back to |
+
+Profiles are named bundles of the session-level settings. A session takes, in order, a manual pin, a `modelProfiles` entry for the model in use, `defaultProfile`, or the base config; a manual pin stays until you pick **auto**, whatever model is used later.
+
+```json
+{
+  "profiles": {
+    "lean": { "memoryTokens": 10000, "workingTokens": 12000, "maxResultChars": 2000 },
+    "deep": { "memoryTokens": 30000, "workingTokens": 60000, "archiveMaxChars": 200000 }
+  },
+  "modelProfiles": { "opencode/deepseek-v4.1-flash-free": "lean", "gpt-5": "deep" },
+  "defaultProfile": "lean"
+}
+```
+
+A profile may set only the session keys (`memoryTokens`, `workingTokens`, `charsPerToken`, `evictionLead`, `autoArchive`, `archiveMaxTurns`, `archiveMaxChars`, `parentArchive`, `expandDigestChars`, `refs`, `maxResultChars`); the install keys are refused. Switch from the sidebar's `[profile]`, the dialog's `Switch profile...`, or `/context profile auto|base|<name>`.
 
 The source repository's `docs/SPEC.md` has the full table and the behavior.
 
@@ -102,7 +120,7 @@ The update check is the only network call the plugin makes, and it runs in the T
 - A turn that left the working window is readable before it is archived: `expand` looks in the archive first and then in the pending queue, and says when a read is not durable. `archive` without `keepRaw` warns that the raw is now gone, so `expand` can only return the gist.
 - A subagent can read its spawning session's archive without importing it: `recall`/`expand` with `from:"parent"`. The field is read-only and never reaches a writing action, and the reply tells the child how many characters its caller can actually keep.
 - `/context` prints the current memory and archive, and carries the control actions a user needs; the subcommands are in [The `/context` command](#the-context-command).
-- The palette command `Context status` opens the same numbers as a dialog, with `Resume` and `Purge a turn…` below them, and the TUI sidebar carries a short block of the same numbers with clickable `status` / `resume` / `purge`; see [The TUI status dialog](#the-tui-status-dialog).
+- The palette command `Context status` opens the same numbers as a dialog, with `Switch profile...`, `Resume` and `Purge a turn...` below them, and the TUI sidebar carries a short block of the same numbers with clickable `status` / `profile` / `resume` / `purge`; see [The TUI status dialog](#the-tui-status-dialog).
 - `/undo` is followed: when the host commits a revert, the plugin rolls its own record back with it - memory written in the undone turn is undone, notices it retired are pinned again, purged turns come back, and the memory block says so for that turn. The journal covers the last eight turns; see "Undo" in the SPEC.
 
 Every request starts with a `<smart-context>` block. If `goal` is empty, the model is told to write the request there before the raw first message leaves the working window.
@@ -113,9 +131,11 @@ Every request starts with a `<smart-context>` block. If `goal` is empty, the mod
 
 | Command | Effect |
 | --- | --- |
-| `/context` or `/context status` | the status report: its first line names the product and the loaded build, then memory and working usage against their caps, turns kept and dropped, `over budget`, the goal, the host system size (display only), the pinned notices, the pending evictions and the archive |
+| `/context` or `/context status` | the status report: its first line names the product and the loaded build, the second names the profile in force and the model, then memory and working usage against their caps, turns kept and dropped, `over budget`, the goal, the host system size (display only), the pinned notices, the pending evictions and the archive |
 | `/context now` | archive every pending turn immediately, instead of waiting for an eviction to age it |
 | `/context resume` | start a model turn with the plugin's resume cue through the host's synthetic channel - no user message, no new turn, and no pending eviction aged |
+| `/context profile` | print the profile in force (name, how it was chosen, the model), every named profile with its overrides, the model mappings and the default |
+| `/context profile auto\|base\|<name>` | pin this session to a named profile, pin it to the base config, or clear the pin so the model mapping and the default decide again |
 | `/context memory <key>` | print one memory key as JSON: `goal`, `plan`, `facts`, `files`, `decisions`, `open`, `refs` or `notes` |
 | `/context recall <query>` | search the archive for a term; lists matching turn ids and gists, marking an entry `(gist only)` when its raw messages are gone |
 | `/context purge <turn>` | delete one pending or archived turn by id |
@@ -128,20 +148,21 @@ After `/undo`, the status report adds two lines: `last undo:` (the boundary turn
 
 `Context status` (palette id `mega-smart-context.status`) shows the same numbers as `/context` without spending a turn: memory and working usage against their caps, turns kept and dropped, pending/archive/ref counts, and the host system size when the last pass measured one. It is a pull - one call when you run the command, nothing rendered continuously, and no request ever made from a render path.
 
-Below the numbers are two actions:
+Below the numbers are three actions:
 
 | Action | Effect |
 | --- | --- |
+| `Switch profile...` | pick `auto`, `base` or a named profile for this session. `auto` follows the model mapping and then the default; a manual pick stays until you pick `auto` again |
 | `Resume` | the same cue `/context resume` sends, through the host's synthetic channel - no user message and no new turn |
 | `Purge a turn…` | lists the pending and archived turns, asks which one, confirms, then deletes it from the record. Journaled like the tool's purge, so `/undo` can put it back |
 
-The two halves of the plugin keep separate stores, so the dialog reads the session record over the host's plugin RPC (`stats`, `purge`, `notice`). If the host has no RPC bridge, or the open route is not a session, the dialog says why instead of failing; an RPC error is reported the same way. The command id is the keybind key if you want a shortcut - no default binding is claimed. A first install may need a restart before the command appears.
+The two halves of the plugin keep separate stores, so the dialog reads the session record over the host's plugin RPC (`stats`, `purge`, `notice`, `profile`). If the host has no RPC bridge, or the open route is not a session, the dialog says why instead of failing; an RPC error is reported the same way. The command id is the keybind key if you want a shortcut - no default binding is claimed. A first install may need a restart before the command appears.
 
 ### The sidebar block
 
-The same numbers also sit in the TUI sidebar, appended to `sidebar.content` so they are the last item in its scrollable list: a header of the plugin name with the loaded version against the block's right edge, a memory bar, a working-window bar, turns kept and dropped, pending/archive/ref counts, and how old the numbers are (`measured 6m ago`). The age line took the slot the host system size used to occupy - the size is outside the plugin's budget and the glance cannot act on it, while an old number tells you the block is not current. The header and both bar lines are spread to that same right edge, so the sidebar's own width decides where the version and the numbers land and a wider pane widens the gap rather than the bar; each bar is eighteen cells. The bars' numbers are right-aligned to a shared column so the slashes line up, and an over-cap working line carries a `*` in the gutter before its value. Gists, notice text and the archive list stay out - the block never grows with the session.
+The same numbers also sit in the TUI sidebar, appended to `sidebar.content` so they are the last item in its scrollable list: a header of the plugin name with the loaded version against the block's right edge, the profile in force under it (`profile lean · auto`), a memory bar, a working-window bar, turns kept and dropped, pending/archive/ref counts, and how old the numbers are (`measured 6m ago`). The age line took the slot the host system size used to occupy - the size is outside the plugin's budget and the glance cannot act on it, while an old number tells you the block is not current. The header and both bar lines are spread to that same right edge, so the sidebar's own width decides where the version and the numbers land and a wider pane widens the gap rather than the bar; each bar is eighteen cells. The bars' numbers are right-aligned to a shared column so the slashes line up, and an over-cap working line carries a `*` in the gutter before its value. Gists, notice text and the archive list stay out - the block never grows with the session.
 
-Under it are `[status]` (opens the dialog), `[resume]` (asks first, then sends the cue) and `[purge]` (the same list and confirmation as the dialog). Each acts when the mouse button is released, so the dialog a click opens is not dismissed by that same release. The block renders from a per-session mirror that is pulled once when the session is shown, once after each idle pass, and again after a purge; at most one pull per session is in flight, a repeat inside fifteen seconds is skipped, and the mirror keeps the thirty-two most recent sessions. Renders never call the RPC.
+Under it are `[status]` (opens the dialog), `[profile]` (the picker), `[resume]` (asks first, then sends the cue) and `[purge]` (the same list and confirmation as the dialog). Each acts when the mouse button is released, so the dialog a click opens is not dismissed by that same release. The block renders from a per-session mirror that is pulled once when the session is shown, once after each idle pass, and again after a purge; at most one pull per session is in flight, a repeat inside fifteen seconds is skipped, and the mirror keeps the thirty-two most recent sessions. Renders never call the RPC.
 
 If the slot API or the JSX runtime is missing the dialog still works, and its `sidebar:` row says `unavailable`; `"sidebar": false` turns the block off.
 

@@ -23,10 +23,21 @@ import { pathToFileURL } from "node:url"
 import { TextAttributes } from "@opentui/core"
 
 import { mechanicalGist } from "../src/core/archive.ts"
-import { parseLayer, resolveConfig } from "../src/core/config.ts"
+import { SESSION_KEYS, parseLayer, resolveConfig } from "../src/core/config.ts"
 import { buildPayload } from "../src/core/context.ts"
 import { runMemoryTool } from "../src/core/memory-tool.ts"
 import { retirePinned } from "../src/core/notices.ts"
+import {
+  applyProfile,
+  choiceLabel,
+  chooseProfile,
+  configForRecord,
+  modelKeys,
+  modelLabel,
+  profileNames,
+  profileSummary,
+  stampModel,
+} from "../src/core/profiles.ts"
 import { runContextCommand } from "../src/core/command.ts"
 import { messageChars, messagesChars } from "../src/core/measure.ts"
 import { NOTICE_HEADING, POLICY, renderMemory, renderStats } from "../src/core/prompts.ts"
@@ -35,6 +46,7 @@ import {
   PANEL_ACTION,
   PANEL_MEASURED_STALE_MS,
   PANEL_NAME,
+  PROFILE_ACTION,
   PRODUCT_NAME,
   PURGE_ACTION,
   RESUME_ACTION,
@@ -43,12 +55,14 @@ import {
   STATUS_RPC,
   ageLabel,
   isNoticeRequest,
+  isProfileRequest,
   isPurgeRequest,
   isStatsReply,
   isStatsRequest,
   noticeRequestSchema,
   panelSections,
   panelText,
+  profileRequestSchema,
   sidebarLines,
   sidebarText,
   snapshotStale,
@@ -1591,6 +1605,8 @@ function makeTui(options, state, scene = {}) {
     dialogs: [],
     synthetic: [],
     purges: [],
+    notices: [],
+    profiles: [],
     stats: 0,
     rpcDefinition: undefined,
     slots: [],
@@ -1634,6 +1650,19 @@ function makeTui(options, state, scene = {}) {
           purge: async (input) => {
             seen.purges.push(input)
             return scene.purgeReply ?? { ok: true, text: `purged ${input.turn}` }
+          },
+          notice: async (input) => {
+            seen.notices.push(input)
+            return scene.noticeReply ?? { ok: true, text: `retired ${input.id}` }
+          },
+          profile: async (input) => {
+            seen.profiles.push(input)
+            return (
+              scene.profileReply ?? {
+                ok: true,
+                text: `profile ${input.mode === "profile" ? input.name : input.mode} (applies from the next pass)`,
+              }
+            )
           },
         }
       },
@@ -1787,8 +1816,8 @@ ok(
 )
 ok(
   STATUS_RPC.id === "mega-smart-context" &&
-    Object.keys(STATUS_RPC.methods).sort().join(",") === "notice,purge,stats",
-  "both halves share one RPC id and three methods",
+    Object.keys(STATUS_RPC.methods).sort().join(",") === "notice,profile,purge,stats",
+  "both halves share one RPC id and four methods",
 )
 const quarterBar = statusBarParts(15_000, 20_000)
 ok(
@@ -1952,9 +1981,9 @@ const wideSidebar = sidebarText({
   workingCap: 40_000,
 }).split("\n")
 ok(
-  wideSidebar[1].includes("   9k / 20k") &&
-    wideSidebar[2].includes("*121k / 40k") &&
-    wideSidebar[1].indexOf("/") === wideSidebar[2].indexOf("/"),
+  wideSidebar[2].includes("   9k / 20k") &&
+    wideSidebar[3].includes("*121k / 40k") &&
+    wideSidebar[2].indexOf("/") === wideSidebar[3].indexOf("/"),
   "a shorter value is padded on the left so the digits stay right-aligned",
 )
 ok(
@@ -2249,6 +2278,331 @@ ok(
   "sidebar:false claims no sidebar slot (the panel would share the one mirror)",
 )
 stopNoSidebar()
+
+// ---------------------------------------------------------------------------
+// Profiles: one named bundle of per-session settings, chosen by a click or a model
+// ---------------------------------------------------------------------------
+
+const profileLayer = {
+  profiles: {
+    lean: { memoryTokens: 5_000, workingTokens: 1_200, maxResultChars: 900 },
+    deep: {
+      memoryTokens: 60_000,
+      workingTokens: 60_000,
+      charsPerToken: 9,
+      autoArchive: false,
+      refs: false,
+    },
+  },
+  modelProfiles: {
+    "opencode/deepseek#fast": "lean",
+    "opencode/deepseek": "lean",
+    deepseek: "lean",
+    "gpt-5": "deep",
+  },
+  defaultProfile: "lean",
+}
+const profileConfig = resolveConfig({ user: profileLayer })
+ok(
+  profileNames(profileConfig).join(",") === "deep,lean" &&
+    profileConfig.profiles.lean.memoryTokens === 5_000 &&
+    profileConfig.profiles.deep.workingTokens === 60_000,
+  "a profile parses and keeps its name",
+)
+ok(
+  profileConfig.profiles.deep.workingTokens === 60_000 &&
+    profileConfig.profiles.deep.charsPerToken === 8 &&
+    profileConfig.profiles.lean.workingTokens === 1_200,
+  "a profile's numbers are clamped by the same rules as the top-level keys",
+)
+ok(
+  SESSION_KEYS.includes("maxResultChars") && !SESSION_KEYS.includes("sidebar") && !SESSION_KEYS.includes("enabled"),
+  "only the per-session keys are profile-able",
+)
+const mergedProfiles = resolveConfig({
+  package: { profiles: { lean: { workingTokens: 1_000 } } },
+  user: { profiles: { deep: { workingTokens: 2_000 } }, modelProfiles: { "a/b": "deep" } },
+})
+ok(
+  profileNames(mergedProfiles).join(",") === "deep,lean" && mergedProfiles.modelProfiles["a/b"] === "deep",
+  "profiles and model mappings merge across config layers by name",
+)
+assert.throws(
+  () => resolveConfig({ user: { profiles: { lean: { sidebar: false } } } }),
+  /unknown key "sidebar" in profile "lean"/,
+  "a profile may not set a process key",
+)
+passed += 1
+assert.throws(
+  () => resolveConfig({ user: { profiles: { lean: { memoryTokens: "big" } } } }),
+  /memoryTokens in profile "lean"/,
+  "a profile's value has to have the right type",
+)
+passed += 1
+assert.throws(
+  () => resolveConfig({ user: { profiles: { "bad name": {} } } }),
+  /profile name/,
+  "a profile name has to be usable as a dialog row",
+)
+passed += 1
+assert.throws(
+  () => resolveConfig({ user: { modelProfiles: { "a/b": "nope" } } }),
+  /names profile "nope", which is not defined/,
+  "a model mapping may not name a profile that does not exist",
+)
+passed += 1
+assert.throws(
+  () => resolveConfig({ user: { defaultProfile: "nope" } }),
+  /defaultProfile names profile "nope"/,
+  "the default profile may not be missing either",
+)
+passed += 1
+assert.throws(
+  () => resolveConfig({ user: { modelProfiles: { "a/b": 7 } } }),
+  /must name a profile/,
+  "a model mapping's value is a profile name",
+)
+passed += 1
+
+const fastStamp = stampModel({ providerID: "opencode", id: "deepseek", variant: "fast" })
+ok(
+  fastStamp?.id === "deepseek" && fastStamp.providerID === "opencode" && fastStamp.variant === "fast",
+  "a model stamp reads the host's model reference",
+)
+ok(
+  stampModel("opencode/deepseek") === undefined && stampModel({ providerID: "x" }) === undefined,
+  "a stamp without an id is no stamp",
+)
+ok(
+  modelKeys(fastStamp).join("|") === "opencode/deepseek#fast|opencode/deepseek|deepseek#fast|deepseek",
+  "the model keys go from most to least specific",
+)
+ok(
+  modelLabel(fastStamp) === "opencode/deepseek#fast" &&
+    modelLabel({ providerID: "", id: "local" }) === "local",
+  "a model label is provider/id plus the variant",
+)
+
+const leanModel = { providerID: "opencode", id: "deepseek" }
+ok(
+  choiceLabel(chooseProfile(profileConfig, undefined, leanModel)) === "lean · auto",
+  "a model mapping chooses a profile automatically",
+)
+ok(
+  chooseProfile(profileConfig, { mode: "profile", name: "deep", at: 1 }, leanModel).name === "deep" &&
+    chooseProfile(profileConfig, { mode: "profile", name: "deep", at: 1 }, leanModel).source === "pin",
+  "a manual pin wins over the model mapping",
+)
+ok(
+  choiceLabel(chooseProfile(profileConfig, { mode: "base", at: 1 }, leanModel)) === "base · pinned",
+  "a base pin runs the plain config even when the model maps to a profile",
+)
+ok(
+  choiceLabel(chooseProfile(profileConfig, undefined, { providerID: "p", id: "unknown" })) === "lean · default",
+  "the default profile answers when no model mapping matches",
+)
+ok(
+  choiceLabel(chooseProfile(resolveConfig({}), undefined, undefined)) === "base",
+  "with no mapping and no default, the base config runs",
+)
+const orphanPin = chooseProfile(
+  resolveConfig({ user: { profiles: { deep: {} } } }),
+  { mode: "profile", name: "lean", at: 1 },
+  undefined,
+)
+ok(
+  orphanPin.name === undefined && choiceLabel(orphanPin) === "base · lean is not configured",
+  "a pin that outlived its profile falls back to base and says which name is missing",
+)
+const leanEffective = applyProfile(profileConfig, chooseProfile(profileConfig, undefined, leanModel))
+ok(
+  leanEffective.memoryTokens === 5_000 &&
+    leanEffective.workingTokens === 1_200 &&
+    leanEffective.maxResultChars === 900 &&
+    leanEffective.sidebar === profileConfig.sidebar &&
+    leanEffective.enabled === profileConfig.enabled,
+  "a profile merges its session keys and leaves the install keys alone",
+)
+ok(
+  profileSummary(profileConfig, "lean") === "memory 5k · working 1.2k · results 900" &&
+    profileSummary(profileConfig, "missing") === "not configured",
+  "a profile summary lists exactly the keys it sets, in a fixed order",
+)
+
+// A pass runs on the profile's numbers, not the base ones, and stamps the model
+// so the tool, /context and the RPC can re-derive the same automatic choice.
+const profileStore = new SessionStore()
+const profileDeps = { store: profileStore, config: profileConfig, now: () => 10 }
+const wideMessages = [user("pu1", "one"), user("pu2", "x".repeat(20_000)), user("pu3", "three")]
+const basePlan = await buildPayload(
+  { sessionID: "prof", system: [], messages: wideMessages, model: { providerID: "opencode", id: "deepseek" } },
+  { store: new SessionStore(), config: resolveConfig({}), now: () => 10 },
+)
+const profilePlan = await buildPayload(
+  { sessionID: "prof", system: [], messages: wideMessages, model: { providerID: "opencode", id: "deepseek" } },
+  profileDeps,
+)
+const profRecord = await profileStore.load("prof")
+ok(
+  basePlan.report.workingTurns === 3 && profilePlan.report.workingTurns === 1,
+  "a mapped profile's working cap decides the window, not the base cap",
+)
+ok(
+  profRecord.lastModel?.providerID === "opencode" && profRecord.lastModel.id === "deepseek",
+  "the pass stamps the model it ran with",
+)
+ok(
+  profileConfig.profiles.lean.memoryTokens === 5_000 &&
+    profilePlan.report.memoryTokens < 5_000 &&
+    profRecord.lastReport.overBudget === false,
+  "the pass measures against the profile's caps",
+)
+await profileStore.mutate("prof", (record) => {
+  record.profile = { mode: "profile", name: "deep", at: 5 }
+})
+const pinnedPlan = await buildPayload(
+  { sessionID: "prof", system: [], messages: wideMessages, model: { providerID: "other", id: "m" } },
+  profileDeps,
+)
+const pinnedRecord = await profileStore.load("prof")
+ok(
+  pinnedPlan.report.workingTurns === 3 && pinnedRecord.profile?.name === "deep",
+  "a pin survives a model change and keeps running the pinned profile",
+)
+const autoChoiceRecord = { ...blankRecord(), lastModel: { providerID: "opencode", id: "deepseek" } }
+ok(
+  configForRecord(profileConfig, pinnedRecord).workingTokens === 60_000 &&
+    configForRecord(profileConfig, autoChoiceRecord).workingTokens === 1_200,
+  "configForRecord re-derives the profile from the record alone",
+)
+
+const profStats = statsOf(pinnedRecord, profileConfig)
+ok(
+  profStats.profile?.name === "deep" && profStats.profile.source === "pin" && profStats.workingCap === 60_000,
+  "statsOf reports the profile and the caps it enforces",
+)
+ok(
+  statsReplySchema["~standard"].validate(profStats).issues === undefined && isStatsReply(profStats),
+  "a reply carrying a profile still matches the schema the host validates",
+)
+ok(
+  renderStats(pinnedRecord, profileConfig, "0.2.0").includes("profile: deep · pinned · other/m"),
+  "/context prints the profile, how it was chosen and the model",
+)
+ok(
+  sidebarText(profStats).split("\n")[1] === "profile deep · pinned",
+  "the sidebar says which profile the session runs on",
+)
+ok(
+  panelText(profStats).includes("profile deep · pinned · model other/m"),
+  "the panel says which profile and model are in force",
+)
+ok(
+  statusRows(profStats).some((row) => row.value === PROFILE_ACTION) &&
+    statusRows(profStats).some((row) => row.title === "profile deep · pinned"),
+  "the dialog shows the profile and offers the switch",
+)
+ok(
+  isProfileRequest({ sessionID: "s", mode: "profile", name: "deep" }) &&
+    isProfileRequest({ sessionID: "s", mode: "auto" }) &&
+    !isProfileRequest({ sessionID: "s", mode: "profile" }) &&
+    !isProfileRequest({ sessionID: "s", mode: "nope" }),
+  "a profile request needs a mode and, for a named pick, a name",
+)
+ok(
+  profileRequestSchema["~standard"].validate({ sessionID: "s", mode: "base" }).issues === undefined,
+  "the profile request matches the schema the host validates",
+)
+
+// /context profile is the no-TUI path: it reads the inventory and sets the pin.
+const commandReplies = []
+const commandStore = new SessionStore()
+await commandStore.mutate("cmd", (record) => {
+  record.lastModel = { providerID: "opencode", id: "deepseek" }
+})
+const commandDeps = {
+  store: commandStore,
+  config: profileConfig,
+  reply: async (sessionID, text) => {
+    commandReplies.push(text)
+  },
+  now: () => 99,
+}
+await runContextCommand("cmd", "profile", commandDeps)
+ok(
+  commandReplies.at(-1).includes("profile: lean · auto") &&
+    commandReplies.at(-1).includes("deep ·") &&
+    commandReplies.at(-1).includes("model mappings:"),
+  "/context profile lists the choice, the profiles and the mappings",
+)
+await runContextCommand("cmd", "profile deep", commandDeps)
+ok(
+  (await commandStore.load("cmd")).profile?.name === "deep" &&
+    commandReplies.at(-1).includes("profile deep · pinned"),
+  "/context profile <name> pins the session",
+)
+await runContextCommand("cmd", "profile auto", commandDeps)
+ok(
+  (await commandStore.load("cmd")).profile === undefined && commandReplies.at(-1).includes("profile lean · auto"),
+  "/context profile auto clears the pin and the model decides again",
+)
+await runContextCommand("cmd", "profile nope", commandDeps)
+ok(commandReplies.at(-1).includes("unknown profile"), "an unknown profile is refused before any write")
+
+// The RPC is the TUI's write path: same config, same refusal, same one-field pin.
+const profileRpcHost = makeHost({ profiles: profileLayer.profiles, defaultProfile: "lean" })
+await plugin.setup(profileRpcHost.ctx)
+const profileHandler = profileRpcHost.rpcs[0].handlers.profile
+const refusedProfile = await profileHandler({ sessionID: "s1", mode: "profile", name: "nope" })
+ok(
+  refusedProfile.ok === false && refusedProfile.text.includes("no profile"),
+  "the RPC refuses a profile the config does not define",
+)
+const pinnedRpc = await profileHandler({ sessionID: "s1", mode: "profile", name: "lean" })
+const rpcRecord = await new SessionStore(profileRpcHost.ctx.storage).load("s1")
+ok(
+  pinnedRpc.ok && rpcRecord.profile?.mode === "profile" && rpcRecord.profile.name === "lean",
+  "the RPC pins the named profile on that one session",
+)
+const autoRpc = await profileHandler({ sessionID: "s1", mode: "auto" })
+ok(
+  autoRpc.ok && (await new SessionStore(profileRpcHost.ctx.storage).load("s1")).profile === undefined,
+  "the RPC's auto clears the pin",
+)
+
+const profileReplyRecord = blankRecord()
+profileReplyRecord.profile = { mode: "profile", name: "lean", at: 1 }
+profileReplyRecord.lastModel = { providerID: "opencode", id: "deepseek" }
+const profileScene = makeTui(
+  {
+    updateCheck: false,
+    profiles: profileLayer.profiles,
+    modelProfiles: profileLayer.modelProfiles,
+    defaultProfile: "lean",
+  },
+  {},
+  { reply: statsOf(profileReplyRecord, profileConfig), answers: [PROFILE_ACTION, "deep"] },
+)
+await setupTui(profileScene.context)
+await profileScene.seen.commands.find((command) => command.id === "mega-smart-context.status").run()
+const profilePicker = profileScene.seen.dialogs.filter((dialog) => dialog.kind === "select").at(-1)
+ok(
+  profilePicker.title === "Context profile" &&
+    profilePicker.options.map((option) => option.value).join(",") === "auto,base,deep,lean",
+  "the picker lists auto, base and every named profile",
+)
+ok(
+  profilePicker.options[0].description.includes("follow the model") &&
+    profilePicker.options[2].description === "memory 60k · working 60k · chars/token 8 · auto-archive off · refs off",
+  "auto explains itself and a row shows the profile's own overrides",
+)
+ok(
+  profileScene.seen.profiles.length === 1 &&
+    profileScene.seen.profiles[0].mode === "profile" &&
+    profileScene.seen.profiles[0].name === "deep",
+  "the picker's choice goes to the RPC as a named pin",
+)
+ok(profileScene.toasts.at(-1).message.includes("profile deep"), "the switch is reported in a toast")
 
 stopTui()
 globalThis.fetch = realFetch

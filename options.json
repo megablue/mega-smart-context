@@ -15,5 +15,8 @@
   "manualCommand": true,
   "updateCheck": true,
   "sidebar": true,
-  "debug": false
+  "debug": false,
+  "profiles": {},
+  "modelProfiles": {},
+  "defaultProfile": ""
 }

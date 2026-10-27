@@ -18,6 +18,7 @@ import { archivePending, knows, mechanicalGist, trimArchive, turnMessages } from
 import type { ResolvedConfig } from "./config.ts"
 import { estimateTokens, memoryChars, messageChars, messagesChars } from "./measure.ts"
 import { POLICY, NOTICE_HEADING, renderMemory, renderNotices } from "./prompts.ts"
+import { applyProfile, choiceLabel, chooseProfile, stampModel } from "./profiles.ts"
 import { trimHistory, upsertNotices, type SessionStore } from "./state.ts"
 import type { Message, PassSample, SessionRecord, SystemPart } from "./types.ts"
 import { applyRevert, noteTurn, undoLine } from "./undo.ts"
@@ -80,9 +81,19 @@ function sameTurns(previous: ReadonlyArray<string>, current: ReadonlyArray<strin
 }
 
 export async function buildPayload(input: ContextInput, deps: ContextDeps): Promise<ContextPlan> {
-  const config = deps.config
   const now = deps.now ?? (() => Date.now())
   const record: SessionRecord = await deps.store.load(input.sessionID)
+
+  // Stamp the model before choosing the profile: an automatic profile is a
+  // function of the model, and the tool, `/context` and the status RPC never see
+  // a request event, so they re-derive the same choice from this stamp. A pass
+  // that names no model leaves the previous stamp alone.
+  const model = stampModel(input.model)
+  if (model !== undefined) record.lastModel = model
+  const profile = chooseProfile(deps.config, record.profile, record.lastModel)
+  // Everything below uses the session's effective config, not the base one: a
+  // profile changes the real window, erosion, the caps and the archive bounds.
+  const config = applyProfile(deps.config, profile)
 
   // The host's own instruction set (`core/instructions` and the rest) rides in
   // `event.system` beside the policy this plugin writes. It is measured for
@@ -264,7 +275,8 @@ export async function buildPayload(input: ContextInput, deps: ContextDeps): Prom
   if (config.debug) {
     deps.warn?.(
       `context ${input.sessionID}: memory ${report.memoryTokens}/${config.memoryTokens}, working ${report.workingTokens}/${config.workingTokens}, ` +
-        `${report.workingTurns} kept, ${report.droppedTurns} dropped, ${report.pending} pending, ${report.archived} archived`,
+        `${report.workingTurns} kept, ${report.droppedTurns} dropped, ${report.pending} pending, ${report.archived} archived, ` +
+        `profile ${choiceLabel(profile)}`,
     )
   }
 

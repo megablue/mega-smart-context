@@ -26,8 +26,9 @@ import { createContextCommand } from "./command.ts"
 import { resolveHostConfig } from "./config.ts"
 import { createFsFeatureMap, runContextTransform } from "./context.ts"
 import { SessionStore, sameDirectory, StoreConflictError } from "../../core/state.ts"
-import { STATUS_RPC, statsOf, type NoticeRequest, type PurgeRequest, type StatsRequest } from "../../core/status.ts"
+import { STATUS_RPC, statsOf, type NoticeRequest, type ProfileRequest, type PurgeRequest, type StatsRequest } from "../../core/status.ts"
 import { retirePinned } from "../../core/notices.ts"
+import { choiceLabel, chooseProfile, profileNames } from "../../core/profiles.ts"
 import { purgeWithUndo, queueRevert, revertTarget } from "../../core/undo.ts"
 import { createSmartContextTool } from "./tool.ts"
 import { readPluginVersion } from "./version.ts"
@@ -166,6 +167,26 @@ export async function setup(ctx: PluginContext): Promise<() => Promise<void>> {
               return await store.mutate(input.sessionID, (record) =>
                 retirePinned(record, input.id, Date.now()),
               )
+            } catch (error) {
+              if (error instanceof StoreConflictError) return { ok: false, text: error.message }
+              throw error
+            }
+          },
+          profile: async (input: ProfileRequest) => {
+            // The name is checked against the same config every surface reads, so
+            // a stale picker row cannot pin a profile that was just removed.
+            if (input.mode === "profile" && config.profiles[input.name ?? ""] === undefined) {
+              const names = profileNames(config).join(", ") || "none"
+              return { ok: false, text: `no profile ${JSON.stringify(input.name)}. Profiles: ${names}` }
+            }
+            try {
+              const label = await store.mutate(input.sessionID, (record) => {
+                if (input.mode === "auto") delete record.profile
+                else if (input.mode === "base") record.profile = { mode: "base", at: Date.now() }
+                else record.profile = { mode: "profile", name: input.name ?? "", at: Date.now() }
+                return choiceLabel(chooseProfile(config, record.profile, record.lastModel))
+              })
+              return { ok: true, text: `profile ${label} (applies from the next pass)` }
             } catch (error) {
               if (error instanceof StoreConflictError) return { ok: false, text: error.message }
               throw error

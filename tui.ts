@@ -30,6 +30,7 @@ import {
   PANEL_ACTION,
   PANEL_NAME,
   PRODUCT_NAME,
+  PROFILE_ACTION,
   PURGE_ACTION,
   RESUME_ACTION,
   STATUS_RPC,
@@ -38,6 +39,7 @@ import {
   type StatusRow,
   type StatsReply,
 } from "./src/core/status.ts"
+import { choiceLabel, profileNames, profileSummary } from "./src/core/profiles.ts"
 import { sidebarRefreshOf } from "./src/tui/status-store.ts"
 import type {
   KeymapCommand,
@@ -300,6 +302,78 @@ async function openPurge(
   await purgeTurn(context, rpc, sessionID, turn, after)
 }
 
+/**
+ * The picker's rows: auto, the base, then every named profile with its overrides.
+ *
+ * `auto` says what it resolves to right now, because the word alone does not
+ * tell a user whether a model mapping or the default profile is in force.
+ */
+function profileOptions(config: ResolvedConfig, reply: StatsReply | undefined): SelectOption<string>[] {
+  const autoNow = reply?.profile
+  const options: SelectOption<string>[] = [
+    {
+      title: "auto",
+      value: "auto",
+      description:
+        autoNow === undefined || autoNow.source === "pin"
+          ? "follow the model mapping, then the default profile"
+          : `follow the model · now ${choiceLabel(autoNow)}`,
+    },
+    {
+      title: "base",
+      value: "base",
+      description: "the plain config, with none of a profile's overrides",
+    },
+  ]
+  for (const name of profileNames(config)) {
+    options.push({ title: name, value: name, description: profileSummary(config, name) })
+  }
+  return options
+}
+
+/**
+ * Switch this session's profile.
+ *
+ * Per session, deliberately: each session runs its own model and has its own
+ * record, so a switch saves the pin on that record only. A pin stays in force
+ * until the user picks auto - changing the model does not clear it.
+ */
+async function openProfile(
+  context: TuiContext,
+  rpc: StatusClient,
+  sessionID: string,
+  reply?: StatsReply,
+  after?: () => void,
+): Promise<void> {
+  // Re-read for the same reason the purge list does: a pass may have stamped a
+  // new model since the block was drawn, and `auto`'s description names it.
+  let fresh: StatsReply | undefined = reply
+  try {
+    fresh = await rpc.stats({ sessionID })
+  } catch {
+    // The caller's reply is still a truthful list of where the session stood.
+  }
+  let choice: string | undefined
+  try {
+    choice = await context.ui.dialog.select<string>({
+      title: "Context profile",
+      placeholder: "auto, base, or a profile name",
+      options: profileOptions(configFor(context.options), fresh),
+    })
+  } catch {
+    return
+  }
+  if (choice === undefined) return
+  const mode = choice === "auto" ? "auto" : choice === "base" ? "base" : "profile"
+  try {
+    const result = await rpc.profile({ sessionID, mode, ...(mode === "profile" ? { name: choice } : {}) })
+    resultToast(context, result.text, result.ok ? "info" : "warning")
+  } catch (error) {
+    resultToast(context, "profile switch failed: " + messageOf(error), "error")
+  }
+  after?.()
+}
+
 /** The dialog's own answer to "did the sidebar block appear?". */
 function sidebarRow(): StatusRow {
   if (sidebarState === "active") {
@@ -383,6 +457,7 @@ async function openStatus(context: TuiContext, target?: string, after?: () => vo
   }
   if (choice === RESUME_ACTION) await resume(context, sessionID)
   else if (choice === PURGE_ACTION) await openPurge(context, rpc, sessionID, reply, after)
+  else if (choice === PROFILE_ACTION) await openProfile(context, rpc, sessionID, reply, after)
   else if (choice === PANEL_ACTION) await openPanel(context, sessionID)
 }
 
@@ -590,6 +665,14 @@ async function startSurfaces(context: TuiContext, sidebar: boolean): Promise<() 
           actions: {
             status: (sessionID) => {
               void openStatus(context, sessionID, () => reload(sessionID))
+            },
+            profile: (sessionID) => {
+              const rpc = rpcOf(context)
+              if (rpc === undefined) {
+                resultToast(context, "this host has no plugin RPC bridge", "error")
+                return
+              }
+              void openProfile(context, rpc, sessionID, undefined, () => reload(sessionID))
             },
             resume: (sessionID) => {
               void confirmResume(context, sessionID, () => reload(sessionID))

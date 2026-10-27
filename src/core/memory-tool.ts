@@ -21,6 +21,7 @@ import type { ResolvedConfig } from "./config.ts"
 import { estimateTokens, formatTokens, memoryChars } from "./measure.ts"
 import { retirePinned } from "./notices.ts"
 import { budgetOf, noticePreview, renderMemory, renderStats } from "./prompts.ts"
+import { configForRecord } from "./profiles.ts"
 import { MEMORY_KEYS, applyPatch, parsePatch } from "./schema.ts"
 import { captureMemory, capturePurge, purgeWithUndo } from "./undo.ts"
 import type { SessionStore } from "./state.ts"
@@ -104,12 +105,13 @@ async function targetRecord(
   deps: MemoryToolDeps,
   request: MemoryToolRequest,
   sessionID: string,
+  config: ResolvedConfig,
 ): Promise<SessionRecord | MemoryToolOutcome> {
   if (request.from === undefined || request.from === null) return deps.store.load(sessionID)
   if (request.from !== "parent") {
     return { text: `smart_context: from must be "parent", not ${JSON.stringify(request.from)}`, ok: false }
   }
-  if (deps.config.parentArchive !== true) {
+  if (config.parentArchive !== true) {
     return { text: "smart_context: cross-session archive reads are off (config parentArchive:false)", ok: false }
   }
   if (deps.parentOf === undefined) {
@@ -210,8 +212,9 @@ async function addRef(
   record: SessionRecord,
   request: MemoryToolRequest,
   deps: MemoryToolDeps,
+  config: ResolvedConfig,
 ): Promise<MemoryToolOutcome> {
-  if (!deps.config.refs) return { text: "smart_context: refs are disabled in this install", ok: false }
+  if (!config.refs) return { text: "smart_context: refs are disabled in this install", ok: false }
   const page = str(request.page)
   const section = str(request.section)
   const gist = str(request.gist)
@@ -219,7 +222,7 @@ async function addRef(
     return { text: "smart_context: ref needs page, section and gist", ok: false }
   }
   const sectionText = deps.featureMap === undefined ? undefined : await deps.featureMap.readSection(deps.root ?? "", page, section)
-  const verdict = refVerdict(gist, sectionText, deps.config.charsPerToken)
+  const verdict = refVerdict(gist, sectionText, config.charsPerToken)
   const entry = { page, section, gist, tokens: verdict.gistTokens }
 
   const before = record.memory.refs.map((ref) => ({ ...ref }))
@@ -227,11 +230,11 @@ async function addRef(
   if (index >= 0) record.memory.refs[index] = entry
   else record.memory.refs.push(entry)
 
-  const nextTokens = estimateTokens(memoryChars(record.memory), deps.config.charsPerToken)
-  if (nextTokens > deps.config.memoryTokens) {
+  const nextTokens = estimateTokens(memoryChars(record.memory), config.charsPerToken)
+  if (nextTokens > config.memoryTokens) {
     record.memory.refs = before
     return {
-      text: `smart_context: ref not stored — memory would be ${formatTokens(nextTokens)}/${formatTokens(deps.config.memoryTokens)} est. Nothing was written.`,
+      text: `smart_context: ref not stored — memory would be ${formatTokens(nextTokens)}/${formatTokens(config.memoryTokens)} est. Nothing was written.`,
       ok: false,
     }
   }
@@ -250,11 +253,16 @@ async function addRef(
     lines.push("section not found in docs/features; the pointer was stored but cannot be expanded. Check the page name with feature_map.")
   }
   lines.push(`stored ref ${page}#${section}`)
-  lines.push(usage(record, deps.config))
+  lines.push(usage(record, config))
   return { text: lines.join("\n"), ok: true }
 }
 
-function archive(record: SessionRecord, request: MemoryToolRequest, deps: MemoryToolDeps): MemoryToolOutcome {
+function archive(
+  record: SessionRecord,
+  request: MemoryToolRequest,
+  deps: MemoryToolDeps,
+  config: ResolvedConfig,
+): MemoryToolOutcome {
   const turn = str(request.turn)
   const gist = str(request.gist)
   if (turn === undefined || gist === undefined) {
@@ -262,8 +270,8 @@ function archive(record: SessionRecord, request: MemoryToolRequest, deps: Memory
   }
   const entry = archivePending(record, turn, gist, request.keepRaw === true, {
     now: deps.now?.() ?? Date.now(),
-    maxTurns: deps.config.archiveMaxTurns,
-    maxChars: deps.config.archiveMaxChars,
+    maxTurns: config.archiveMaxTurns,
+    maxChars: config.archiveMaxChars,
   })
   if (entry === undefined) {
     const pending = record.pending.map((item) => item.id).join(", ") || "none"
@@ -273,8 +281,8 @@ function archive(record: SessionRecord, request: MemoryToolRequest, deps: Memory
     text:
       entry.messages === undefined
         ? `archived ${turn} (gist only; the raw was discarded, so expand will show only this gist)\n` +
-          usage(record, deps.config)
-        : `archived ${turn} (gist + raw)\n` + usage(record, deps.config),
+          usage(record, config)
+        : `archived ${turn} (gist + raw)\n` + usage(record, config),
     ok: true,
   }
 }
@@ -379,25 +387,38 @@ export async function runMemoryTool(
     }
   }
 
+  // One cached read: a profile can change the caps this call enforces, and the
+  // tool has no request event to read a model from. `mutate` still loads fresh
+  // for the write itself - a pin set between this read and that write is a user
+  // action, not a lost update, and the tool actions never change the pin.
+  const caller = await deps.store.load(sessionID)
+  const config = configForRecord(deps.config, caller)
+
   switch (action) {
-    case "read": {
-      const record = await deps.store.load(sessionID)
-      return read(record, request, deps.config)
-    }
-    case "stats": {
-      const record = await deps.store.load(sessionID)
-      return { text: renderStats(record, deps.config) + "\n" + usage(record, deps.config), ok: true }
-    }
+    case "read":
+      return read(caller, request, config)
+    case "stats":
+      return { text: renderStats(caller, config) + "\n" + usage(caller, config), ok: true }
     case "patch":
-      return mutateOutcome(deps, sessionID, (record) => patch(record, request, deps.config, nowOf(deps)))
+      return mutateOutcome(deps, sessionID, (record) =>
+        patch(record, request, configForRecord(deps.config, record), nowOf(deps)),
+      )
     case "ref":
-      return mutateOutcome(deps, sessionID, (record) => addRef(record, request, deps))
+      return mutateOutcome(deps, sessionID, (record) =>
+        addRef(record, request, deps, configForRecord(deps.config, record)),
+      )
     case "archive":
-      return mutateOutcome(deps, sessionID, (record) => archive(record, request, deps))
+      return mutateOutcome(deps, sessionID, (record) =>
+        archive(record, request, deps, configForRecord(deps.config, record)),
+      )
     case "purge":
-      return mutateOutcome(deps, sessionID, (record) => purge(record, request, deps.config, nowOf(deps)))
+      return mutateOutcome(deps, sessionID, (record) =>
+        purge(record, request, configForRecord(deps.config, record), nowOf(deps)),
+      )
     case "notice":
-      return mutateOutcome(deps, sessionID, (record) => notice(record, request, deps.config, nowOf(deps)))
+      return mutateOutcome(deps, sessionID, (record) =>
+        notice(record, request, configForRecord(deps.config, record), nowOf(deps)),
+      )
     case "recall": {
       if (request.lost !== true) {
         return {
@@ -409,7 +430,7 @@ export async function runMemoryTool(
       }
       const query = str(request.query)
       if (query === undefined) return { text: "smart_context: recall needs a query", ok: false }
-      const target = await targetRecord(deps, request, sessionID)
+      const target = await targetRecord(deps, request, sessionID, config)
       if (isOutcome(target)) return target
       const fromParent = request.from === "parent"
       const limit = typeof request.limit === "number" && Number.isFinite(request.limit) ? request.limit : 5
@@ -417,8 +438,8 @@ export async function runMemoryTool(
       if (found.length === 0) {
         return { text: `no archived turn matches ${JSON.stringify(query)}${fromParent ? " in the spawning session's archive" : ""}`, ok: true }
       }
-      const hint = fromParent ? delegatingNote(deps.config) : ""
-      const budget = Math.max(200, deps.config.maxResultChars - hint.length)
+      const hint = fromParent ? delegatingNote(config) : ""
+      const budget = Math.max(200, config.maxResultChars - hint.length)
       const lines: string[] = [`archive matches${fromParent ? " in the spawning session's archive" : ""}:`]
       let used = lines[0].length
       outer: for (const hit of found) {
@@ -446,7 +467,7 @@ export async function runMemoryTool(
     case "expand": {
       const turn = str(request.turn)
       if (turn === undefined) return { text: "smart_context: expand needs turn", ok: false }
-      const target = await targetRecord(deps, request, sessionID)
+      const target = await targetRecord(deps, request, sessionID, config)
       if (isOutcome(target)) return target
       const entry = findArchived(target, turn)
       const waiting = entry === undefined ? findPending(target, turn) : undefined
@@ -471,7 +492,7 @@ export async function runMemoryTool(
           ok: false,
         }
       }
-      const { budget, hint } = expandBudget(deps.config, request.from === "parent")
+      const { budget, hint } = expandBudget(config, request.from === "parent")
       // A pending read is not durable: the queue entry can be purged, and the
       // point of reading it is to decide whether to archive it with the raw.
       const note =

@@ -15,7 +15,17 @@
  */
 
 import { emptyMemory, normalizeMemory } from "./schema.ts"
-import type { ArchivedTurn, Notice, PassSample, PendingTurn, RetiredNotice, SessionRecord, StoragePort } from "./types.ts"
+import type {
+  ArchivedTurn,
+  ModelStamp,
+  Notice,
+  PassSample,
+  PendingTurn,
+  ProfilePin,
+  RetiredNotice,
+  SessionRecord,
+  StoragePort,
+} from "./types.ts"
 import { isPlainObject, messageOf } from "./types.ts"
 import { normalizeLastUndo, normalizeRevert, normalizeUndo } from "./undo.ts"
 import { modeReminderOf, type ModeReminder } from "./view.ts"
@@ -205,6 +215,30 @@ function normalizeRetiredList(value: unknown): RetiredNotice[] | undefined {
     out.push(retired)
   }
   return out.length > MAX_RETIRED ? out.slice(out.length - MAX_RETIRED) : out
+}
+
+/**
+ * A stored manual pin, or `undefined` for auto.
+ *
+ * `mode:"profile"` without a name is not a pin this plugin can honour, so it is
+ * dropped rather than guessed at; `mode:"base"` carries no name at all.
+ */
+function normalizeProfilePin(value: unknown): ProfilePin | undefined {
+  if (!isPlainObject(value)) return undefined
+  if (value.mode !== "profile" && value.mode !== "base") return undefined
+  const at = typeof value.at === "number" && Number.isFinite(value.at) ? value.at : 0
+  if (value.mode === "base") return { mode: "base", at }
+  if (typeof value.name !== "string" || value.name.trim().length === 0) return undefined
+  return { mode: "profile", name: value.name.trim(), at }
+}
+
+/** The model stamp of the last pass, or `undefined` when none was recorded. */
+function normalizeModelStamp(value: unknown): ModelStamp | undefined {
+  if (!isPlainObject(value)) return undefined
+  if (typeof value.id !== "string" || value.id.trim().length === 0) return undefined
+  const providerID = typeof value.providerID === "string" ? value.providerID.trim() : ""
+  const variant = typeof value.variant === "string" && value.variant.trim().length > 0 ? value.variant.trim() : undefined
+  return { providerID, id: value.id.trim(), ...(variant === undefined ? {} : { variant }) }
 }
 
 /** The result of folding one pass's notices into a record. */
@@ -458,6 +492,10 @@ export function normalizeRecord(value: unknown, now: number): SessionRecord {
   if (undo !== undefined) record.undo = undo
   const lastUndo = normalizeLastUndo(value.lastUndo)
   if (lastUndo !== undefined) record.lastUndo = lastUndo
+  const profile = normalizeProfilePin(value.profile)
+  if (profile !== undefined) record.profile = profile
+  const lastModel = normalizeModelStamp(value.lastModel)
+  if (lastModel !== undefined) record.lastModel = lastModel
   return record
 }
 

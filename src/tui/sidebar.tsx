@@ -1,7 +1,7 @@
 /** @jsxImportSource @opentui/solid */
 /**
  * The sidebar block: the numbers of the last pull, drawn inside
- * `sidebar.content`, plus three clickable words that reach the same actions the
+ * `sidebar.content`, plus four clickable words that reach the same actions the
  * palette command offers.
  *
  * One of the two files in the plugin that render JSX (`panel.tsx` is the other),
@@ -105,6 +105,9 @@ function Sidebar(props: { host: SidebarHost; sessionID: string }): JSX.Element {
       <box flexDirection="row" gap={1}>
         <text fg={muted()} onMouseUp={() => props.host.actions.status(props.sessionID)}>
           [status]
+        </text>
+        <text fg={muted()} onMouseUp={() => props.host.actions.profile(props.sessionID)}>
+          [profile]
         </text>
         <text fg={muted()} onMouseUp={() => props.host.actions.resume(props.sessionID)}>
           [resume]
