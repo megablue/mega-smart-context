@@ -1,0 +1,444 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>How Mega Smart Context works — a visual tour</title>
+<style>
+:root{
+  color-scheme:light dark;
+  --fg:#1d2433;--muted:#5b6475;--bg:#fff;--panel:#f7f9fc;--line:#d8dee9;--code:#f1f4f9;
+  --accent:#0b6e99;--warn:#8a5a00;
+  --host:#dceefb;--host-line:#4a90c2;
+  --core:#e3f4e8;--core-line:#3c8a5a;
+  --state:#fff3d6;--state-line:#b8860b;
+  --model:#efe8fb;--model-line:#7a5cc4;
+  --tui:#eef1f5;--tui-line:#6b778c;
+  --danger:#fde7e7;--danger-line:#b45454;
+}
+@media (prefers-color-scheme:dark){
+  :root{
+    --fg:#e6eaf2;--muted:#9aa4b8;--bg:#11151c;--panel:#171d27;--line:#2b3342;--code:#1a202a;
+    --accent:#6cc4e8;--warn:#e0b25c;
+    --host:#123247;--host-line:#5cb3e8;
+    --core:#123526;--core-line:#57c98a;
+    --state:#3a2c10;--state-line:#e0b25c;
+    --model:#2a2140;--model-line:#b79cf0;
+    --tui:#20262f;--tui-line:#94a3b8;
+    --danger:#3a1d1d;--danger-line:#e08a8a;
+  }
+}
+*{box-sizing:border-box}
+body{margin:0 auto;max-width:74rem;padding:2rem 1.25rem 4rem;background:var(--bg);color:var(--fg);font:16px/1.6 system-ui,-apple-system,Segoe UI,sans-serif}
+h1,h2,h3{line-height:1.25;margin:2rem 0 .75rem}
+h1{font-size:1.95rem;border-bottom:2px solid var(--line);padding-bottom:.45rem}
+h2{font-size:1.4rem}
+h3{font-size:1.08rem;color:var(--muted)}
+p,ul,ol,table{margin:.75rem 0}
+a{color:var(--accent)}
+code{background:var(--code);padding:.1em .3em;border-radius:.25rem;font:0.9em ui-monospace,SFMono-Regular,Consolas,monospace}
+.lede{color:var(--muted);font-size:1.06rem}
+.kicker{text-transform:uppercase;letter-spacing:.08em;font-size:.78rem;font-weight:700;color:var(--accent);margin:0 0 .25rem}
+.idea{border:1px solid var(--line);border-left:4px solid var(--accent);background:var(--panel);border-radius:.5rem;padding:1rem 1.2rem;margin:1.25rem 0 2rem}
+.idea p{margin:.35rem 0}
+figure.diagram{margin:1.5rem 0 2.5rem;padding:1rem 1rem .9rem;border:1px solid var(--line);border-radius:.6rem;background:var(--panel)}
+figure.diagram svg{display:block;width:100%;height:auto}
+.canvas{overflow-x:auto}
+.canvas svg{min-width:900px}
+figcaption{color:var(--muted);font-size:.92rem;margin-top:.8rem}
+.legend{display:flex;flex-wrap:wrap;gap:.9rem 1.4rem;font-size:.84rem;color:var(--muted);margin:.4rem 0 0}
+.legend span::before{content:"";display:inline-block;width:.85rem;height:.85rem;border-radius:.2rem;margin-right:.4rem;vertical-align:-.12rem;background:var(--host);border:1px solid var(--host-line)}
+.legend .core::before{background:var(--core);border-color:var(--core-line)}
+.legend .state::before{background:var(--state);border-color:var(--state-line)}
+.legend .model::before{background:var(--model);border-color:var(--model-line)}
+.legend .tui::before{background:var(--tui);border-color:var(--tui-line)}
+.legend .dash::before{background:transparent;border:2px dashed var(--muted)}
+table{border-collapse:collapse;width:100%;font-size:.94rem}
+th,td{border:1px solid var(--line);padding:.45rem .65rem;text-align:left;vertical-align:top}
+th{background:var(--code)}
+td code{white-space:nowrap}
+.note{border-left:3px solid var(--accent);background:var(--code);padding:.65rem 1rem;border-radius:.35rem;margin:1rem 0}
+.warn{border-left-color:var(--warn)}
+.small{font-size:.9rem;color:var(--muted)}
+.two-col{display:grid;grid-template-columns:1fr 1fr;gap:1.25rem}
+@media (max-width:720px){.two-col{grid-template-columns:1fr}}
+footer{margin-top:3rem;border-top:1px solid var(--line);padding-top:1rem;color:var(--muted);font-size:.9rem}
+svg .box{stroke-width:1.5}
+svg .host{fill:var(--host);stroke:var(--host-line)}
+svg .core{fill:var(--core);stroke:var(--core-line)}
+svg .state{fill:var(--state);stroke:var(--state-line)}
+svg .model{fill:var(--model);stroke:var(--model-line)}
+svg .tui{fill:var(--tui);stroke:var(--tui-line)}
+svg .danger{fill:var(--danger);stroke:var(--danger-line)}
+svg .plain{fill:var(--panel);stroke:var(--line)}
+svg .title{font:600 15px system-ui,-apple-system,Segoe UI,sans-serif;fill:var(--fg)}
+svg .body{font:13.5px system-ui,-apple-system,Segoe UI,sans-serif;fill:var(--fg)}
+svg .mono{font:13px ui-monospace,SFMono-Regular,Consolas,monospace;fill:var(--fg)}
+svg .muted{fill:var(--muted)}
+svg .label{font:12.5px system-ui,-apple-system,Segoe UI,sans-serif;fill:var(--muted)}
+svg .colhead{font:700 12px system-ui,-apple-system,Segoe UI,sans-serif;letter-spacing:.08em;fill:var(--muted)}
+svg .arrow{stroke:var(--muted);stroke-width:1.7;fill:none}
+svg .arrowAccent{stroke:var(--accent);stroke-width:1.7;fill:none}
+svg .dash{stroke-dasharray:6 5}
+svg .head{fill:var(--muted)}
+svg .headAccent{fill:var(--accent)}
+svg .num{fill:var(--core-line)}
+</style>
+</head>
+<body>
+<main>
+<p class="kicker">Mega Smart Context · architecture</p>
+<h1>How Mega Smart Context works</h1>
+<p class="lede">The host replays the whole conversation on every request. This plugin replaces that payload with three things the model can actually hold: a durable memory document, a short verbatim working window, and the current turn. Nothing in the durable transcript is ever rewritten.</p>
+
+<div class="idea">
+<p><strong>The one idea:</strong> context is a <em>record the model maintains</em>, not a transcript the host replays.</p>
+<p>The model writes the durable half with <code>smart_context</code>. The pass derives the ephemeral half — the newest turns — from the host's transcript on every request. A turn that leaves the window is not lost: it waits in a pending queue, then goes cold in the archive.</p>
+</div>
+
+<h2>1. One request, end to end</h2>
+<p>The pass runs on the host's <code>context</code> hook, before the request reaches the model. It reads the host's transcript, updates the session record, and replaces <code>event.system</code> and <code>event.messages</code>. The adapter then puts the <code>smart_context</code> tool on the wire.</p>
+
+<figure class="diagram" id="fig-a">
+<div class="canvas">
+<svg viewBox="0 0 1200 800" role="img" aria-labelledby="figA-title figA-desc">
+<title id="figA-title">One request through Mega Smart Context</title>
+<desc id="figA-desc">The host's transcript enters a six-stage context pass. The pass loads the session record, cleans the transcript, measures the working window, evicts turns that left, assembles the payload, and saves the record. The model receives system parts, the memory document, the working window, and the current turn. The model writes the record only through the smart_context tool.</desc>
+<defs>
+<marker id="a-head" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="head"/></marker>
+<marker id="a-head-accent" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="headAccent"/></marker>
+</defs>
+
+<!-- column headers -->
+<text x="40" y="52" class="colhead">HOST</text>
+<text x="40" y="70" class="label">owns the durable transcript</text>
+<text x="360" y="52" class="colhead">CONTEXT PASS</text>
+<text x="360" y="70" class="label">runs on every request</text>
+<text x="800" y="52" class="colhead">MODEL</text>
+<text x="800" y="70" class="label">what the request contains</text>
+
+<!-- host -->
+<rect x="40" y="92" width="260" height="206" rx="10" class="box host"/>
+<text x="58" y="118" class="title">OpenCode host</text>
+<text x="58" y="142" class="mono">event.messages</text>
+<text x="58" y="160" class="body muted">the whole durable transcript,</text>
+<text x="58" y="178" class="body muted">rebuilt from storage each turn</text>
+<text x="58" y="204" class="mono">event.system</text>
+<text x="58" y="222" class="body muted">the host's own instruction parts</text>
+<text x="58" y="248" class="mono">event.model</text>
+<text x="58" y="266" class="body muted">the model of this request</text>
+<text x="58" y="288" class="body muted" font-style="italic">never edited by the plugin</text>
+
+<!-- stages -->
+<rect x="360" y="92" width="360" height="76" rx="10" class="box core"/>
+<circle cx="384" cy="130" r="11" class="num"/><text x="384" y="134" text-anchor="middle" class="title" fill="#fff">1</text>
+<text x="404" y="118" class="title">Load the session record</text>
+<text x="404" y="138" class="body muted">memory · seenTurns · pending · archive</text>
+<text x="404" y="156" class="body muted">stamp the model, apply the profile</text>
+
+<rect x="360" y="184" width="360" height="76" rx="10" class="box core"/>
+<circle cx="384" cy="222" r="11" class="num"/><text x="384" y="226" text-anchor="middle" class="title" fill="#fff">2</text>
+<text x="404" y="210" class="title">Clean the transcript</text>
+<text x="404" y="230" class="body muted">drop <tspan class="mono">megasc_</tspan> injected messages</text>
+<text x="404" y="248" class="body muted">pull mode notices &amp; nudges out</text>
+
+<rect x="360" y="276" width="360" height="76" rx="10" class="box core"/>
+<circle cx="384" cy="314" r="11" class="num"/><text x="384" y="318" text-anchor="middle" class="title" fill="#fff">3</text>
+<text x="404" y="302" class="title">Measure the working window</text>
+<text x="404" y="322" class="body muted">keep the newest turns that fit</text>
+<text x="404" y="340" class="body muted">the <tspan class="mono">workingTokens</tspan> budget</text>
+
+<rect x="360" y="368" width="360" height="88" rx="10" class="box core"/>
+<circle cx="384" cy="412" r="11" class="num"/><text x="384" y="416" text-anchor="middle" class="title" fill="#fff">4</text>
+<text x="404" y="394" class="title">Evict what left</text>
+<text x="404" y="414" class="body muted">turns that fell out become <tspan class="mono">pending</tspan></text>
+<text x="404" y="432" class="body muted">age by new user turns, not by requests</text>
+<text x="404" y="450" class="body muted">auto-archive past <tspan class="mono">evictionLead</tspan></text>
+
+<rect x="360" y="472" width="360" height="88" rx="10" class="box core"/>
+<circle cx="384" cy="516" r="11" class="num"/><text x="384" y="520" text-anchor="middle" class="title" fill="#fff">5</text>
+<text x="404" y="498" class="title">Assemble the payload</text>
+<text x="404" y="518" class="body muted">memory block · policy · pinned notices</text>
+<text x="404" y="536" class="body muted">erode tool results over <tspan class="mono">maxResultChars</tspan></text>
+<text x="404" y="554" class="body muted">reasoning passes through untouched</text>
+
+<rect x="360" y="576" width="360" height="72" rx="10" class="box core"/>
+<circle cx="384" cy="604" r="11" class="num"/><text x="384" y="608" text-anchor="middle" class="title" fill="#fff">6</text>
+<text x="404" y="600" class="title">Save the record</text>
+<text x="404" y="620" class="body muted">one <tspan class="mono">PassSample</tspan> in <tspan class="mono">history</tspan></text>
+<text x="404" y="638" class="body muted">the transcript is never written</text>
+
+<!-- stage arrows -->
+<path d="M540 168 L540 184" class="arrow" marker-end="url(#a-head)"/>
+<path d="M540 260 L540 276" class="arrow" marker-end="url(#a-head)"/>
+<path d="M540 352 L540 368" class="arrow" marker-end="url(#a-head)"/>
+<path d="M540 456 L540 472" class="arrow" marker-end="url(#a-head)"/>
+<path d="M540 560 L540 576" class="arrow" marker-end="url(#a-head)"/>
+
+<!-- host to pass -->
+<path d="M300 195 C330 195 330 130 360 130" class="arrow" marker-end="url(#a-head)"/>
+
+<!-- pass to model -->
+<path d="M720 516 C760 516 760 306 800 306" class="arrow" marker-end="url(#a-head)"/>
+<text x="734" y="492" class="label">payload</text>
+
+<!-- model stack -->
+<rect x="800" y="92" width="360" height="150" rx="10" class="box model"/>
+<text x="818" y="118" class="title">system[]</text>
+<text x="818" y="142" class="body">POLICY — the standing contract</text>
+<text x="818" y="162" class="body">+ the host's own instructions</text>
+<text x="818" y="182" class="body muted">measured, not budgeted</text>
+<text x="818" y="204" class="body">+ pinned host notices (last)</text>
+<text x="818" y="224" class="body muted">mode reminders · output-limit nudge</text>
+
+<rect x="800" y="260" width="360" height="96" rx="10" class="box model"/>
+<text x="818" y="286" class="title">messages[0] · memory</text>
+<text x="818" y="308" class="body">goal · plan · facts · files · decisions</text>
+<text x="818" y="328" class="body">open · refs · notes</text>
+<text x="818" y="348" class="body muted">no live numbers; changes only with the record</text>
+
+<rect x="800" y="374" width="360" height="126" rx="10" class="box model"/>
+<text x="818" y="400" class="title">messages[1..] · working window</text>
+<text x="818" y="422" class="body">the newest turns, verbatim</text>
+<text x="818" y="442" class="body muted">a tool result over the cap is eroded</text>
+<text x="818" y="462" class="body muted">head / tail / missing count</text>
+<text x="818" y="484" class="body muted">reasoning is never touched</text>
+
+<rect x="800" y="518" width="360" height="78" rx="10" class="box model"/>
+<text x="818" y="544" class="title">current turn</text>
+<text x="818" y="566" class="body">always kept, even when over budget</text>
+<text x="818" y="586" class="body muted">a cut only lands on a turn boundary</text>
+
+<!-- record -->
+<rect x="300" y="700" width="600" height="84" rx="10" class="box state"/>
+<text x="318" y="726" class="title">SessionRecord · host KV · <tspan class="mono">session/&lt;id&gt;</tspan></text>
+<text x="318" y="748" class="body">memory · seenTurns · pending[] · archive[]</text>
+<text x="318" y="768" class="body muted">notices[] · retired[] · revert · undo[] · lastReport · history[]</text>
+
+<!-- load / save -->
+<path d="M330 700 L330 130 L360 130" class="arrow" marker-end="url(#a-head)"/>
+<text x="320" y="420" class="label" text-anchor="middle" transform="rotate(-90 320 420)">load</text>
+<path d="M540 648 L540 700" class="arrow" marker-end="url(#a-head)"/>
+<text x="552" y="676" class="label">save</text>
+
+<!-- tool patch -->
+<path d="M980 596 C980 650 930 660 880 700" class="arrow dash" marker-end="url(#a-head)"/>
+<text x="966" y="642" class="label" text-anchor="end">smart_context · patch</text>
+</svg>
+</div>
+<figcaption><strong>Figure A.</strong> The pass is a pure function of the host's transcript, the session record and the effective config: re-running it on the same inputs produces the same payload bytes. The record is loaded at step 1 and saved at step 6; the model changes it between requests only through <code>smart_context</code>.</figcaption>
+<div class="legend">
+<span>host-owned</span><span class="core">plugin core</span><span class="state">durable record</span><span class="model">request to the model</span><span class="dash">the model's write path</span>
+</div>
+</figure>
+
+<h3>Read it left to right</h3>
+<ol>
+<li><strong>The host hands over the whole transcript.</strong> Not the previous request — the durable conversation, rebuilt from storage. The plugin reads it and never writes it.</li>
+<li><strong>The record is loaded first.</strong> The pass stamps the model, chooses the session's profile (manual pin, then model mapping, then default, then base), and applies that profile's caps to everything below.</li>
+<li><strong>Only real user messages start turns.</strong> Injected <code>megasc_</code> messages are dropped. Mode reminders and output-limit nudges are pulled out of the window and pinned into the system prompt instead, so they cannot inflate the window or age an eviction.</li>
+<li><strong>The window is measured backward from the newest turn.</strong> The newest turns that fit <code>workingTokens</code> stay. The current turn is always kept, even if it alone exceeds the budget; that is reported as <code>overBudget</code> rather than silently cutting a tool result the model just requested.</li>
+<li><strong>What left the window becomes pending.</strong> A turn gets a mechanical gist and its eroded raw messages. It ages only when a new user turn starts — a ten-call turn consumes one eviction lead, not ten.</li>
+<li><strong>One memory block, one policy, one notices block.</strong> The memory document carries no live numbers, so its bytes change only when the model changes them. The policy is static for the same reason: a stable prefix keeps a provider's cache warm.</li>
+<li><strong>Save, then send.</strong> The record is saved before the payload is handed back. The host's transcript is untouched, so the same pass can be retried and produce the same bytes.</li>
+</ol>
+
+<h2>2. What happens to a turn</h2>
+<p>A turn is a real user message and everything after it up to the next real user message. Because a tool call and its result live inside one turn, a cut can never separate them. The lifecycle below is the whole cold-storage story.</p>
+
+<figure class="diagram" id="fig-b">
+<div class="canvas">
+<svg viewBox="0 0 1200 520" role="img" aria-labelledby="figB-title figB-desc">
+<title id="figB-title">The lifecycle of a turn</title>
+<desc id="figB-desc">A turn starts in the working window. When it leaves the window it becomes a pending eviction with a mechanical gist and eroded raw messages. It ages one step per new user turn. Past the eviction lead it is auto-archived, or dropped when autoArchive is off. A pending turn can be purged, or read with expand. An archived turn is read with recall when lost is true, or with expand. Purging is journaled so undo can restore it.</desc>
+<defs>
+<marker id="b-head" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="head"/></marker>
+</defs>
+
+<rect x="40" y="80" width="260" height="140" rx="10" class="box core"/>
+<text x="58" y="108" class="title">In the working window</text>
+<text x="58" y="132" class="body">verbatim, every request</text>
+<text x="58" y="152" class="body">counts toward <tspan class="mono">workingTokens</tspan></text>
+<text x="58" y="172" class="body muted">tool results eroded at <tspan class="mono">maxResultChars</tspan></text>
+<text x="58" y="192" class="body muted">the current turn never leaves</text>
+
+<rect x="360" y="80" width="280" height="140" rx="10" class="box state"/>
+<text x="378" y="108" class="title">Pending eviction</text>
+<text x="378" y="132" class="body">gist: first 120 + last 40 chars</text>
+<text x="378" y="152" class="body">eroded raw messages kept</text>
+<text x="378" y="172" class="body muted"><tspan class="mono">age++</tspan> on each new user turn</text>
+<text x="378" y="192" class="body muted">past the lead → archive, or drop</text>
+
+<rect x="700" y="80" width="240" height="140" rx="10" class="box state"/>
+<text x="718" y="108" class="title">Archived · cold</text>
+<text x="718" y="132" class="body">gist: model or mechanical</text>
+<text x="718" y="152" class="body">manual: <tspan class="mono">keepRaw:true</tspan></text>
+<text x="718" y="172" class="body muted">auto-archive keeps the raw</text>
+<text x="718" y="192" class="body muted">bounded by the archive caps</text>
+
+<path d="M300 150 L360 150" class="arrow" marker-end="url(#b-head)"/>
+<text x="330" y="64" class="label" text-anchor="middle">leaves the window</text>
+<path d="M640 150 L700 150" class="arrow" marker-end="url(#b-head)"/>
+<text x="670" y="64" class="label" text-anchor="middle">autoArchive after lead</text>
+
+<rect x="400" y="340" width="200" height="90" rx="10" class="box danger"/>
+<text x="418" y="368" class="title">Purged</text>
+<text x="418" y="390" class="body">removed from the record</text>
+<text x="418" y="410" class="body muted">journaled; <tspan class="mono">/undo</tspan> restores it</text>
+
+<rect x="700" y="340" width="300" height="90" rx="10" class="box plain"/>
+<text x="718" y="368" class="title">recall / expand</text>
+<text x="718" y="390" class="body"><tspan class="mono">recall</tspan> needs <tspan class="mono">lost:true</tspan> — matches + snippets</text>
+<text x="718" y="410" class="body muted"><tspan class="mono">expand</tspan> pages any turn, pending or archived</text>
+
+<path d="M500 220 L500 340" class="arrow" marker-end="url(#b-head)"/>
+<text x="512" y="286" class="label">purge</text>
+<path d="M820 220 L820 340" class="arrow" marker-end="url(#b-head)"/>
+<text x="832" y="286" class="label">recall</text>
+<path d="M640 190 C680 190 680 340 720 340" class="arrow dash" marker-end="url(#b-head)"/>
+<text x="664" y="264" class="label">expand</text>
+
+<rect x="40" y="462" width="1080" height="40" rx="8" class="box plain"/>
+<text x="58" y="488" class="body muted">The first pass only seeds <tspan class="mono">seenTurns</tspan>. Enabling the plugin mid-session does not evict turns it never saw, and a cut only lands on a real user-message boundary.</text>
+</svg>
+</div>
+<figcaption><strong>Figure B.</strong> Pending is not “everything old”: only a turn that was in the previous pass's window and is not in the current one. <code>recall</code> is archive-only because until the model archives, nothing has been chosen; <code>expand</code> reads the pending queue too, so a turn is readable before that decision.</figcaption>
+<div class="legend"><span class="core">live window</span><span class="state">durable state</span><span class="plain">actions</span><span class="dash">also readable</span></div>
+</figure>
+
+<div class="two-col">
+<div>
+<h3>Age is counted in user turns</h3>
+<p><code>age</code> increments only when the window's turn-id list changes. A ten-call turn is still one turn, so it consumes one eviction lead, not ten. With <code>autoArchive</code> on, a pending turn older than <code>evictionLead</code> is archived; with it off, the turn is dropped when the lead expires.</p>
+</div>
+<div>
+<h3>The gist keeps the decisive word</h3>
+<p>The mechanical gist keeps the first 120 characters of the user's own words and the last 40, with an ellipsis between them. A head-only cut once dropped the word a spec hung on. A model-written gist replaces the mechanical one. A manual archive is gist-only unless <code>keepRaw:true</code>; auto-archive keeps the raw as a safety net, so <code>expand</code> still works.</p>
+</div>
+</div>
+
+<h2>3. The two halves</h2>
+<p>The plugin has a server part and a terminal part. They share one RPC contract, but no storage: the server half owns the host KV record, and the TUI half keeps only an ephemeral mirror of the numbers it last pulled.</p>
+
+<figure class="diagram" id="fig-c">
+<div class="canvas">
+<svg viewBox="0 0 1200 560" role="img" aria-labelledby="figC-title figC-desc">
+<title id="figC-title">The server half and the TUI half</title>
+<desc id="figC-desc">The server half runs in the OpenCode server and registers the context hook, the compaction hook, the smart_context tool, the /context command, the revert subscription, and the status RPC handlers. The TUI half runs in the terminal and registers the status command, the sidebar block, the session panel and the update toast. The TUI calls the server over POST /api/rpc/mega-smart-context with a location; without one the host answers rpc.unavailable. The server half reads and writes the durable KV. The TUI keeps an ephemeral mirror.</desc>
+<defs>
+<marker id="c-head" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="head"/></marker>
+<marker id="c-head-accent" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="headAccent"/></marker>
+</defs>
+
+<rect x="40" y="80" width="500" height="300" rx="10" class="box core"/>
+<text x="58" y="108" class="title">Server half</text>
+<text x="58" y="128" class="label">one instance per location · writes the record</text>
+<circle cx="66" cy="158" r="3.5" class="num"/><text x="80" y="163" class="mono">context hook → buildPayload</text>
+<circle cx="66" cy="184" r="3.5" class="num"/><text x="80" y="189" class="mono">compaction hook → memory checkpoint</text>
+<circle cx="66" cy="210" r="3.5" class="num"/><text x="80" y="215" class="mono">tool smart_context (9 actions)</text>
+<circle cx="66" cy="236" r="3.5" class="num"/><text x="80" y="241" class="mono">command /context</text>
+<circle cx="66" cy="262" r="3.5" class="num"/><text x="80" y="267" class="mono">session.revert.committed → queue undo</text>
+<circle cx="66" cy="288" r="3.5" class="num"/><text x="80" y="293" class="mono">STATUS_RPC → stats · purge · notice · profile</text>
+<text x="58" y="326" class="body muted">A bad config throws; the plugin refuses to load rather than</text>
+<text x="58" y="346" class="body muted">silently keeping a default the user believes is in force.</text>
+
+<rect x="660" y="80" width="500" height="300" rx="10" class="box tui"/>
+<text x="678" y="108" class="title">TUI half</text>
+<text x="678" y="128" class="label">loaded in the terminal · reads through the server</text>
+<circle cx="686" cy="158" r="3.5" fill="var(--tui-line)"/><text x="700" y="163" class="mono">palette: Context status · session panel</text>
+<circle cx="686" cy="184" r="3.5" fill="var(--tui-line)"/><text x="700" y="189" class="mono">sidebar.content block</text>
+<circle cx="686" cy="210" r="3.5" fill="var(--tui-line)"/><text x="700" y="215" class="mono">status dialog · session panel</text>
+<circle cx="686" cy="236" r="3.5" fill="var(--tui-line)"/><text x="700" y="241" class="mono">update toast (once a day)</text>
+<circle cx="686" cy="262" r="3.5" fill="var(--tui-line)"/><text x="700" y="267" class="mono">ephemeral mirror: storage.memory("sidebar")</text>
+<rect x="690" y="286" width="442" height="46" rx="7" class="box plain"/>
+<text x="704" y="304" class="mono">client.rpc(STATUS_RPC).stats(input, { location })</text>
+<text x="704" y="322" class="body muted">the location is bound once, for every method</text>
+
+<path d="M540 230 L660 230" class="arrowAccent" marker-end="url(#c-head-accent)" marker-start="url(#c-head-accent)"/>
+<text x="600" y="212" class="label" text-anchor="middle">POST /api/rpc/…</text>
+<text x="600" y="250" class="label" text-anchor="middle">location[directory]</text>
+
+<rect x="190" y="440" width="220" height="70" rx="10" class="box state"/>
+<text x="208" y="466" class="title">Durable KV</text>
+<text x="208" y="488" class="mono">session/&lt;id&gt;</text>
+<path d="M300 440 L300 380" class="arrow" marker-end="url(#c-head)"/>
+<text x="312" y="416" class="label">read / write</text>
+
+<rect x="770" y="440" width="280" height="70" rx="10" class="box tui"/>
+<text x="788" y="466" class="title">Ephemeral mirror</text>
+<text x="788" y="488" class="body muted">one snapshot per session</text>
+<path d="M910 440 L910 380" class="arrow" marker-end="url(#c-head)"/>
+<text x="922" y="416" class="label">last pull</text>
+
+<rect x="40" y="526" width="1120" height="26" rx="6" class="box plain"/>
+<text x="56" y="544" class="body muted">The TUI never reads the KV. It asks the server half; since OpenCode 2.2.7 that call must name a location or the host answers <tspan class="mono">rpc.unavailable</tspan>.</text>
+</svg>
+</div>
+<figcaption><strong>Figure C.</strong> One RPC contract, two stores. The server half is the only writer of the durable record; the TUI mirror is filled by a pull and never read by a render path. The RPC bridge is location-scoped, which is why the TUI binds the terminal's project on every method.</figcaption>
+<div class="legend"><span class="core">server half</span><span class="tui">TUI half</span><span class="state">durable</span><span class="plain">ephemeral / actions</span></div>
+</figure>
+
+<h3>Who writes what</h3>
+<table>
+<thead><tr><th>Writer</th><th>Writes</th><th>Path</th></tr></thead>
+<tbody>
+<tr><td>The model</td><td><code>memory</code>, pending/archived turns, notices</td><td><code>smart_context</code> → <code>store.mutate</code></td></tr>
+<tr><td>The context pass</td><td><code>seenTurns</code>, <code>pending</code>, <code>archive</code>, <code>notices</code>, <code>lastReport</code>, <code>history</code>, <code>lastUndo</code></td><td><code>buildPayload</code> → <code>store.save</code></td></tr>
+<tr><td>The revert event</td><td><code>revert</code>, the boundary the next pass applies</td><td><code>session.revert.committed</code> → <code>queueRevert</code></td></tr>
+<tr><td>The TUI</td><td>Nothing directly; a purge, retire or profile pin goes through the RPC</td><td><code>STATUS_RPC</code> → server handler → <code>store.mutate</code></td></tr>
+<tr><td>The host</td><td>The durable transcript; the plugin never writes it</td><td>OpenCode storage</td></tr>
+</tbody>
+</table>
+
+<h2>4. The memory document</h2>
+<p>The model's durable half is eight keys, always present, merged rather than replaced. A map merges key by key; a list replaces wholesale; <code>null</code> resets a key or deletes one map entry. A write over <code>memoryTokens</code> is rejected with the projected usage — the plugin never trims what the model believes it stored.</p>
+
+<table>
+<thead><tr><th>Key</th><th>Shape</th><th>What it is for</th></tr></thead>
+<tbody>
+<tr><td><code>goal</code></td><td>string</td><td>The user's request, written before the first turn leaves the window.</td></tr>
+<tr><td><code>plan</code></td><td>list of <code>{step, status, text}</code></td><td>The current plan; <code>status</code> is <code>todo</code>, <code>active</code>, <code>done</code> or <code>blocked</code>.</td></tr>
+<tr><td><code>facts</code></td><td>map</td><td>Durable things learned about the system, one entry per fact.</td></tr>
+<tr><td><code>files</code></td><td>map</td><td>Why a file matters, keyed by path.</td></tr>
+<tr><td><code>decisions</code></td><td>map</td><td>Choices made and the reason, so they are not relitigated.</td></tr>
+<tr><td><code>open</code></td><td>list</td><td>Open threads and next actions.</td></tr>
+<tr><td><code>refs</code></td><td>list of <code>{page, section, gist, tokens}</code></td><td>Feature-map pointers plus a one-line gist; cheaper than pasted prose.</td></tr>
+<tr><td><code>notes</code></td><td>string</td><td>Anything that does not fit the other keys.</td></tr>
+</tbody>
+</table>
+
+<h2>5. The tool surface</h2>
+<p>One tool, nine actions. <code>smart_context</code> is a direct tool — call it by name, not inside <code>execute</code>. Every write goes through <code>store.mutate</code>, so a tool call and a context pass cannot lose each other's update.</p>
+
+<table>
+<thead><tr><th>Action</th><th>What it does</th></tr></thead>
+<tbody>
+<tr><td><code>read</code></td><td>Returns the pure memory document, or one key; no live numbers.</td></tr>
+<tr><td><code>patch</code></td><td>Merges only the keys named; maps merge, lists replace, <code>null</code> clears.</td></tr>
+<tr><td><code>stats</code></td><td>Memory/working usage, profile, turns kept/dropped, pending/archive/ref counts.</td></tr>
+<tr><td><code>ref</code></td><td>Stores a feature-map pointer and reports the gist vs section cost.</td></tr>
+<tr><td><code>archive</code></td><td>Moves a pending turn to the archive with a gist; <code>keepRaw:true</code> keeps the raw.</td></tr>
+<tr><td><code>purge</code></td><td>Removes a turn; journaled so <code>/undo</code> can restore it.</td></tr>
+<tr><td><code>recall</code></td><td>Searches the archive; refuses without <code>lost:true</code>; returns matches + snippets.</td></tr>
+<tr><td><code>expand</code></td><td>Pages a turn — pending or archived — with <code>offset</code>/<code>limit</code> or an outline.</td></tr>
+<tr><td><code>notice</code></td><td>Lists pinned host notices; retires a superseded one (never the newest).</td></tr>
+</tbody>
+</table>
+
+<h2>6. The invariants that make it safe</h2>
+<ul>
+<li><strong>The transcript is read-only.</strong> Every pass is re-derived from the host's messages plus the record. Nothing the plugin does edits history.</li>
+<li><strong>Bytes are stable.</strong> The policy is static, the memory block carries no live numbers, reasoning is passed through untouched, and erosion is a pure function of one message's own bytes. A completed turn's prefix does not change when the next turn arrives, so a provider's prefix cache stays warm.</li>
+<li><strong>A cut is a turn boundary.</strong> A turn starts at a real user message; a tool call and its result can never be separated. Mode notices, jobs and resume cues are not turns.</li>
+<li><strong>The first pass only seeds.</strong> Enabling the plugin mid-session does not evict turns it never managed.</li>
+<li><strong>Nothing is irrecoverably lost by default.</strong> An unhandled pending turn auto-archives after the lead; <code>recall</code> is gated by <code>lost:true</code> so the archive stays cold; <code>expand</code> can read a turn before the model decides.</li>
+<li><strong>Every session is independent.</strong> A subagent has its own record. A child may read the parent's archive with <code>from:"parent"</code>, but every writing action stays on its own session.</li>
+<li><strong>The TUI cannot see the KV.</strong> It reads through the server's RPC and keeps an ephemeral mirror; the RPC names the terminal's location, because the host routes plugin RPC by location.</li>
+</ul>
+
+<footer>
+<p>Drawn from <code>src/core/context.ts</code>, <code>view.ts</code>, <code>state.ts</code>, <code>prompts.ts</code>, <code>archive.ts</code>, <code>memory-tool.ts</code>, <code>compaction.ts</code>, <code>src/adapters/opencode/index.ts</code>, and the feature map pages <a href="features/context-handoff.html">context-handoff</a>, <a href="features/archive.html">archive</a>, <a href="features/memory-tool.html">memory-tool</a>, <a href="features/tui.html">tui</a>, <a href="features/compaction.html">compaction</a>, and <a href="features/subagents.html">subagents</a>.</p>
+</footer>
+</main>
+</body>
+</html>
