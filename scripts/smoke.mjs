@@ -92,6 +92,7 @@ import { extractHtmlSection, extractSection, htmlToText, pageCandidates } from "
 import { deriveVersion, readVersionBase } from "../src/core/version.ts"
 import { balanceCuts, erodeToolResults, gistText, hostMessageOf, isHostCue, isHostJob, isHostMessage, isHostTail, isRealUser, modeReminderOf, noticeOf, RESUMED_TEXT, selectAppendWindow, selectWorkingWindow, splitNotices, turnSpans } from "../src/core/view.ts"
 import { livenessFromError } from "../src/adapters/opencode/sessions.ts"
+import { TOOL_DESCRIPTION } from "../src/adapters/opencode/tool.ts"
 import { readPluginVersion } from "../src/adapters/opencode/version.ts"
 import {
   CHECK_INTERVAL_MS,
@@ -990,6 +991,11 @@ const snapshotCompact = await runMemoryTool(
 ok(
   !snapshotCompact.ok && /contextLayout/.test(snapshotCompact.text),
   "compact is refused in the snapshot layout",
+)
+ok(
+  TOOL_DESCRIPTION.includes("only when the state note says compaction is due") &&
+    TOOL_DESCRIPTION.includes("does not shrink memory"),
+  "the tool description reserves compact for a due pool",
 )
 
 // ---------------------------------------------------------------------------
