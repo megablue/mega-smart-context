@@ -15,20 +15,24 @@
  */
 
 import { archivePending, knows, mechanicalGist, trimArchive, turnMessages } from "./archive.ts"
+import { checkpointAppend, invalidateAppend, migrateAppend } from "./append.ts"
 import type { ResolvedConfig } from "./config.ts"
 import { estimateTokens, memoryChars, messageChars, messagesChars } from "./measure.ts"
-import { POLICY, NOTICE_HEADING, renderMemory, renderNotices } from "./prompts.ts"
+import { APPEND_NOTE, POLICY, NOTICE_HEADING, renderMemory, renderNotices, renderSnapshot, renderTailState, renderUpdate } from "./prompts.ts"
 import { applyProfile, choiceLabel, chooseProfile, stampModel } from "./profiles.ts"
 import { trimHistory, upsertNotices, type SessionStore } from "./state.ts"
-import type { Message, PassSample, SessionRecord, SystemPart } from "./types.ts"
+import type { Message, MemoryUpdate, PassSample, SessionRecord, SystemPart } from "./types.ts"
 import { applyRevert, noteTurn, undoLine } from "./undo.ts"
 import {
+  INJECTED_PREFIX,
   MEMORY_MESSAGE_ID,
   erodeToolResults,
   isInjected,
+  selectAppendWindow,
   selectWorkingWindow,
   splitNotices,
   turnSpans,
+  type TurnSpan,
 } from "./view.ts"
 
 export interface ContextInput {
@@ -80,6 +84,68 @@ function sameTurns(previous: ReadonlyArray<string>, current: ReadonlyArray<strin
   return previous.every((id, index) => id === current[index])
 }
 
+/**
+ * Move the turns the new window no longer keeps into pending, age the queue and
+ * archive what the lead has outlived.
+ *
+ * Shared by both layouts. In the snapshot layout the window drops turns when the
+ * working budget is spent; in the append layout it drops them only when a
+ * compaction resets the era. The rule is the same: a turn that is no longer in
+ * the window and is not already pending or archived is new pending material.
+ */
+function evictTurns(options: {
+  readonly record: SessionRecord
+  readonly spans: ReadonlyArray<TurnSpan>
+  readonly raw: ReadonlyArray<Message>
+  readonly currentIds: ReadonlyArray<string>
+  readonly config: ResolvedConfig
+  readonly now: () => number
+}): void {
+  const { record, spans, raw, currentIds, config } = options
+  const bootstrap = record.seenTurns.length === 0
+  const changed = !bootstrap && !sameTurns(record.seenTurns, currentIds)
+
+  if (bootstrap) {
+    // The first pass has nothing to compare against. It must not archive turns it
+    // has never seen: enabling the plugin mid-session is not an eviction.
+    record.seenTurns = [...currentIds]
+    return
+  }
+  if (!changed) return
+
+  const kept = new Set(currentIds)
+  for (const id of record.seenTurns) {
+    if (kept.has(id) || knows(record, id)) continue
+    const span = spans.find((entry) => entry.id === id)
+    if (span === undefined) continue
+    // The host may have trimmed the transcript already. A span that is gone is
+    // not recoverable; the model had the same chance to fold it as any other.
+    const messages = erodeToolResults(turnMessages(raw, span), config.maxResultChars).messages
+    const gist = mechanicalGist(span, config.charsPerToken)
+    let chars = gist.length
+    for (const message of messages) chars += messageChars(message)
+    record.pending.push({ id, gist, chars, messages, createdAt: options.now(), age: 0 })
+  }
+  record.seenTurns = [...currentIds]
+
+  // Age only on a new user turn, not on a tool continuation: a ten-call turn
+  // must not consume ten eviction leads.
+  for (const pending of record.pending) pending.age += 1
+  if (config.autoArchive) {
+    for (const pending of [...record.pending]) {
+      if (pending.age <= config.evictionLead) continue
+      archivePending(record, pending.id, pending.gist, true, {
+        now: options.now(),
+        maxTurns: config.archiveMaxTurns,
+        maxChars: config.archiveMaxChars,
+      })
+    }
+  } else {
+    record.pending = record.pending.filter((pending) => pending.age <= config.evictionLead)
+  }
+  trimArchive(record, config.archiveMaxTurns, config.archiveMaxChars)
+}
+
 export async function buildPayload(input: ContextInput, deps: ContextDeps): Promise<ContextPlan> {
   const now = deps.now ?? (() => Date.now())
   const record: SessionRecord = await deps.store.load(input.sessionID)
@@ -102,7 +168,11 @@ export async function buildPayload(input: ContextInput, deps: ContextDeps): Prom
   // a zero. The debug line names what was found, which is how the shape of
   // `event.system` is checked after a restart.
   const hostSystem = input.system.filter(
-    (part) => typeof part.text === "string" && part.text !== POLICY && !part.text.startsWith(NOTICE_HEADING),
+    (part) =>
+      typeof part.text === "string" &&
+      part.text !== POLICY &&
+      part.text !== APPEND_NOTE &&
+      !part.text.startsWith(NOTICE_HEADING),
   )
   const hostSystemTokens =
     hostSystem.length === 0
@@ -126,12 +196,27 @@ export async function buildPayload(input: ContextInput, deps: ContextDeps): Prom
   const split = splitNotices(clean)
   const raw = split.rest
   const spans = turnSpans(raw)
+  if (config.contextLayout === "append") {
+    return buildAppendPlan({
+      input,
+      deps,
+      record,
+      config,
+      hostSystem,
+      hostSystemTokens,
+      raw,
+      spans,
+      notices: split.notices,
+      now,
+    })
+  }
   // A committed host revert lands here, before the window and the change
   // detection run: the record must speak about the transcript the host kept,
   // and the same pass must already see the corrected pending/archive lists.
   // Only the dedicated event sets the marker, so a host compaction (which also
   // shortens the transcript) can never roll the memory back.
   const undo = record.revert === undefined ? undefined : applyRevert(record, record.revert, now())
+  if (undo !== undefined) invalidateAppend(record)
   const window = selectWorkingWindow(raw, {
     workingTokens: config.workingTokens,
     charsPerToken: config.charsPerToken,
@@ -154,46 +239,7 @@ export async function buildPayload(input: ContextInput, deps: ContextDeps): Prom
   // Snapshot pending before this pass can evict, age or auto-archive anything.
   noteTurn(record, currentIds[currentIds.length - 1], now())
 
-  const bootstrap = record.seenTurns.length === 0
-  const changed = !bootstrap && !sameTurns(record.seenTurns, currentIds)
-
-  if (bootstrap) {
-    // The first pass has nothing to compare against. It must not archive turns it
-    // has never seen: enabling the plugin mid-session is not an eviction.
-    record.seenTurns = [...currentIds]
-  } else if (changed) {
-    const kept = new Set(currentIds)
-    for (const id of record.seenTurns) {
-      if (kept.has(id) || knows(record, id)) continue
-      const span = spans.find((entry) => entry.id === id)
-      if (span === undefined) continue
-      // The host may have trimmed the transcript already. A span that is gone is
-      // not recoverable; the model had the same chance to fold it as any other.
-      const messages = erodeToolResults(turnMessages(raw, span), config.maxResultChars).messages
-      const gist = mechanicalGist(span, config.charsPerToken)
-      let chars = gist.length
-      for (const message of messages) chars += messageChars(message)
-      record.pending.push({ id, gist, chars, messages, createdAt: now(), age: 0 })
-    }
-    record.seenTurns = [...currentIds]
-
-    // Age only on a new user turn, not on a tool continuation: a ten-call turn
-    // must not consume ten eviction leads.
-    for (const pending of record.pending) pending.age += 1
-    if (config.autoArchive) {
-      for (const pending of [...record.pending]) {
-        if (pending.age <= config.evictionLead) continue
-        archivePending(record, pending.id, pending.gist, true, {
-          now: now(),
-          maxTurns: config.archiveMaxTurns,
-          maxChars: config.archiveMaxChars,
-        })
-      }
-    } else {
-      record.pending = record.pending.filter((pending) => pending.age <= config.evictionLead)
-    }
-    trimArchive(record, config.archiveMaxTurns, config.archiveMaxChars)
-  }
+  evictTurns({ record, spans, raw, currentIds, config, now })
 
   // A mode notice is a standing instruction, not a turn: keep every distinct text
   // on the record so it survives the window it was stripped from. A text the model
@@ -265,7 +311,10 @@ export async function buildPayload(input: ContextInput, deps: ContextDeps): Prom
 
   // Drop a stale pinned-notices part the host may be carrying, then append the
   // current one: the block changes when the mode does, unlike the static policy.
-  const system = input.system.filter((part) => !part.text.startsWith(NOTICE_HEADING))
+  // A stale append note is dropped too, for a session that switched layouts.
+  const system = input.system.filter(
+    (part) => part.text !== APPEND_NOTE && !part.text.startsWith(NOTICE_HEADING),
+  )
   if (!system.some((part) => part.text === POLICY)) system.push({ type: "text", text: POLICY })
   const noticesText = renderNotices(record)
   if (noticesText !== undefined) system.push({ type: "text", text: noticesText })
@@ -277,6 +326,288 @@ export async function buildPayload(input: ContextInput, deps: ContextDeps): Prom
       `context ${input.sessionID}: memory ${report.memoryTokens}/${config.memoryTokens}, working ${report.workingTokens}/${config.workingTokens}, ` +
         `${report.workingTurns} kept, ${report.droppedTurns} dropped, ${report.pending} pending, ${report.archived} archived, ` +
         `profile ${choiceLabel(profile)}`,
+    )
+  }
+
+  return { system, messages, report }
+}
+
+interface AppendPlanInput {
+  readonly input: ContextInput
+  readonly deps: ContextDeps
+  readonly record: SessionRecord
+  readonly config: ResolvedConfig
+  readonly hostSystem: SystemPart[]
+  readonly hostSystemTokens: number | undefined
+  readonly raw: Message[]
+  readonly spans: TurnSpan[]
+  readonly notices: ReadonlyArray<{ id: string; text: string }>
+  readonly now: () => number
+}
+
+/**
+ * The append-only pass.
+ *
+ * The order is the layout: a checkpoint first, then the turns, each completed
+ * turn's accepted delta beside it, then one tail state note, then the current
+ * turn. A patch therefore appends after its turn instead of rewriting the first
+ * block. Compaction is the only step that moves the checkpoint: it folds the
+ * log, keeps the newest turns that fit the working share, and evicts the rest
+ * through the same pending/archive path as the snapshot layout.
+ */
+async function buildAppendPlan(options: AppendPlanInput): Promise<ContextPlan> {
+  const { input, deps, record, config, hostSystem, hostSystemTokens, raw, spans, notices, now } = options
+
+  migrateAppend(record)
+
+  // A committed host revert replaces memory; the log from the undone turn
+  // cannot stay beside it. This is the one cache reset the model already paid
+  // for by reverting.
+  let undo: ReturnType<typeof applyRevert> | undefined
+  if (record.revert !== undefined) {
+    undo = applyRevert(record, record.revert, now())
+    checkpointAppend(record)
+  }
+
+  // The era starts at `windowStart`. When the marker is missing (a fresh record,
+  // or a host that trimmed the turn away), seed it from the ordinary window so
+  // enabling the layout mid-session does not replay history the plugin never
+  // managed.
+  let window = record.windowStart === undefined ? undefined : selectAppendWindow(raw, record.windowStart)
+  if (window === undefined) {
+    const fallback = selectWorkingWindow(raw, {
+      workingTokens: config.workingTokens,
+      charsPerToken: config.charsPerToken,
+    })
+    window = selectAppendWindow(raw, fallback.turns[0]?.id) ?? {
+      startIdx: fallback.startIdx,
+      turns: fallback.turns,
+      dropped: fallback.dropped,
+      chars: fallback.chars,
+    }
+    record.windowStart = fallback.turns[0]?.id
+  }
+
+  let workingTurns = erodeToolResults(raw.slice(window.startIdx), config.maxResultChars).messages
+  let currentIds = window.turns.map((span) => span.id)
+
+  if (undo !== undefined) {
+    // The undo line is rendered for the turn the rollback landed in; noteTurn
+    // clears it once a newer user turn arrives.
+    record.lastUndo = { ...undo, seen: currentIds[currentIds.length - 1] }
+    if (config.debug) deps.warn?.(`context ${input.sessionID}: ${undoLine(undo)}`)
+  }
+  noteTurn(record, currentIds[currentIds.length - 1], now())
+
+  // The shared pool, in characters. `memoryTokens` and `workingTokens` are
+  // estimates, so convert once and compare the rendered bytes.
+  const poolChars = (config.memoryTokens + config.workingTokens) * Math.max(1, config.charsPerToken)
+  let snapshotText = renderSnapshot(record.base ?? record.memory)
+  let updateTexts = (record.updates ?? []).map(renderUpdate)
+  let turnChars = messagesChars(workingTurns)
+  let footChars = snapshotText.length + updateTexts.reduce((sum, text) => sum + text.length, 0) + turnChars
+  let over = footChars > poolChars
+
+  const mark = record.compact?.mode
+  if (mark === "requested" || (mark === "due" && over)) {
+    // The tail may use the memory share the merged checkpoint does not need:
+    // the pool is shared, and unused memory room spills to the turns.
+    const mergedSnapshotText = renderSnapshot(record.memory)
+    const mergedSnapshotTokens = estimateTokens(mergedSnapshotText.length, config.charsPerToken)
+    const spillTokens = Math.max(0, config.memoryTokens - mergedSnapshotTokens)
+    // Keep the newest turns that fit the working share plus the spill. The rest
+    // become pending, exactly as a snapshot-mode window drop would.
+    const tail = selectWorkingWindow(raw, {
+      workingTokens: config.workingTokens + spillTokens,
+      charsPerToken: config.charsPerToken,
+    })
+    checkpointAppend(record)
+    record.windowStart = tail.turns[0]?.id
+    window = selectAppendWindow(raw, record.windowStart) ?? {
+      startIdx: tail.startIdx,
+      turns: tail.turns,
+      dropped: tail.dropped,
+      chars: tail.chars,
+    }
+    workingTurns = erodeToolResults(raw.slice(window.startIdx), config.maxResultChars).messages
+    currentIds = window.turns.map((span) => span.id)
+    snapshotText = renderSnapshot(record.base ?? record.memory)
+    updateTexts = []
+    turnChars = messagesChars(workingTurns)
+  } else if (over && record.compact === undefined) {
+    record.compact = { mode: "due", at: now() }
+  } else if (!over && record.compact?.mode === "due") {
+    delete record.compact
+  }
+
+  evictTurns({ record, spans, raw, currentIds, config, now })
+
+  // The mode is a tail line now, so the system keeps only the non-mode
+  // notices. A Plan/Build switch does not move the system prefix.
+  if (notices.length > 0) {
+    const folded = upsertNotices(record.notices ?? [], notices, now(), record.retired ?? [])
+    record.notices = folded.notices
+    if (folded.retired.length > 0) record.retired = folded.retired
+    else delete record.retired
+  }
+  const noticesText = renderNotices(record, { excludeModes: true })
+
+  // An update stays beside the turn that wrote it. The current turn's own patch
+  // is deferred: the model just wrote it, and the next pass will show it.
+  const currentTurn = currentIds.length > 0 ? currentIds[currentIds.length - 1] : ""
+  const byTurn = new Map<string, string[]>()
+  const orphans: string[] = []
+  const updateList = record.updates ?? []
+  updateList.forEach((update, index) => {
+    if (currentTurn.length > 0 && update.turn === currentTurn) return
+    const text = updateTexts[index]
+    if (text === undefined) return
+    if (update.turn.length === 0 || !currentIds.includes(update.turn)) {
+      orphans.push(text)
+      return
+    }
+    const list = byTurn.get(update.turn) ?? []
+    list.push(text)
+    byTurn.set(update.turn, list)
+  })
+
+  const sentUpdateChars =
+    [...byTurn.values()].reduce((sum, texts) => sum + texts.join("\n").length, 0) +
+    orphans.reduce((sum, text) => sum + text.length, 0)
+
+  const working: Message[] = []
+  const turnEnds = new Map<number, string>()
+  for (const span of window.turns) {
+    const end = span.endIdx - window.startIdx
+    if (end >= 0) turnEnds.set(end, span.id)
+  }
+  const currentSpan = window.turns.length > 0 ? window.turns[window.turns.length - 1] : undefined
+  const currentStart = currentSpan === undefined ? -1 : currentSpan.startIdx - window.startIdx
+
+  let tailIndex = -1
+  for (let index = 0; index < workingTurns.length; index += 1) {
+    if (index === currentStart) tailIndex = working.length
+    working.push(workingTurns[index])
+    const turn = turnEnds.get(index)
+    if (turn === undefined) continue
+    const texts = byTurn.get(turn)
+    if (texts === undefined) continue
+    working.push({
+      id: INJECTED_PREFIX + "update_" + turn,
+      role: "user",
+      content: [{ type: "text", text: texts.join("\n") }],
+    })
+  }
+  if (tailIndex < 0) tailIndex = working.length
+
+  if (orphans.length > 0) {
+    working.splice(tailIndex, 0, {
+      id: INJECTED_PREFIX + "update_orphan",
+      role: "user",
+      content: [{ type: "text", text: orphans.join("\n") }],
+    })
+    tailIndex += 1
+  }
+
+  // The tail note is part of the working share. Render it once with the
+  // turns-only number, then once with the number that includes the note; the
+  // second render is the one inserted, so the printed split is honest.
+  const poolCap = config.memoryTokens + config.workingTokens
+  const snapshotTokens = estimateTokens(snapshotText.length, config.charsPerToken)
+  const updateTokens = estimateTokens(sentUpdateChars, config.charsPerToken)
+  let workingTokens = estimateTokens(turnChars, config.charsPerToken)
+  let tail = renderTailState(record, {
+    poolTokens: snapshotTokens + updateTokens + workingTokens,
+    poolCap,
+    snapshotTokens,
+    updateTokens,
+    workingTokens,
+    compactDue: record.compact?.mode === "due",
+  })
+  workingTokens = estimateTokens(turnChars + tail.length, config.charsPerToken)
+  tail = renderTailState(record, {
+    poolTokens: snapshotTokens + updateTokens + workingTokens,
+    poolCap,
+    snapshotTokens,
+    updateTokens,
+    workingTokens,
+    compactDue: record.compact?.mode === "due",
+  })
+  workingTokens = estimateTokens(turnChars + tail.length, config.charsPerToken)
+
+  working.splice(tailIndex, 0, {
+    id: INJECTED_PREFIX + "state",
+    role: "user",
+    content: [{ type: "text", text: tail }],
+  })
+
+  const memoryTokens = snapshotTokens + updateTokens
+  const totalTokens = memoryTokens + workingTokens
+  const modelContext = modelContextOf(input.model)
+  const overBudget =
+    totalTokens > poolCap ||
+    (modelContext !== undefined && totalTokens > Math.floor(modelContext * 0.9))
+
+  record.lastReport = {
+    memoryTokens,
+    workingTokens,
+    totalTokens,
+    workingTurns: window.turns.length,
+    droppedTurns: window.dropped.length,
+    overBudget,
+    modelContext,
+    hostSystemTokens,
+    hostSystemParts: hostSystem.length,
+  }
+
+  const policyTokens = estimateTokens((POLICY + "\n\n" + APPEND_NOTE).length, config.charsPerToken)
+  const noticeTokens = noticesText === undefined ? 0 : estimateTokens(noticesText.length, config.charsPerToken)
+  const sample: PassSample = {
+    at: now(),
+    turn: currentTurn.length > 0 ? currentTurn : undefined,
+    transcriptTokens: messagesChars(input.messages),
+    policyTokens,
+    noticeTokens,
+    hostSystemTokens,
+    hostSystemParts: hostSystem.length,
+    memoryTokens,
+    workingTokens,
+    totalTokens: totalTokens + policyTokens,
+    workingTurns: window.turns.length,
+    droppedTurns: window.dropped.length,
+    overBudget,
+    modelContext,
+  }
+  record.history = trimHistory([...(record.history ?? []), sample])
+
+  const report: ContextReport = {
+    ...record.lastReport,
+    archived: record.archive.length,
+    pending: record.pending.length,
+    goalEmpty: record.memory.goal.trim().length === 0,
+  }
+
+  const memoryMessage: Message = {
+    id: MEMORY_MESSAGE_ID,
+    role: "user",
+    content: [{ type: "text", text: snapshotText }],
+  }
+  const messages: Message[] = [memoryMessage, ...working]
+
+  const system: SystemPart[] = [...hostSystem]
+  system.push({ type: "text", text: POLICY })
+  system.push({ type: "text", text: APPEND_NOTE })
+  if (noticesText !== undefined) system.push({ type: "text", text: noticesText })
+
+  await deps.store.save(input.sessionID, record)
+
+  if (config.debug) {
+    deps.warn?.(
+      `context ${input.sessionID}: append snapshot ${report.memoryTokens}/${config.memoryTokens}, ` +
+        `updates ${updateTokens} est, working ${report.workingTokens}/${config.workingTokens}, ` +
+        `pool ${report.totalTokens}/${poolCap}, ${report.workingTurns} kept, ${report.droppedTurns} dropped, ` +
+        `${report.pending} pending, ${report.archived} archived, ` +
+        `profile ${choiceLabel(chooseProfile(deps.config, record.profile, record.lastModel))}`,
     )
   }
 

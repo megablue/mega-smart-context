@@ -18,6 +18,14 @@ import { isPlainObject } from "./types.ts"
 export interface ResolvedConfig {
   /** Master switch. `false` registers nothing. */
   enabled: boolean
+  /**
+   * How the request lays out memory.
+   *
+   * `snapshot` is the original contract: one rendered memory block, rewritten
+   * when it changes. `append` keeps that block as a checkpoint and appends one
+   * delta block after each turn, so a patch does not move the provider prefix.
+   */
+  contextLayout: "snapshot" | "append"
   /** Cap on the model-authored memory document, in estimated tokens. */
   memoryTokens: number
   /** Cap on the verbatim working window, in estimated tokens. */
@@ -70,6 +78,7 @@ export interface ResolvedConfig {
  * budget and windows, and nothing that describes the install or the process.
  */
 export const SESSION_KEYS = [
+  "contextLayout",
   "memoryTokens",
   "workingTokens",
   "charsPerToken",
@@ -90,6 +99,7 @@ export type SessionOverrides = Partial<Pick<ResolvedConfig, SessionKey>>
 
 export const DEFAULT_CONFIG: ResolvedConfig = {
   enabled: true,
+  contextLayout: "snapshot",
   memoryTokens: 20_000,
   workingTokens: 20_000,
   charsPerToken: 4,
@@ -158,6 +168,12 @@ function clampInteger(value: number, min: number, max: number): number {
  * @throws when the value has the wrong type.
  */
 function coerceValue(key: string, raw: unknown, where: string): unknown {
+  if (key === "contextLayout") {
+    if (raw !== "snapshot" && raw !== "append") {
+      throw new Error(`config: contextLayout in ${where} must be "snapshot" or "append"`)
+    }
+    return raw
+  }
   if (BOOLEAN_KEYS.has(key)) {
     if (typeof raw !== "boolean") throw new Error(`config: ${key} in ${where} must be true or false`)
     return raw

@@ -40,7 +40,7 @@ import {
 } from "../src/core/profiles.ts"
 import { runContextCommand } from "../src/core/command.ts"
 import { messageChars, messagesChars } from "../src/core/measure.ts"
-import { NOTICE_HEADING, POLICY, renderMemory, renderStats } from "../src/core/prompts.ts"
+import { APPEND_NOTE, NOTICE_HEADING, POLICY, renderMemory, renderStats } from "../src/core/prompts.ts"
 import { emptyMemory } from "../src/core/schema.ts"
 import {
   PANEL_ACTION,
@@ -90,7 +90,7 @@ import {
 import { MAX_HISTORY, MAX_NOTICES, MAX_NOTICE_CHARS, MAX_RETIRED, SessionStore, StoreConflictError, pruneOrphans, retireNotice, sameDirectory, trimHistory, upsertNotices } from "../src/core/state.ts"
 import { extractHtmlSection, extractSection, htmlToText, pageCandidates } from "../src/core/refs.ts"
 import { deriveVersion, readVersionBase } from "../src/core/version.ts"
-import { balanceCuts, erodeToolResults, gistText, hostMessageOf, isHostCue, isHostJob, isHostMessage, isHostTail, isRealUser, modeReminderOf, noticeOf, RESUMED_TEXT, selectWorkingWindow, splitNotices, turnSpans } from "../src/core/view.ts"
+import { balanceCuts, erodeToolResults, gistText, hostMessageOf, isHostCue, isHostJob, isHostMessage, isHostTail, isRealUser, modeReminderOf, noticeOf, RESUMED_TEXT, selectAppendWindow, selectWorkingWindow, splitNotices, turnSpans } from "../src/core/view.ts"
 import { livenessFromError } from "../src/adapters/opencode/sessions.ts"
 import { readPluginVersion } from "../src/adapters/opencode/version.ts"
 import {
@@ -726,6 +726,270 @@ ok(
 ok(
   cached1.messages[0].content[0].text === cached2.messages[0].content[0].text,
   "the memory block is byte-identical when only the window grew",
+)
+
+// ---------------------------------------------------------------------------
+// Append-only layout: the checkpoint stays put, a patch lands after its turn
+// ---------------------------------------------------------------------------
+
+ok(parseLayer({ contextLayout: "append" }, "test").contextLayout === "append", "contextLayout accepts append")
+assert.throws(() => parseLayer({ contextLayout: "bogus" }, "test"), /contextLayout/, "an unknown layout is rejected")
+passed += 1
+
+const appendConfig = resolveConfig({
+  options: { contextLayout: "append", workingTokens: 20_000, memoryTokens: 3000, charsPerToken: 2 },
+})
+const appendStore = new SessionStore()
+const appendDeps = { store: appendStore, config: appendConfig }
+const appendPass = (messages) =>
+  buildPayload({ sessionID: "append", system: [{ type: "text", text: "base" }], messages, model: {} }, appendDeps)
+
+const appendTurn1 = [user("au1", "First append turn. ".repeat(20)), assistant("aa1", "Done.")]
+const appendFirst = await appendPass(appendTurn1)
+const checkpointBefore = appendFirst.messages[0].content[0].text
+ok(checkpointBefore.includes("goal: (empty"), "the append checkpoint starts empty")
+ok(appendFirst.messages.some((message) => message.id === "megasc_state"), "the append tail carries the state note")
+ok(appendFirst.system.some((part) => part.text === APPEND_NOTE), "the append note is a static system part")
+ok(!checkpointBefore.includes("pool:"), "the checkpoint carries no live budget")
+
+const firstPatch = await runMemoryTool(
+  { sessionID: "append", action: "patch", patch: { goal: "ship the append layout" } },
+  appendDeps,
+)
+const secondPatch = await runMemoryTool(
+  { sessionID: "append", action: "patch", patch: { facts: { cache: "prefix stays warm" } } },
+  appendDeps,
+)
+ok(firstPatch.ok && secondPatch.ok, "two append patches are accepted")
+let appendRecord = await appendStore.load("append")
+ok(appendRecord.base?.goal === "", "a patch does not move the checkpoint")
+ok(appendRecord.memory.goal === "ship the append layout", "the merged memory has the patch")
+ok((appendRecord.updates ?? []).length === 1, "two patches in one turn coalesce into one update")
+ok(
+  appendRecord.updates[0].turn === "au1" &&
+    appendRecord.updates[0].patch.goal === "ship the append layout" &&
+    appendRecord.updates[0].patch.facts?.cache === "prefix stays warm",
+  "the update carries both accepted keys",
+)
+
+const appendTurn2 = [...appendTurn1, user("au2", "Second append turn."), assistant("aa2", "Again.")]
+const appendSecond = await appendPass(appendTurn2)
+ok(
+  appendSecond.messages[0].content[0].text === checkpointBefore,
+  "the checkpoint is byte-identical after a later patch",
+)
+const firstUpdate = appendSecond.messages.find((message) => message.id === "megasc_update_au1")
+ok(firstUpdate !== undefined, "the update block appears after its turn")
+ok(firstUpdate.content[0].text.includes("ship the append layout"), "the update block carries the accepted goal")
+ok(
+  appendSecond.messages.findIndex((message) => message.id === "megasc_update_au1") >
+    appendSecond.messages.findIndex((message) => message.id === "aa1"),
+  "the update block follows the turn's last message",
+)
+ok(
+  appendSecond.messages.findIndex((message) => message.id === "megasc_state") <
+    appendSecond.messages.findIndex((message) => message.id === "au2"),
+  "the tail state note sits before the current turn",
+)
+
+const currentPatch = await runMemoryTool(
+  { sessionID: "append", action: "patch", patch: { open: ["finish the append test"] } },
+  appendDeps,
+)
+ok(currentPatch.ok, "a patch in the current turn is accepted")
+const appendSecondAgain = await appendPass(appendTurn2)
+ok(
+  !appendSecondAgain.messages.some((message) => message.id === "megasc_update_au2"),
+  "the current turn's update is deferred",
+)
+const appendThird = await appendPass([
+  ...appendTurn2,
+  user("au3", "Third append turn."),
+  assistant("aa3", "Done."),
+])
+ok(
+  appendThird.messages.some((message) => message.id === "megasc_update_au2"),
+  "the deferred update appears on the next turn",
+)
+
+const compacted = await runMemoryTool({ sessionID: "append", action: "compact" }, appendDeps)
+ok(compacted.ok, "compact is accepted in the append layout")
+appendRecord = await appendStore.load("append")
+ok((appendRecord.updates ?? []).length === 0, "compact clears the update log")
+ok(appendRecord.base?.goal === "ship the append layout", "compact moves the merged memory into the checkpoint")
+ok(appendRecord.compact?.mode === "requested", "the pass is asked to reset the window")
+const afterCompact = await appendPass([
+  ...appendTurn2,
+  user("au4", "Fourth."),
+  assistant("aa4", "Done."),
+])
+appendRecord = await appendStore.load("append")
+ok(appendRecord.compact === undefined, "the pass consumes the compact request")
+ok(afterCompact.messages[0].content[0].text !== checkpointBefore, "compaction replaces the checkpoint")
+ok(
+  afterCompact.messages[0].content[0].text.includes("ship the append layout"),
+  "the new checkpoint carries the folded goal",
+)
+ok(
+  !afterCompact.messages.some((message) => message.id?.startsWith("megasc_update_")),
+  "the compacted request has no update blocks",
+)
+
+// A narrow working share keeps only the newest turn as the retained tail.
+const narrowConfig = resolveConfig({
+  options: { contextLayout: "append", workingTokens: 500, memoryTokens: 1000, charsPerToken: 2 },
+})
+const narrowStore = new SessionStore()
+const narrowDeps = { store: narrowStore, config: narrowConfig }
+const narrowPass = (messages) =>
+  buildPayload({ sessionID: "append-narrow", system: [], messages, model: {} }, narrowDeps)
+
+const narrowTurn1 = [user("nu1", "A".repeat(600)), assistant("na1", "ok")]
+await narrowPass(narrowTurn1)
+await runMemoryTool(
+  { sessionID: "append-narrow", action: "patch", patch: { goal: "narrow compaction" } },
+  narrowDeps,
+)
+await runMemoryTool(
+  { sessionID: "append-narrow", action: "patch", patch: { notes: "N".repeat(1800) } },
+  narrowDeps,
+)
+const narrowTurn2 = [...narrowTurn1, user("nu2", "B".repeat(2000)), assistant("na2", "ok")]
+await narrowPass(narrowTurn2)
+await runMemoryTool({ sessionID: "append-narrow", action: "compact" }, narrowDeps)
+const narrowTurn3 = [...narrowTurn2, user("nu3", "C".repeat(100)), assistant("na3", "ok")]
+const narrowPlan = await narrowPass(narrowTurn3)
+const narrowRecord = await narrowStore.load("append-narrow")
+ok(
+  narrowRecord.base?.goal === "narrow compaction" && (narrowRecord.updates ?? []).length === 0,
+  "the narrow compaction folds the log",
+)
+ok(narrowRecord.windowStart === "nu3", "the retained tail is the newest turn that fits")
+ok(
+  narrowRecord.pending.some((pending) => pending.id === "nu1") &&
+    narrowRecord.pending.some((pending) => pending.id === "nu2"),
+  "the dropped turns become pending",
+)
+ok(narrowPlan.report.workingTurns === 1, "the request keeps only the tail turn")
+
+// A full pool marks the next pass due, then compacts mechanically.
+const dueConfig = resolveConfig({
+  options: { contextLayout: "append", workingTokens: 500, memoryTokens: 1000, charsPerToken: 1 },
+})
+const dueStore = new SessionStore()
+const dueDeps = { store: dueStore, config: dueConfig }
+const dueMessages = [user("du1", "D".repeat(4000)), assistant("da1", "ok")]
+const dueFirst = await buildPayload(
+  { sessionID: "append-due", system: [], messages: dueMessages, model: {} },
+  dueDeps,
+)
+const dueRecord = await dueStore.load("append-due")
+ok(dueRecord.compact?.mode === "due", "a full pool marks compaction due")
+ok(
+  dueFirst.messages.some(
+    (message) => message.id === "megasc_state" && message.content[0].text.includes("compaction due"),
+  ),
+  "the tail says compaction is due",
+)
+const dueSecond = await buildPayload(
+  { sessionID: "append-due", system: [], messages: dueMessages, model: {} },
+  dueDeps,
+)
+const dueAfter = await dueStore.load("append-due")
+ok(dueAfter.compact === undefined, "the next pass performs the mechanical compaction")
+ok(
+  dueSecond.messages[0].content[0].text.includes("goal: (empty"),
+  "the checkpoint is folded before the second pass is built",
+)
+
+// An old record's memory becomes the first checkpoint without replaying a log.
+const oldStorage = new Map()
+oldStorage.set("session/append-old", {
+  version: 1,
+  memory: { ...emptyMemory(), goal: "old record" },
+  seenTurns: [],
+  pending: [],
+  archive: [],
+  createdAt: 1,
+  updatedAt: 1,
+})
+const oldStore = new SessionStore({
+  async get(key) {
+    return oldStorage.get(key)
+  },
+  async set(key, value) {
+    oldStorage.set(key, value)
+  },
+  async remove(key) {
+    oldStorage.delete(key)
+  },
+  async scan() {
+    return { entries: [] }
+  },
+})
+await buildPayload(
+  { sessionID: "append-old", system: [], messages: [user("ou1", "old")], model: {} },
+  { store: oldStore, config: appendConfig },
+)
+const oldRecord = await oldStore.load("append-old", { fresh: true })
+ok(
+  oldRecord.base?.goal === "old record" && (oldRecord.updates ?? []).length === 0,
+  "an old record migrates its memory to the checkpoint",
+)
+
+// A snapshot-mode write drops a stale log, so a switch back migrates safely.
+const switchStore = new SessionStore()
+const switchAppend = { store: switchStore, config: appendConfig }
+const switchSnapshot = {
+  store: switchStore,
+  config: resolveConfig({
+    options: { contextLayout: "snapshot", workingTokens: 20_000, memoryTokens: 3000, charsPerToken: 2 },
+  }),
+}
+const switchPass = (messages, deps) =>
+  buildPayload({ sessionID: "append-switch", system: [], messages, model: {} }, deps)
+const switchTurn1 = [user("su1", "Switch one."), assistant("sa1", "ok")]
+await switchPass(switchTurn1, switchAppend)
+await runMemoryTool(
+  { sessionID: "append-switch", action: "patch", patch: { goal: "append era" } },
+  switchAppend,
+)
+await switchPass(switchTurn1, switchSnapshot)
+await runMemoryTool(
+  { sessionID: "append-switch", action: "patch", patch: { goal: "snapshot era" } },
+  switchSnapshot,
+)
+let switchRecord = await switchStore.load("append-switch")
+ok(
+  switchRecord.base === undefined && switchRecord.updates === undefined && switchRecord.windowStart === undefined,
+  "a snapshot-mode write drops the append fields",
+)
+const switchedBack = await switchPass(
+  [...switchTurn1, user("su2", "Switch two."), assistant("sa2", "ok")],
+  switchAppend,
+)
+switchRecord = await switchStore.load("append-switch")
+ok(
+  switchRecord.base?.goal === "snapshot era" && (switchRecord.updates ?? []).length === 0,
+  "switching back migrates the snapshot-era memory",
+)
+ok(
+  switchedBack.messages[0].content[0].text.includes("snapshot era"),
+  "the migrated checkpoint carries the snapshot-era patch",
+)
+
+// The append window starts at the marker and asks for a fallback when it is gone.
+const appendWindow = selectAppendWindow(appendTurn2, "au2")
+ok(appendWindow?.turns.map((span) => span.id).join(",") === "au2", "the append window keeps from the marker")
+ok(selectAppendWindow(appendTurn2, "missing") === undefined, "a missing marker asks for a fallback")
+
+const snapshotCompact = await runMemoryTool(
+  { sessionID: "snapshot-compact", action: "compact" },
+  { store: new SessionStore(), config: resolveConfig({}) },
+)
+ok(
+  !snapshotCompact.ok && /contextLayout/.test(snapshotCompact.text),
+  "compact is refused in the snapshot layout",
 )
 
 // ---------------------------------------------------------------------------

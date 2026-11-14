@@ -21,6 +21,7 @@ An OpenCode 2.0 plugin that hands context management to the model. Instead of re
 ## What it does
 
 - The model writes a **memory document** with the `smart_context` tool — the goal, plan, facts, files, decisions and open threads — and every request starts with it.
+- An optional **append-only layout** (`contextLayout: "append"`) keeps that document as a checkpoint and appends one accepted delta after each completed turn, so a patch does not rewrite the provider prefix; compaction folds the log into a new checkpoint.
 - A short **verbatim working window** keeps the newest turns exactly as they happened, so nothing in the live tool loop is paraphrased.
 - When a turn leaves the window it moves to a **gated archive**, kept for `recall` rather than replayed or dropped silently.
 - **Compaction is owned by the plugin.** When the host makes a checkpoint, the plugin answers with the memory document itself instead of a separate summarization call.
@@ -80,6 +81,7 @@ The settings a user normally touches:
 | Setting | Default | Meaning |
 | --- | --- | --- |
 | `enabled` | `true` | master switch |
+| `contextLayout` | `"snapshot"` | `"snapshot"` rewrites one memory block; `"append"` keeps a checkpoint and appends deltas |
 | `memoryTokens` | `20000` | cap on the model-authored memory, estimated |
 | `workingTokens` | `20000` | cap on the verbatim working window, estimated |
 | `autoArchive` | `true` | archive unhandled evictions instead of dropping them |
@@ -108,7 +110,7 @@ Profiles are named bundles of the session-level settings. A session takes, in or
 }
 ```
 
-A profile may set only the session keys (`memoryTokens`, `workingTokens`, `charsPerToken`, `evictionLead`, `autoArchive`, `archiveMaxTurns`, `archiveMaxChars`, `parentArchive`, `expandDigestChars`, `refs`, `maxResultChars`); the install keys are refused. Switch from the sidebar's `[profile]`, the dialog's `Switch profile...`, or `/context profile auto|base|<name>`.
+A profile may set only the session keys (`contextLayout`, `memoryTokens`, `workingTokens`, `charsPerToken`, `evictionLead`, `autoArchive`, `archiveMaxTurns`, `archiveMaxChars`, `parentArchive`, `expandDigestChars`, `refs`, `maxResultChars`); the install keys are refused. Switch from the sidebar's `[profile]`, the dialog's `Switch profile...`, or `/context profile auto|base|<name>`.
 
 The source repository's `docs/SPEC.md` has the full table and the behavior.
 
@@ -116,14 +118,14 @@ The update check is the only network call the plugin makes, and it runs in the T
 
 ## Use
 
-- The model writes memory with the `smart_context` tool: `patch`, `read`, `stats`, `ref`, `archive`, `purge`, `recall`, `expand`.
+- The model writes memory with the `smart_context` tool: `patch`, `read`, `stats`, `compact`, `ref`, `archive`, `purge`, `recall`, `expand`.
 - A turn that left the working window is readable before it is archived: `expand` looks in the archive first and then in the pending queue, and says when a read is not durable. `archive` without `keepRaw` warns that the raw is now gone, so `expand` can only return the gist.
 - A subagent can read its spawning session's archive without importing it: `recall`/`expand` with `from:"parent"`. The field is read-only and never reaches a writing action, and the reply tells the child how many characters its caller can actually keep.
 - `/context` prints the current memory and archive, and carries the control actions a user needs; the subcommands are in [The `/context` command](#the-context-command).
 - The palette command `Context status` opens the same numbers as a dialog, with `Switch profile...`, `Resume` and `Purge a turn...` below them, and the TUI sidebar carries a short block of the same numbers with clickable `status` / `profile` / `resume` / `purge`; see [The TUI status dialog](#the-tui-status-dialog).
 - `/undo` is followed: when the host commits a revert, the plugin rolls its own record back with it - memory written in the undone turn is undone, notices it retired are pinned again, purged turns come back, and the memory block says so for that turn. The journal covers the last eight turns; see "Undo" in the SPEC.
 
-Every request starts with a `<smart-context>` block. If `goal` is empty, the model is told to write the request there before the raw first message leaves the working window.
+Every request starts with a `<smart-context>` block. If `goal` is empty, the model is told to write the request there before the raw first message leaves the working window. In the append layout, that block is a checkpoint; a completed turn that wrote memory carries a `<smart-context-update>` delta, and a `<smart-context-state>` note before the current turn carries the mode and the shared pool.
 
 ## The `/context` command
 

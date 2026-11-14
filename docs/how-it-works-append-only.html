@@ -93,11 +93,11 @@ svg .headDanger{fill:var(--danger-line)}
 </head>
 <body>
 <main>
-<p class="kicker">Mega Smart Context · design preview</p>
+<p class="kicker">Mega Smart Context · implementation preview</p>
 <h1>Append-only memory</h1>
 <p class="lede">Today the memory block is rewritten every time the model saves a patch. This design keeps a big snapshot still and appends small updates after it. The provider can keep the old prefix cached; only the new tail is read.</p>
 
-<div class="note"><strong>Not shipped yet.</strong> This page describes the proposed branch. The layout that ships today is the <a href="how-it-works.html">current visual tour</a>. Nothing on this page has been committed to <code>main</code>.</div>
+<div class="note"><strong>Behind a flag.</strong> This layout is implemented on <code>feat/append-only-memory</code> behind <code>contextLayout:&quot;append&quot;</code>. The default remains the snapshot layout; this page is the design explanation, and the <a href="how-it-works.html">current visual tour</a> describes the default. The request shape, the update blocks and the compaction reset are live; the code is in <code>src/core/append.ts</code> and <code>buildAppendPlan</code>.</div>
 
 <div class="idea">
 <p><strong>The one idea:</strong> do not edit page 1. Add a sticky note at the end.</p>

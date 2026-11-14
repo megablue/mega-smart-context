@@ -12,10 +12,13 @@
  */
 
 import { estimateTokens, formatTokens, memoryChars } from "./measure.ts"
-import { isMemoryEmpty } from "./schema.ts"
+import { isMemoryEmpty, MEMORY_FIELDS } from "./schema.ts"
 import { choiceLabel, chooseProfile, configForRecord, modelLabel } from "./profiles.ts"
+import { snapshotMemory } from "./append.ts"
+import { modeReminderOf } from "./view.ts"
 import type { ResolvedConfig } from "./config.ts"
-import type { SessionRecord } from "./types.ts"
+import type { Memory, MemoryUpdate, SessionRecord } from "./types.ts"
+import { isPlainObject } from "./types.ts"
 
 /**
  * The name a person reads. The `/context` report puts it on its first line, and
@@ -70,12 +73,36 @@ the working budget (verbatim), and the current turn.
 - This block carries no live numbers. Read them with action:"stats" (or the
   /context command) and keep memory lean; compact before it is over.`
 
+/**
+ * The extra static system part the append layout pushes after {@link POLICY}.
+ *
+ * It is one stable block, so it rides the prefix cache with the policy. It
+ * explains the two shapes the model will see: the checkpoint first, then the
+ * per-turn update blocks.
+ */
+export const APPEND_NOTE = `## Append-only memory
+
+The first block is a checkpoint, not the live document. A \`<smart-context-update>\`
+block after a turn carries that turn's accepted patches; the newest value wins.
+\`action:"read"\` returns the merged document. At compaction the checkpoint is
+replaced, the log is cleared, and a short tail is kept. The live mode, pool usage
+and pending evictions are in \`<smart-context-state>\` just before the current
+turn, not in the header.`
+
 export interface BudgetReport {
+  readonly layout: "snapshot" | "append"
   readonly memoryTokens: number
   readonly workingTokens: number
   readonly totalTokens: number
   readonly memoryCap: number
   readonly workingCap: number
+  /** The shared pool: `memoryCap + workingCap`, and the request's current share. */
+  readonly poolTokens: number
+  readonly poolCap: number
+  /** The checkpoint and the update log, split out for the append surfaces. */
+  readonly snapshotTokens: number
+  readonly updateTokens: number
+  readonly updateCount: number
   readonly refs: number
   readonly pending: number
   readonly archive: number
@@ -94,22 +121,42 @@ export function budgetOf(record: SessionRecord, config: ResolvedConfig): BudgetR
   // The caps a session is actually held to, not the install's: a profile is a
   // real budget change, and every surface must report the numbers enforced.
   const effective = configForRecord(config, record)
-  const memoryTokens = estimateTokens(memoryChars(record.memory), effective.charsPerToken)
+  const snapshotText = renderSnapshot(snapshotMemory(record))
+  const updateText = (record.updates ?? []).map(renderUpdate).join("\n")
+  const snapshotTokens = estimateTokens(snapshotText.length, effective.charsPerToken)
+  const updateTokens = estimateTokens(updateText.length, effective.charsPerToken)
+  const memoryTokens =
+    effective.contextLayout === "append"
+      ? snapshotTokens + updateTokens
+      : estimateTokens(memoryChars(record.memory), effective.charsPerToken)
   const workingTokens = record.lastReport?.workingTokens ?? 0
+  const totalTokens = memoryTokens + workingTokens
+  const poolCap = effective.memoryTokens + effective.workingTokens
+  const modelContext = record.lastReport?.modelContext
+  const overBudget =
+    effective.contextLayout === "append"
+      ? totalTokens > poolCap || (modelContext !== undefined && totalTokens > Math.floor(modelContext * 0.9))
+      : memoryTokens > effective.memoryTokens || workingTokens > effective.workingTokens
   return {
+    layout: effective.contextLayout,
     memoryTokens,
     workingTokens,
-    totalTokens: memoryTokens + workingTokens,
+    totalTokens,
     memoryCap: effective.memoryTokens,
     workingCap: effective.workingTokens,
+    poolTokens: totalTokens,
+    poolCap,
+    snapshotTokens,
+    updateTokens,
+    updateCount: (record.updates ?? []).length,
     refs: record.memory.refs.length,
     pending: record.pending.length,
     archive: record.archive.length,
     workingTurns: record.lastReport?.workingTurns ?? 0,
     droppedTurns: record.lastReport?.droppedTurns ?? 0,
-    overBudget: memoryTokens > effective.memoryTokens || workingTokens > effective.workingTokens,
+    overBudget,
     goalEmpty: record.memory.goal.trim().length === 0,
-    modelContext: record.lastReport?.modelContext,
+    modelContext,
     hostSystemTokens: record.lastReport?.hostSystemTokens,
     hostSystemParts: record.lastReport?.hostSystemParts,
   }
@@ -139,19 +186,14 @@ function budgetLine(report: BudgetReport): string {
 }
 
 /**
- * Render the memory document.
+ * The shared body of the memory document: goal through notes.
  *
- * The block is data, not instructions: values are JSON-quoted so a newline or a
- * delimiter inside a model-written note cannot change the shape. The only prose
- * is the fixed labels and the mechanical pending-eviction notice.
- *
- * Deliberately no live numbers: a `budget:` line here would be rewritten on
- * every pass, so nothing before it in the prefix could stay cached. The numbers
- * live in `action:"stats"` and `/context` only.
+ * `sortMaps` is for the append checkpoint, whose bytes must stay identical
+ * across a reload; the snapshot layout keeps insertion order so an existing
+ * record's block does not move.
  */
-export function renderMemory(record: SessionRecord): string {
-  const memory = record.memory
-  const lines: string[] = ["<smart-context>"]
+function memoryBody(memory: Memory, sortMaps: boolean): string[] {
+  const lines: string[] = []
 
   if (memory.goal.trim().length === 0) {
     lines.push("goal: (empty — write the user's request here before it leaves the window)")
@@ -172,7 +214,7 @@ export function renderMemory(record: SessionRecord): string {
     ["Decisions", memory.decisions],
   ]
   for (const [title, map] of maps) {
-    const keys = Object.keys(map)
+    const keys = sortMaps ? Object.keys(map).sort() : Object.keys(map)
     if (keys.length === 0) continue
     lines.push("", `## ${title}`)
     for (const key of keys) lines.push(`- ${q(key)}: ${q(map[key])}`)
@@ -196,6 +238,27 @@ export function renderMemory(record: SessionRecord): string {
     lines.push("", "## Notes", q(memory.notes))
   }
 
+  return lines
+}
+
+function emptyNotice(memory: Memory): string[] {
+  return isMemoryEmpty(memory) ? ["", "(memory is empty — it stays that way until you write it)"] : []
+}
+
+/**
+ * Render the memory document.
+ *
+ * The block is data, not instructions: values are JSON-quoted so a newline or a
+ * delimiter inside a model-written note cannot change the shape. The only prose
+ * is the fixed labels and the mechanical pending-eviction notice.
+ *
+ * Deliberately no live numbers: a `budget:` line here would be rewritten on
+ * every pass, so nothing before it in the prefix could stay cached. The numbers
+ * live in `action:"stats"` and `/context` only.
+ */
+export function renderMemory(record: SessionRecord): string {
+  const lines: string[] = ["<smart-context>", ...memoryBody(record.memory, false)]
+
   if (record.lastUndo !== undefined) {
     // Shown for the turn the rollback landed in only: the model that wrote the
     // undone memory needs to know it is gone, and a later turn does not.
@@ -216,11 +279,113 @@ export function renderMemory(record: SessionRecord): string {
     }
   }
 
-  if (isMemoryEmpty(memory)) {
-    lines.push("", "(memory is empty — it stays that way until you write it)")
+  lines.push(...emptyNotice(record.memory))
+  lines.push("</smart-context>")
+  return lines.join("\n")
+}
+
+/**
+ * Render the append checkpoint: the eight memory keys, no live state.
+ *
+ * Sorted maps make the bytes a function of the content rather than of the
+ * order the model happened to mention entries in, so a re-run over the same
+ * record cannot move the checkpoint.
+ */
+export function renderSnapshot(memory: Memory): string {
+  const lines = ["<smart-context>", ...memoryBody(memory, true), ...emptyNotice(memory), "</smart-context>"]
+  return lines.join("\n")
+}
+
+/**
+ * Render one turn's accepted delta.
+ *
+ * A map is partial: only the entries that changed, with `null` for a deletion.
+ * A list or a string is the full new value. No timestamp: the turn id is the
+ * stable key, and a live clock would make the block churn.
+ */
+export function renderUpdate(update: MemoryUpdate): string {
+  const lines = [`<smart-context-update turn=${q(update.turn)}>`]
+  for (const field of MEMORY_FIELDS) {
+    if (!(field.key in update.patch)) continue
+    const value = update.patch[field.key]
+    if (value === null) {
+      lines.push(`## ${field.key}`, "null")
+      continue
+    }
+    if (field.kind === "map") {
+      if (!isPlainObject(value)) continue
+      const keys = Object.keys(value).sort()
+      if (keys.length === 0) continue
+      lines.push(`## ${field.key}`)
+      for (const key of keys) {
+        const entry = value[key]
+        lines.push(`- ${q(key)}: ${entry === null ? "null" : q(String(entry))}`)
+      }
+      continue
+    }
+    if (field.kind === "list") {
+      lines.push(`## ${field.key}`, JSON.stringify(value))
+      continue
+    }
+    lines.push(`## ${field.key}`, q(String(value)))
+  }
+  lines.push("</smart-context-update>")
+  return lines.join("\n")
+}
+
+/** The numbers the tail state note prints. Kept separate so `renderTailState` stays pure. */
+export interface TailBudget {
+  readonly poolTokens: number
+  readonly poolCap: number
+  readonly snapshotTokens: number
+  readonly updateTokens: number
+  readonly workingTokens: number
+  readonly compactDue: boolean
+}
+
+/**
+ * The tail state note: the only part of the prefix that is allowed to churn.
+ *
+ * It sits before the current turn, never after it, so the model does not read it
+ * as the latest request. The mode is a compact label rather than the full host
+ * reminder; the full text is still on the record for `action:"notice"`.
+ */
+export function renderTailState(record: SessionRecord, budget: TailBudget): string {
+  const lines = ["<smart-context-state>"]
+
+  const notices = record.notices ?? []
+  let mode: "plan" | "build" | undefined
+  for (let index = notices.length - 1; index >= 0 && mode === undefined; index -= 1) {
+    mode = modeReminderOf(notices[index].text)
+  }
+  if (mode === "plan") lines.push("mode: plan — do not modify files; tell the user to switch agents")
+  else if (mode === "build") lines.push("mode: build — edit and run commands")
+
+  const over = budget.poolTokens > budget.poolCap ? " · over cap" : ""
+  lines.push(
+    `pool: ${formatTokens(budget.poolTokens)}/${formatTokens(budget.poolCap)}` +
+      ` (snapshot ${formatTokens(budget.snapshotTokens)} · updates ${formatTokens(budget.updateTokens)} · turns ${formatTokens(budget.workingTokens)})${over}`,
+  )
+
+  for (const pending of record.pending) {
+    lines.push(`pending: ${pending.id} · ${q(pending.gist)}`)
+    lines.push(
+      `  → smart_context action:"archive" turn:${q(pending.id)} gist:"…" (or action:"purge" turn:${q(pending.id)})`,
+    )
   }
 
-  lines.push("</smart-context>")
+  if (record.lastUndo !== undefined) {
+    lines.push(
+      `undo: the host reverted this session to before ${q(record.lastUndo.turn)}; ` +
+        "memory written in the undone turn was rolled back",
+    )
+  }
+
+  if (budget.compactDue) {
+    lines.push('compaction due: write anything still only in the turns, then call smart_context action:"compact"')
+  }
+
+  lines.push("</smart-context-state>")
   return lines.join("\n")
 }
 
@@ -244,8 +409,13 @@ function isoDate(at: number): string {
  * the same record is byte-identical and a provider prefix cache stays warm.
  * `undefined` when there is nothing to pin, so the caller adds no part.
  */
-export function renderNotices(record: SessionRecord): string | undefined {
-  const notices = record.notices ?? []
+export function renderNotices(
+  record: SessionRecord,
+  options: { excludeModes?: boolean } = {},
+): string | undefined {
+  const notices = (record.notices ?? []).filter(
+    (notice) => options.excludeModes !== true || modeReminderOf(notice.text) === undefined,
+  )
   if (notices.length === 0) return undefined
   const lines = [NOTICE_HEADING, ""]
   for (let index = notices.length - 1; index >= 0; index -= 1) {
@@ -271,6 +441,12 @@ export function renderStats(record: SessionRecord, config: ResolvedConfig, versi
     `profile: ${choiceLabel(profile)}${record.lastModel === undefined ? "" : ` · ${modelLabel(record.lastModel)}`}`,
     `window: ${report.workingTurns} turns kept, ${report.droppedTurns} dropped · over budget: ${report.overBudget ? "yes" : "no"}`,
   ]
+  if (report.layout === "append") {
+    lines.push(
+      `layout: append · pool ${formatTokens(report.poolTokens)}/${formatTokens(report.poolCap)}` +
+        ` (snapshot ${formatTokens(report.snapshotTokens)} · updates ${formatTokens(report.updateTokens)} · turns ${formatTokens(report.workingTokens)})`,
+    )
+  }
   if (record.lastUndo !== undefined) {
     lines.push(
       `last undo: before ${record.lastUndo.turn} · ${record.lastUndo.memory} memory key(s) restored, ` +

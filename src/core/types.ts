@@ -132,6 +132,31 @@ export interface Memory {
   notes: string
 }
 
+/**
+ * One accepted memory patch, attached to the turn that wrote it.
+ *
+ * The patch is the delta the model asked for, with unknown keys and invalid
+ * entries already removed. A map value is partial: it names only the entries
+ * that changed, and `null` inside it means the entry was deleted. A list or a
+ * string carries its full new value. `record.memory` remains the merged
+ * document; this is the append-only record the request renders.
+ */
+export interface MemoryUpdate {
+  /** The turn that wrote the patch; empty when the tool ran outside a turn. */
+  turn: string
+  /** When the patch was accepted (`Date.now()`). */
+  at: number
+  /** The accepted delta, keyed by `Memory` key. */
+  patch: Record<string, unknown>
+}
+
+/** A pending append-only compaction, set by the tool or by the pool. */
+export interface CompactMark {
+  /** `requested`: the model asked now. `due`: the pool is full and the next pass folds. */
+  mode: "requested" | "due"
+  at: number
+}
+
 // ---------------------------------------------------------------------------
 // Durable per-session state
 // ---------------------------------------------------------------------------
@@ -392,6 +417,34 @@ export interface ProfilePin {
 export interface SessionRecord {
   version: 1
   memory: Memory
+  /**
+   * The checkpoint the append-only layout renders first.
+   *
+   * `memory` is always the merged document, so `read`, `stats` and undo keep
+   * working without replaying the log. `base` is the same document as of the
+   * last compaction; together with `updates` it is what the request carries.
+   * Absent on a snapshot-layout record, and on an append record before its
+   * first migration (the pass then sets it to `memory`).
+   */
+  base?: Memory
+  /**
+   * Accepted patches since `base`, oldest first.
+   *
+   * One entry per turn is the common case: repeated patches in the same turn
+   * coalesce. The request renders each entry after its turn; compaction folds
+   * them into `base` and clears the list.
+   */
+  updates?: MemoryUpdate[]
+  /**
+   * The first turn kept in the append-only working window.
+   *
+   * The window grows from this turn to the newest one until compaction. It is
+   * seeded from the first pass's ordinary window, so enabling the layout
+   * mid-session does not replay a history the plugin never managed.
+   */
+  windowStart?: string
+  /** A compaction the next pass must perform, or a `due` note waiting for that pass. */
+  compact?: CompactMark
   /** Turn ids that were in the working window on the previous pass. */
   seenTurns: string[]
   pending: PendingTurn[]

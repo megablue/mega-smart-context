@@ -155,6 +155,7 @@ export function profileNames(config: ResolvedConfig): string[] {
 }
 
 const LABELS: Record<SessionKey, string> = {
+  contextLayout: "layout",
   memoryTokens: "memory",
   workingTokens: "working",
   charsPerToken: "chars/token",
@@ -176,8 +177,9 @@ const TOKEN_KEYS = new Set<SessionKey>([
   "maxResultChars",
 ])
 
-function summaryValue(key: SessionKey, value: number | boolean): string {
+function summaryValue(key: SessionKey, value: number | boolean | string): string {
   if (typeof value === "boolean") return value ? "on" : "off"
+  if (typeof value === "string") return value
   if (TOKEN_KEYS.has(key)) return formatTokens(value)
   return String(value)
 }

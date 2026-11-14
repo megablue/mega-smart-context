@@ -339,6 +339,43 @@ export function selectWorkingWindow(
 }
 
 /**
+ * The append-only window: every turn from `windowStart` to the newest one.
+ *
+ * There is no per-turn drop here. The era grows until compaction, which is what
+ * lets a turn's update block stay beside the turn that wrote it. `undefined`
+ * means the marker is absent or the host trimmed it away; the caller then falls
+ * back to the ordinary window and seeds a new marker, so a host compaction
+ * cannot replay a history the plugin no longer has.
+ */
+export interface AppendWindow {
+  readonly startIdx: number
+  readonly turns: ReadonlyArray<TurnSpan>
+  readonly dropped: ReadonlyArray<TurnSpan>
+  readonly chars: number
+}
+
+export function selectAppendWindow(
+  messages: ReadonlyArray<Message>,
+  windowStart: string | undefined,
+): AppendWindow | undefined {
+  const spans = turnSpans(messages)
+  if (spans.length === 0) return { startIdx: 0, turns: [], dropped: [], chars: 0 }
+  if (windowStart === undefined) return undefined
+  const index = spans.findIndex((span) => span.id === windowStart)
+  if (index < 0) return undefined
+  let chars = 0
+  for (let position = spans[index].startIdx; position < messages.length; position += 1) {
+    chars += messageChars(messages[position])
+  }
+  return {
+    startIdx: spans[index].startIdx,
+    turns: spans.slice(index),
+    dropped: spans.slice(0, index),
+    chars,
+  }
+}
+
+/**
  * Fold the tool-call/result balance over the payload.
  *
  * `cuts[i]` is true when a cut before message `i` splits no call. A result with

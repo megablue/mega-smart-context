@@ -17,6 +17,7 @@
  */
 
 import { archivePending, findArchived, findPending, purgeQuery, recall } from "./archive.ts"
+import { acceptedPatch, appendUpdate, checkpointAppend, currentTurnOf, invalidateAppend, migrateAppend } from "./append.ts"
 import type { ResolvedConfig } from "./config.ts"
 import { estimateTokens, formatTokens, memoryChars } from "./measure.ts"
 import { retirePinned } from "./notices.ts"
@@ -68,12 +69,13 @@ export interface MemoryToolOutcome {
 }
 
 /** Actions that cannot take from: they write, and writes act on this session. */
-const MUTATING_ACTIONS = new Set(["read", "patch", "stats", "ref", "archive", "purge", "notice"])
+const MUTATING_ACTIONS = new Set(["read", "patch", "stats", "ref", "archive", "purge", "notice", "compact"])
 
 export const TOOL_HELP = `smart_context actions:
 - read { key? } - print one memory key, or the whole document
 - patch { patch } - merge a patch (maps merge, lists replace, null resets)
 - stats - memory/working/archive usage
+- compact - fold the append-only update log into a new checkpoint and reset the window
 - ref { page, section, gist } - store a feature-map pointer and compare costs
 - archive { turn, gist, keepRaw? } - move a pending turn to the archive; without keepRaw the raw is discarded
 - purge { turn? | query? } - delete a pending/archived turn, or matching entries
@@ -159,11 +161,16 @@ function expandBudget(config: ResolvedConfig, fromParent: boolean): { budget: nu
 
 function usage(record: SessionRecord, config: ResolvedConfig): string {
   const report = budgetOf(record, config)
-  return (
-    `memory ${formatTokens(report.memoryTokens)}/${formatTokens(report.memoryCap)} est · ` +
-    `working ${formatTokens(report.workingTokens)}/${formatTokens(report.workingCap)} est · ` +
-    `refs ${report.refs} · pending ${report.pending} · archive ${report.archive}`
-  )
+  const parts = [
+    `memory ${formatTokens(report.memoryTokens)}/${formatTokens(report.memoryCap)} est`,
+    `working ${formatTokens(report.workingTokens)}/${formatTokens(report.workingCap)} est`,
+  ]
+  if (report.layout === "append") parts.push(`updates ${report.updateCount}`)
+  parts.push(`refs ${report.refs}`, `pending ${report.pending}`, `archive ${report.archive}`)
+  if (report.layout === "append") {
+    parts.push(`pool ${formatTokens(report.poolTokens)}/${formatTokens(report.poolCap)}`)
+  }
+  return parts.join(" · ")
 }
 
 function read(record: SessionRecord, request: MemoryToolRequest, config: ResolvedConfig): MemoryToolOutcome {
@@ -183,7 +190,8 @@ function patch(
 ): MemoryToolOutcome {
   const parsed = parsePatch(request.patch)
   if (parsed.error !== undefined) return { text: `smart_context: ${parsed.error}`, ok: false }
-  const result = applyPatch(record.memory, parsed.patch)
+  const before = record.memory
+  const result = applyPatch(before, parsed.patch)
   if (result.changed.length === 0 && result.dropped.length === 0 && result.errors.length === 0) {
     return { text: "smart_context: nothing to change", ok: false }
   }
@@ -199,8 +207,17 @@ function patch(
   }
 
   // Capture before the assignment: an undo restores the turn's starting document.
-  captureMemory(record, record.memory, result.changed, now)
-  record.memory = result.memory
+  captureMemory(record, before, result.changed, now)
+  if (config.contextLayout === "append") {
+    // The checkpoint must be the document as it stood before this patch; only
+    // then is the accepted delta a true append.
+    migrateAppend(record)
+    record.memory = result.memory
+    appendUpdate(record, acceptedPatch(before, result.memory, result.changed), currentTurnOf(record), now)
+  } else {
+    record.memory = result.memory
+    invalidateAppend(record)
+  }
   const lines = [`smart_context: stored${result.changed.length > 0 ? " " + result.changed.join(", ") : ""}`]
   if (result.dropped.length > 0) lines.push(`dropped unknown key(s): ${result.dropped.join(", ")}`)
   if (result.errors.length > 0) lines.push(`errors: ${result.errors.join("; ")}`)
@@ -225,6 +242,7 @@ async function addRef(
   const verdict = refVerdict(gist, sectionText, config.charsPerToken)
   const entry = { page, section, gist, tokens: verdict.gistTokens }
 
+  if (config.contextLayout === "append") migrateAppend(record)
   const before = record.memory.refs.map((ref) => ({ ...ref }))
   const index = record.memory.refs.findIndex((ref) => ref.page === page && ref.section === section)
   if (index >= 0) record.memory.refs[index] = entry
@@ -240,6 +258,16 @@ async function addRef(
   }
   // Capture only an accepted write: the over-cap refusal above left no trace.
   captureMemory(record, { ...record.memory, refs: before }, ["refs"], nowOf(deps))
+  if (config.contextLayout === "append") {
+    appendUpdate(
+      record,
+      { refs: record.memory.refs.map((ref) => ({ ...ref })) },
+      currentTurnOf(record),
+      nowOf(deps),
+    )
+  } else {
+    invalidateAppend(record)
+  }
 
   const lines: string[] = []
   if (verdict.found) {
@@ -311,6 +339,26 @@ function purge(
     return { text: `purged ${count} archived turn(s) matching ${JSON.stringify(query)}\n` + usage(record, config), ok: true }
   }
   return { text: "smart_context: purge needs turn or query", ok: false }
+}
+
+function compact(record: SessionRecord, config: ResolvedConfig, now: number): MemoryToolOutcome {
+  if (config.contextLayout !== "append") {
+    return {
+      text:
+        'smart_context: compact is only available with contextLayout:"append"; ' +
+        "the snapshot layout has no update log to fold",
+      ok: false,
+    }
+  }
+  migrateAppend(record)
+  checkpointAppend(record)
+  record.compact = { mode: "requested", at: now }
+  return {
+    text:
+      "smart_context: checkpoint written; the next request keeps the newest turns and moves the rest to pending.\n" +
+      usage(record, config),
+    ok: true,
+  }
 }
 
 /**
@@ -399,6 +447,10 @@ export async function runMemoryTool(
       return read(caller, request, config)
     case "stats":
       return { text: renderStats(caller, config) + "\n" + usage(caller, config), ok: true }
+    case "compact":
+      return mutateOutcome(deps, sessionID, (record) =>
+        compact(record, configForRecord(deps.config, record), nowOf(deps)),
+      )
     case "patch":
       return mutateOutcome(deps, sessionID, (record) =>
         patch(record, request, configForRecord(deps.config, record), nowOf(deps)),

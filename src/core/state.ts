@@ -15,8 +15,11 @@
  */
 
 import { emptyMemory, normalizeMemory } from "./schema.ts"
+import { normalizeUpdate } from "./append.ts"
 import type {
   ArchivedTurn,
+  CompactMark,
+  MemoryUpdate,
   ModelStamp,
   Notice,
   PassSample,
@@ -232,13 +235,34 @@ function normalizeProfilePin(value: unknown): ProfilePin | undefined {
   return { mode: "profile", name: value.name.trim(), at }
 }
 
-/** The model stamp of the last pass, or `undefined` when none was recorded. */
+/** A model stamp of the last pass, or `undefined` when none was recorded. */
 function normalizeModelStamp(value: unknown): ModelStamp | undefined {
   if (!isPlainObject(value)) return undefined
   if (typeof value.id !== "string" || value.id.trim().length === 0) return undefined
   const providerID = typeof value.providerID === "string" ? value.providerID.trim() : ""
   const variant = typeof value.variant === "string" && value.variant.trim().length > 0 ? value.variant.trim() : undefined
   return { providerID, id: value.id.trim(), ...(variant === undefined ? {} : { variant }) }
+}
+
+/** The append log, or `undefined` when the record has none. */
+function normalizeUpdates(value: unknown): MemoryUpdate[] | undefined {
+  if (!Array.isArray(value)) return undefined
+  const out: MemoryUpdate[] = []
+  for (const entry of value) {
+    const update = normalizeUpdate(entry)
+    if (update !== undefined) out.push(update)
+  }
+  return out
+}
+
+/** A pending append compaction, or `undefined` when none is marked. */
+function normalizeCompact(value: unknown): CompactMark | undefined {
+  if (!isPlainObject(value)) return undefined
+  if (value.mode !== "due" && value.mode !== "requested") return undefined
+  return {
+    mode: value.mode,
+    at: typeof value.at === "number" && Number.isFinite(value.at) ? value.at : 0,
+  }
 }
 
 /** The result of folding one pass's notices into a record. */
@@ -469,6 +493,12 @@ export function normalizeRecord(value: unknown, now: number): SessionRecord {
   }
   if (!isPlainObject(value)) return record
   record.memory = normalizeMemory(value.memory)
+  if (isPlainObject(value.base)) record.base = normalizeMemory(value.base)
+  const updates = normalizeUpdates(value.updates)
+  if (updates !== undefined) record.updates = updates
+  if (typeof value.windowStart === "string" && value.windowStart.length > 0) record.windowStart = value.windowStart
+  const compact = normalizeCompact(value.compact)
+  if (compact !== undefined) record.compact = compact
   if (Array.isArray(value.seenTurns)) record.seenTurns = value.seenTurns.filter((id): id is string => typeof id === "string")
   if (Array.isArray(value.pending)) {
     record.pending = value.pending.map(normalizePending).filter((entry): entry is PendingTurn => entry !== undefined)

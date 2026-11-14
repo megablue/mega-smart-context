@@ -32,6 +32,7 @@ Actions:
 - read { key? } — print one key, or the whole memory document.
 - patch { patch: { goal?, plan?, facts?, files?, decisions?, open?, refs?, notes? } } — merge a patch. Maps merge key by key, lists replace, null resets a key (or deletes one map entry). Unknown keys are dropped; a write over the memory cap is rejected, not trimmed.
 - stats — memory, working-window and archive usage.
+- compact — fold the append-only update log into a new checkpoint and reset the window. Only meaningful when contextLayout is "append".
 - ref { page, section, gist } — store a feature-map pointer and report the gist vs section cost.
 - archive { turn, gist, keepRaw? } — move a pending turn into the cold archive. Without keepRaw:true the raw messages are discarded and expand can only return the gist.
 - purge { turn? | query? } — delete a pending or archived turn, or matching entries.
@@ -44,7 +45,7 @@ export const TOOL_INPUT = {
   properties: {
     action: {
       type: "string",
-      enum: ["read", "patch", "stats", "ref", "archive", "purge", "recall", "expand", "notice"],
+      enum: ["read", "patch", "stats", "compact", "ref", "archive", "purge", "recall", "expand", "notice"],
       description: "What to do. See the tool description for each action.",
     },
     patch: {
