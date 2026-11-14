@@ -75,6 +75,7 @@ import {
   turnLabel,
 } from "../src/core/status.ts"
 import { MAX_SIDEBAR_SESSIONS, sessionsToDrop, sidebarRefreshOf } from "../src/tui/status-store.ts"
+import { bindLocation } from "../src/tui/context.ts"
 import { toneAttributes } from "../src/tui/theme.ts"
 import {
   MAX_UNDO_CHARS,
@@ -1609,6 +1610,7 @@ function makeTui(options, state, scene = {}) {
     profiles: [],
     stats: 0,
     rpcDefinition: undefined,
+    rpcCalls: [],
     slots: [],
     released: [],
     memory: 0,
@@ -1617,6 +1619,7 @@ function makeTui(options, state, scene = {}) {
   const memoryStores = new Map()
   const context = {
     options,
+    location: "location" in scene ? scene.location : { directory: "C:\\work\\acme" },
     storage: {
       store: () => [
         state,
@@ -1642,21 +1645,25 @@ function makeTui(options, state, scene = {}) {
       rpc: (definition) => {
         seen.rpcDefinition = definition
         return {
-          stats: async () => {
+          stats: async (input, options) => {
             seen.stats += 1
+            seen.rpcCalls.push({ method: "stats", options })
             if (scene.statsError !== undefined) throw new Error(scene.statsError)
             return scene.reply
           },
-          purge: async (input) => {
+          purge: async (input, options) => {
             seen.purges.push(input)
+            seen.rpcCalls.push({ method: "purge", options })
             return scene.purgeReply ?? { ok: true, text: `purged ${input.turn}` }
           },
-          notice: async (input) => {
+          notice: async (input, options) => {
             seen.notices.push(input)
+            seen.rpcCalls.push({ method: "notice", options })
             return scene.noticeReply ?? { ok: true, text: `retired ${input.id}` }
           },
-          profile: async (input) => {
+          profile: async (input, options) => {
             seen.profiles.push(input)
+            seen.rpcCalls.push({ method: "profile", options })
             return (
               scene.profileReply ?? {
                 ok: true,
@@ -2159,6 +2166,40 @@ ok(
 )
 ok(sessionsToDrop({ a: { reply: statusReply, at: 1 } }).length === 0, "a mirror inside the bound drops nothing")
 
+// The host dispatches a plugin RPC by location (OpenCode 2.2.7+): a call that
+// names none is `rpc.unavailable`, which the block reads as "no numbers yet".
+// The binder must add the location to every method, not only stats.
+const boundSeen = []
+const plainClient = {
+  stats: async (input, options) => {
+    boundSeen.push(["stats", options])
+    return statusReply
+  },
+  purge: async (input, options) => {
+    boundSeen.push(["purge", options])
+    return { ok: true, text: "" }
+  },
+  notice: async (input, options) => {
+    boundSeen.push(["notice", options])
+    return { ok: true, text: "" }
+  },
+  profile: async (input, options) => {
+    boundSeen.push(["profile", options])
+    return { ok: true, text: "" }
+  },
+}
+const bound = bindLocation(plainClient, { directory: "C:\\work\\acme" })
+await bound.stats({ sessionID: "s" })
+await bound.purge({ sessionID: "s", turn: "t" })
+await bound.notice({ sessionID: "s", id: "n" })
+await bound.profile({ sessionID: "s", mode: "auto" })
+ok(
+  boundSeen.length === 4 &&
+    boundSeen.every(([, options]) => options?.location?.directory === "C:\\work\\acme"),
+  "the RPC binder names the terminal's location on every method",
+)
+ok(bindLocation(plainClient, undefined) === plainClient, "a host without a location keeps the raw client")
+
 const statusScene = makeTui(
   { updateCheck: false },
   { checkedAt: 0, latest: "", notified: "" },
@@ -2173,6 +2214,12 @@ ok(
 )
 await statusCommand.run()
 ok(statusScene.seen.rpcDefinition === STATUS_RPC, "the command builds its client from the shared definition")
+ok(
+  statusScene.seen.rpcCalls.length === 1 &&
+    statusScene.seen.rpcCalls[0].method === "stats" &&
+    statusScene.seen.rpcCalls[0].options?.location?.directory === "C:\\work\\acme",
+  "the status dialog's RPC call carries the terminal's location",
+)
 const statusDialog = statusScene.seen.dialogs.find((dialog) => dialog.kind === "select")
 ok(
   statusDialog !== undefined && statusDialog.title.includes("0.1.99") && statusDialog.options[0].disabled === true,
@@ -2204,6 +2251,11 @@ ok(
     purgeScene.seen.purges[0].turn === "msg_p" &&
     purgeScene.toasts.at(-1).message === "purged msg_p",
   "purge sends the chosen turn and reports the reply",
+)
+ok(
+  purgeScene.seen.rpcCalls.find((call) => call.method === "purge")?.options?.location?.directory ===
+    "C:\\work\\acme",
+  "a purge carries the terminal's location too",
 )
 
 const homeScene = makeTui({ updateCheck: false }, {}, { route: { type: "home" } })
@@ -2601,6 +2653,11 @@ ok(
     profileScene.seen.profiles[0].mode === "profile" &&
     profileScene.seen.profiles[0].name === "deep",
   "the picker's choice goes to the RPC as a named pin",
+)
+ok(
+  profileScene.seen.rpcCalls.find((call) => call.method === "profile")?.options?.location?.directory ===
+    "C:\\work\\acme",
+  "a profile switch carries the terminal's location too",
 )
 ok(profileScene.toasts.at(-1).message.includes("profile deep"), "the switch is reported in a toast")
 

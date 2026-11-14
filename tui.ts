@@ -41,6 +41,7 @@ import {
 } from "./src/core/status.ts"
 import { choiceLabel, profileNames, profileSummary } from "./src/core/profiles.ts"
 import { sidebarRefreshOf } from "./src/tui/status-store.ts"
+import { bindLocation } from "./src/tui/context.ts"
 import type {
   KeymapCommand,
   KeymapLayer,
@@ -148,10 +149,15 @@ function sessionIDOf(context: TuiContext): string | undefined {
  * Building it at command time (not at setup) keeps a host without the domain on
  * every other surface: the update check does not depend on it, and the command
  * reports the gap instead of the plugin failing to load.
+ *
+ * The terminal's location is bound here, in one place, because the host routes
+ * a plugin RPC by it: since OpenCode 2.2.7 a call that names no location is
+ * answered `rpc.unavailable`, whatever the domain. Every caller below keeps its
+ * one-argument methods.
  */
 function rpcOf(context: TuiContext): StatusClient | undefined {
   try {
-    return context.client.rpc(STATUS_RPC)
+    return bindLocation(context.client.rpc(STATUS_RPC), context.location)
   } catch {
     return undefined
   }

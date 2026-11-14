@@ -48,16 +48,60 @@ export interface KeymapLayer {
   readonly commands?: readonly KeymapCommand[]
 }
 
+/**
+ * The project a terminal is attached to.
+ *
+ * The host dispatches a plugin RPC by location: a call that names none is
+ * answered `rpc.unavailable`, even when the domain is registered. The client
+ * takes one per call; `tui.ts` binds the terminal's at `rpcOf`.
+ */
+export interface LocationRef {
+  readonly directory: string
+  readonly workspaceID?: string
+}
+
+/** The per-call options the host's RPC client accepts. */
+export interface RpcCallOptions {
+  readonly location?: LocationRef
+}
+
 /** The RPC client the server half's `STATUS_RPC` hands back. */
 export interface StatusClient {
-  readonly stats: (input: { readonly sessionID: string }) => Promise<StatsReply>
-  readonly purge: (input: { readonly sessionID: string; readonly turn: string }) => Promise<{ ok: boolean; text: string }>
-  readonly notice: (input: { readonly sessionID: string; readonly id: string }) => Promise<{ ok: boolean; text: string }>
-  readonly profile: (input: {
-    readonly sessionID: string
-    readonly mode: "auto" | "base" | "profile"
-    readonly name?: string
-  }) => Promise<{ ok: boolean; text: string }>
+  readonly stats: (input: { readonly sessionID: string }, options?: RpcCallOptions) => Promise<StatsReply>
+  readonly purge: (
+    input: { readonly sessionID: string; readonly turn: string },
+    options?: RpcCallOptions,
+  ) => Promise<{ ok: boolean; text: string }>
+  readonly notice: (
+    input: { readonly sessionID: string; readonly id: string },
+    options?: RpcCallOptions,
+  ) => Promise<{ ok: boolean; text: string }>
+  readonly profile: (
+    input: {
+      readonly sessionID: string
+      readonly mode: "auto" | "base" | "profile"
+      readonly name?: string
+    },
+    options?: RpcCallOptions,
+  ) => Promise<{ ok: boolean; text: string }>
+}
+
+/**
+ * Bind one location to every method of a client.
+ *
+ * The host routes a plugin RPC by the location named on the call; a missing
+ * location is `rpc.unavailable`, not "use the current one". Binding here keeps
+ * every caller's one-argument signature and makes the rule impossible to forget
+ * on a new method: the terminal has one location, so it is added once.
+ */
+export function bindLocation(client: StatusClient, location: LocationRef | undefined): StatusClient {
+  if (location === undefined) return client
+  return {
+    stats: (input) => client.stats(input, { location }),
+    purge: (input) => client.purge(input, { location }),
+    notice: (input) => client.notice(input, { location }),
+    profile: (input) => client.profile(input, { location }),
+  }
 }
 
 /** The colours the sidebar paints with; the host owns the actual theme. */
@@ -92,6 +136,8 @@ export interface TuiStorage {
  */
 export interface TuiContext {
   readonly options: Readonly<Record<string, unknown>>
+  /** The project this terminal is attached to; RPC dispatch is scoped by it. */
+  readonly location?: LocationRef
   readonly storage: TuiStorage
   /**
    * The host client. `rpc` turns a portable definition into a method client over
