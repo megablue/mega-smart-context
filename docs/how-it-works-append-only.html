@@ -382,6 +382,37 @@ compact when memoryFoot + workingFoot &gt; pool</code></pre>
 
 <div class="note"><strong>What compaction cannot do.</strong> The plugin can fold patches mechanically. It cannot read a conversation and decide which unpatched detail matters. That is the model's job, which is why the “compaction due” note exists. If the model ignores it, the mechanical fold still keeps everything that was written to memory.</div>
 
+<h3>Rebuilding the retained tail</h3>
+<p>Compaction already changes the snapshot, so the provider is going to re-read everything after it. That is the one moment when rewriting the retained tail is free. Use it.</p>
+<p>Do not rebuild the whole turn blindly. The safe rule is: <strong>replace, never remove</strong> a tool result, and keep the newest result the model is waiting on.</p>
+
+<table>
+<thead><tr><th>Part</th><th>After compaction</th><th>Why</th></tr></thead>
+<tbody>
+<tr><td>reasoning in a completed turn</td><td>drop</td><td>It is scratch work; the conclusion is in the assistant text and memory.</td></tr>
+<tr><td>reasoning in the current turn</td><td>keep</td><td>Some providers need it to continue a tool loop; stripping it can break the turn.</td></tr>
+<tr><td>successful <code>write</code> or <code>edit</code> result</td><td>replace with the path and “ok”</td><td>The diff was useful while editing; after the turn the file is the source of truth.</td></tr>
+<tr><td>failed <code>write</code> or <code>edit</code> result</td><td>keep the error</td><td>An error is the next instruction; never summarize it away.</td></tr>
+<tr><td>successful <code>bash</code> or <code>shell</code> output</td><td>exit code plus the last ~20 lines</td><td>The tail usually holds the summary; the middle is noise.</td></tr>
+<tr><td>failed <code>bash</code> or <code>shell</code> output</td><td>keep the failing lines</td><td>Same reason: the error is the answer.</td></tr>
+<tr><td><code>read</code>, <code>glob</code> or <code>grep</code></td><td>keep the newest; older duplicates become “read earlier”</td><td>The model can re-read; the current answer is what matters.</td></tr>
+<tr><td>a tool result with no error marker</td><td>a short confirmation, not a deleted result</td><td>A call and its result must stay paired; the host may reject an orphan.</td></tr>
+<tr><td>user messages and assistant answers</td><td>keep verbatim</td><td>They are the contract, not tool chatter. Do not machine-summarize prose.</td></tr>
+</tbody>
+</table>
+
+<p>Two hard rules:</p>
+<ul>
+<li><strong>Never drop the newest tool result in the current turn.</strong> The model is waiting for it; without it the turn is broken.</li>
+<li><strong>Never change the shape.</strong> A text result stays text, a content array stays an array, a JSON result stays JSON. The host's <code>prepare</code> rejects the wrong shape.</li>
+</ul>
+
+<p>What else is safe: drop empty parts, collapse duplicate notices, normalize whitespace in tool output, keep only the latest mode line, and dedupe refs by page and section. What is not safe: rewriting the user's words, mechanically shrinking the model's final answer, or deleting the raw archive. The archive is where <code>recall</code> goes; keep it raw.</p>
+
+<div class="note warn"><strong>The call input can be the bigger cost.</strong> A <code>write</code> call carries the whole file, which can be larger than its “ok” result. But the input is part of the assistant message; truncating it may break the tool schema. Leave the call alone in v1. If call inputs dominate, the v2 move is to replace the whole call-and-result pair with one synthetic work-log note, not to edit the input in place.</div>
+
+<div class="note"><strong>Measure before trusting it.</strong> A summarized edit result may make the model re-read the file, which can cost more than the diff. A summary of a successful test may hide the one warning that mattered. Add <code>rebuildOnCompaction</code> as a flag, record <code>charsSaved</code>, and compare a real session with and without it. Start with the conservative rules above; leave unknown tools alone.</div>
+
 <h2>6. The tail state note</h2>
 <p>The mode, the live budget, pending evictions and undo all need to be visible, but none of them belongs in the snapshot. They go in one small note near the end, before the current turn.</p>
 
