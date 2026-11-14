@@ -195,7 +195,7 @@ img{max-width:100%;height:auto}
 <section id="compaction">
 <h2>Compaction</h2>
 <p>When the host asks for a checkpoint summary, the plugin returns the rendered memory document and skips the host&#39;s summarizer. If memory is empty, it declines and lets the host summarize; returning an empty block would erase the checkpoint in the name of owning it. The summary is the same block the model reads, so it too carries no live counters.</p>
-<p>In the append layout there is a second, plugin-owned checkpoint: <code>smart_context { action:&quot;compact&quot; }</code> folds the update log into the checkpoint immediately, and a full shared pool marks the next pass with a &quot;compaction due&quot; line and folds it mechanically if the model does not. The pass keeps the newest turns that fit the working share plus any unused memory room and sends the rest to pending/archive. The host hook still returns the merged document.</p>
+<p>In the append layout there is a second, plugin-owned checkpoint: <code>smart_context { action:&quot;compact&quot; }</code> folds the update log into the checkpoint immediately, and a full shared pool marks the next pass with a &quot;compaction due&quot; line and folds it mechanically if the model does not. The pass keeps the newest turns that fit the working share plus any unused memory room and sends the rest to pending/archive. The host hook still returns the merged document. A routine compact is a loss, not a tidy-up: it moves the checkpoint and makes the provider re-read it, so the tool description reserves it for a state note that says compaction is due.</p>
 </section>
 <section id="undo">
 <h2>Undo</h2>
@@ -252,7 +252,7 @@ img{max-width:100%;height:auto}
 </tr>
 <tr>
 <td><code>compact</code></td>
-<td>fold the append-only update log into a new checkpoint and reset the window; refused when <code>contextLayout</code> is <code>&quot;snapshot&quot;</code></td>
+<td>fold the append-only update log into a new checkpoint and reset the window; refused when <code>contextLayout</code> is <code>&quot;snapshot&quot;</code>. Not routine: it rewrites the checkpoint and costs the provider prefix cache</td>
 </tr>
 <tr>
 <td><code>ref { page, section, gist }</code></td>
