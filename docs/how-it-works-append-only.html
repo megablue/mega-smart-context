@@ -1,0 +1,438 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Append-only memory - a design tour</title>
+<style>
+:root{
+  color-scheme:light dark;
+  --fg:#1d2433;--muted:#5b6475;--bg:#fff;--panel:#f7f9fc;--line:#d8dee9;--code:#f1f4f9;
+  --accent:#0b6e99;--warn:#8a5a00;
+  --host:#dceefb;--host-line:#4a90c2;
+  --core:#e3f4e8;--core-line:#3c8a5a;
+  --state:#fff3d6;--state-line:#b8860b;
+  --model:#efe8fb;--model-line:#7a5cc4;
+  --tui:#eef1f5;--tui-line:#6b778c;
+  --danger:#fde7e7;--danger-line:#b45454;
+}
+@media (prefers-color-scheme:dark){
+  :root{
+    --fg:#e6eaf2;--muted:#9aa4b8;--bg:#11151c;--panel:#171d27;--line:#2b3342;--code:#1a202a;
+    --accent:#6cc4e8;--warn:#e0b25c;
+    --host:#123247;--host-line:#5cb3e8;
+    --core:#123526;--core-line:#57c98a;
+    --state:#3a2c10;--state-line:#e0b25c;
+    --model:#2a2140;--model-line:#b79cf0;
+    --tui:#20262f;--tui-line:#94a3b8;
+    --danger:#3a1d1d;--danger-line:#e08a8a;
+  }
+}
+*{box-sizing:border-box}
+body{margin:0 auto;max-width:74rem;padding:2rem 1.25rem 4rem;background:var(--bg);color:var(--fg);font:16px/1.6 system-ui,-apple-system,Segoe UI,sans-serif}
+h1,h2,h3{line-height:1.25;margin:2rem 0 .75rem}
+h1{font-size:1.95rem;border-bottom:2px solid var(--line);padding-bottom:.45rem}
+h2{font-size:1.4rem}
+h3{font-size:1.08rem;color:var(--muted)}
+p,ul,ol,table{margin:.75rem 0}
+a{color:var(--accent)}
+code{background:var(--code);padding:.1em .3em;border-radius:.25rem;font:0.9em ui-monospace,SFMono-Regular,Consolas,monospace}
+pre{background:var(--code);border:1px solid var(--line);border-radius:.45rem;padding:.8rem 1rem;overflow:auto;font:0.86rem/1.5 ui-monospace,SFMono-Regular,Consolas,monospace}
+pre code{background:none;padding:0;font-size:1em}
+.lede{color:var(--muted);font-size:1.06rem}
+.kicker{text-transform:uppercase;letter-spacing:.08em;font-size:.78rem;font-weight:700;color:var(--accent);margin:0 0 .25rem}
+.idea{border:1px solid var(--line);border-left:4px solid var(--accent);background:var(--panel);border-radius:.5rem;padding:1rem 1.2rem;margin:1.25rem 0 2rem}
+.idea p{margin:.35rem 0}
+figure.diagram{margin:1.5rem 0 2.5rem;padding:1rem 1rem .9rem;border:1px solid var(--line);border-radius:.6rem;background:var(--panel)}
+figure.diagram svg{display:block;width:100%;height:auto}
+.canvas{overflow-x:auto}
+.canvas svg{min-width:900px}
+figcaption{color:var(--muted);font-size:.92rem;margin-top:.8rem}
+.legend{display:flex;flex-wrap:wrap;gap:.9rem 1.4rem;font-size:.84rem;color:var(--muted);margin:.4rem 0 0}
+.legend span::before{content:"";display:inline-block;width:.85rem;height:.85rem;border-radius:.2rem;margin-right:.4rem;vertical-align:-.12rem;background:var(--host);border:1px solid var(--host-line)}
+.legend .core::before{background:var(--core);border-color:var(--core-line)}
+.legend .state::before{background:var(--state);border-color:var(--state-line)}
+.legend .model::before{background:var(--model);border-color:var(--model-line)}
+.legend .tui::before{background:var(--tui);border-color:var(--tui-line)}
+.legend .danger::before{background:var(--danger);border-color:var(--danger-line)}
+.legend .dash::before{background:transparent;border:2px dashed var(--muted)}
+table{border-collapse:collapse;width:100%;font-size:.94rem}
+th,td{border:1px solid var(--line);padding:.45rem .65rem;text-align:left;vertical-align:top}
+th{background:var(--code)}
+td code{white-space:nowrap}
+.note{border-left:3px solid var(--accent);background:var(--code);padding:.65rem 1rem;border-radius:.35rem;margin:1rem 0}
+.warn{border-left-color:var(--warn)}
+.small{font-size:.9rem;color:var(--muted)}
+.tag{display:inline-block;font-size:.72rem;font-weight:700;letter-spacing:.05em;text-transform:uppercase;padding:.1rem .4rem;border-radius:.25rem;background:var(--code);color:var(--muted);vertical-align:.08rem}
+.tag.stable{background:var(--core);color:var(--core-line)}
+.tag.new{background:var(--state);color:var(--state-line)}
+.tag.rewrite{background:var(--danger);color:var(--danger-line)}
+footer{margin-top:3rem;border-top:1px solid var(--line);padding-top:1rem;color:var(--muted);font-size:.9rem}
+svg .box{stroke-width:1.5}
+svg .host{fill:var(--host);stroke:var(--host-line)}
+svg .core{fill:var(--core);stroke:var(--core-line)}
+svg .state{fill:var(--state);stroke:var(--state-line)}
+svg .model{fill:var(--model);stroke:var(--model-line)}
+svg .tui{fill:var(--tui);stroke:var(--tui-line)}
+svg .danger{fill:var(--danger);stroke:var(--danger-line)}
+svg .plain{fill:var(--panel);stroke:var(--line)}
+svg .title{font:600 15px system-ui,-apple-system,Segoe UI,sans-serif;fill:var(--fg)}
+svg .body{font:13.5px system-ui,-apple-system,Segoe UI,sans-serif;fill:var(--fg)}
+svg .mono{font:13px ui-monospace,SFMono-Regular,Consolas,monospace;fill:var(--fg)}
+svg .muted{fill:var(--muted)}
+svg .label{font:12.5px system-ui,-apple-system,Segoe UI,sans-serif;fill:var(--muted)}
+svg .colhead{font:700 12px system-ui,-apple-system,Segoe UI,sans-serif;letter-spacing:.08em;fill:var(--muted)}
+svg .arrow{stroke:var(--muted);stroke-width:1.7;fill:none}
+svg .arrowAccent{stroke:var(--accent);stroke-width:1.7;fill:none}
+svg .arrowDanger{stroke:var(--danger-line);stroke-width:1.7;fill:none}
+svg .dash{stroke-dasharray:6 5}
+svg .head{fill:var(--muted)}
+svg .headAccent{fill:var(--accent)}
+svg .headDanger{fill:var(--danger-line)}
+</style>
+</head>
+<body>
+<main>
+<p class="kicker">Mega Smart Context · design preview</p>
+<h1>Append-only memory</h1>
+<p class="lede">Today the memory block is rewritten every time the model saves a patch. This design keeps a big snapshot still and appends small updates after it. The provider can keep the old prefix cached; only the new tail is read.</p>
+
+<div class="note"><strong>Not shipped yet.</strong> This page describes the proposed branch. The layout that ships today is the <a href="how-it-works.html">current visual tour</a>. Nothing on this page has been committed to <code>main</code>.</div>
+
+<div class="idea">
+<p><strong>The one idea:</strong> do not edit page 1. Add a sticky note at the end.</p>
+<p>The snapshot is the page the model already knows. A patch becomes a small note after the turn that produced it. When the notebook is full, we make a new snapshot from the page plus all the notes, throw the notes away, and keep a short tail. That is compaction.</p>
+</div>
+
+<h2>1. Why the current layout is expensive</h2>
+<p>Every request is rebuilt from three things: the memory document, the newest turns, and the current turn. The memory document is the first message, so the provider reads it first. When the model calls <code>smart_context</code> with a patch, the plugin merges the patch into the memory document and the next request sends a different page 1.</p>
+<p>The provider's prefix cache is not magic. It remembers a prefix of the request. Change the first message and the prefix is broken, so the provider starts again from the top. The bigger the conversation, the more it re-reads.</p>
+
+<div class="note warn"><strong>Two more things rewrite page 1 today.</strong> The rendered memory block also carries <code>## Pending eviction</code> and <code>## Undo</code>. Archiving a turn or applying an undo changes the block even when the eight memory keys did not move. And the pinned host notices live in the system prompt, before the messages: a Plan/Build switch changes the system prefix too.</div>
+
+<h2>2. The new shape</h2>
+<p>The new request has a stable front and a moving end. The front is the system prompt and a memory snapshot. The end is the current turn and a small state note. Between them are completed turns and the updates they produced.</p>
+
+<figure class="diagram" id="fig-shape">
+<div class="canvas">
+<svg viewBox="0 0 1200 650" role="img" aria-labelledby="shape-title shape-desc">
+<title id="shape-title">Before and after the append-only layout</title>
+<desc id="shape-desc">On the left, today's payload has a memory block that changes on every patch, so the whole message list after it is re-read. On the right, a stable memory snapshot is followed by completed turns and small updates; only the tail state and the current turn are new.</desc>
+<defs>
+<marker id="sh-head" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="head"/></marker>
+<marker id="sh-head-danger" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="headDanger"/></marker>
+<marker id="sh-head-accent" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="headAccent"/></marker>
+</defs>
+
+<!-- left panel: today -->
+<rect x="20" y="20" width="560" height="610" rx="14" class="box plain"/>
+<text x="44" y="54" class="title">Today</text>
+<text x="44" y="76" class="label">one patch changes page 1</text>
+
+<rect x="60" y="96" width="480" height="48" rx="8" class="box host"/>
+<text x="78" y="126" class="body">system + POLICY</text>
+
+<rect x="60" y="158" width="480" height="92" rx="8" class="box danger"/>
+<text x="78" y="188" class="title">memory document · page 1</text>
+<text x="78" y="210" class="body">goal · plan · facts · files · decisions · open · refs · notes</text>
+<text x="78" y="232" class="body muted">rewritten in place on every patch</text>
+
+<rect x="60" y="264" width="480" height="50" rx="8" class="box plain"/>
+<text x="78" y="295" class="body">turn 1</text>
+
+<rect x="60" y="326" width="480" height="50" rx="8" class="box plain"/>
+<text x="78" y="357" class="body">turn 2</text>
+
+<rect x="60" y="388" width="480" height="50" rx="8" class="box plain"/>
+<text x="78" y="419" class="body">turn 3</text>
+
+<rect x="60" y="450" width="480" height="58" rx="8" class="box model"/>
+<text x="78" y="484" class="body">current turn</text>
+
+<path d="M44 190 L44 478" class="arrowDanger dash" marker-end="url(#sh-head-danger)"/>
+<text x="36" y="330" class="label" text-anchor="middle" transform="rotate(-90 36 330)">cache starts over here</text>
+<text x="60" y="546" class="body muted">The provider re-reads the memory block and everything after it.</text>
+<text x="60" y="568" class="body muted">A patch every few turns means a full reset every few turns.</text>
+
+<!-- right panel: new -->
+<rect x="620" y="20" width="560" height="610" rx="14" class="box plain"/>
+<text x="644" y="54" class="title">New</text>
+<text x="644" y="76" class="label">the snapshot stays; updates append</text>
+
+<rect x="660" y="96" width="480" height="44" rx="8" class="box host"/>
+<text x="678" y="124" class="body">system + POLICY</text>
+
+<rect x="660" y="152" width="480" height="78" rx="8" class="box core"/>
+<text x="678" y="180" class="title">memory snapshot</text>
+<text x="678" y="202" class="body muted">changes only at the first freeze and at compaction</text>
+
+<rect x="660" y="242" width="480" height="42" rx="8" class="box plain"/>
+<text x="678" y="269" class="body">turn 1</text>
+
+<rect x="660" y="292" width="480" height="54" rx="8" class="box state"/>
+<text x="678" y="317" class="body">update 1 · goal changed</text>
+<text x="678" y="336" class="body muted">small, appended once</text>
+
+<rect x="660" y="354" width="480" height="42" rx="8" class="box plain"/>
+<text x="678" y="381" class="body">turn 2</text>
+
+<rect x="660" y="404" width="480" height="54" rx="8" class="box state"/>
+<text x="678" y="429" class="body">update 2 · fact added</text>
+<text x="678" y="448" class="body muted">small, appended once</text>
+
+<rect x="660" y="466" width="480" height="54" rx="8" class="box tui"/>
+<text x="678" y="491" class="body">tail state note</text>
+<text x="678" y="510" class="body muted">mode · budget · pending · undo</text>
+
+<rect x="660" y="528" width="480" height="54" rx="8" class="box model"/>
+<text x="678" y="561" class="body">current turn</text>
+
+<path d="M636 96 L636 454" class="arrowAccent" marker-end="url(#sh-head-accent)"/>
+<text x="628" y="275" class="label" text-anchor="middle" transform="rotate(-90 628 275)">cached prefix</text>
+<path d="M636 466 L636 582" class="arrow" marker-end="url(#sh-head)"/>
+<text x="628" y="524" class="label" text-anchor="middle" transform="rotate(-90 628 524)">new suffix</text>
+<text x="660" y="606" class="body muted">Only the tail note and the current turn are new.</text>
+</svg>
+</div>
+<div class="legend">
+<span class="core">stable</span>
+<span class="state">appended update</span>
+<span class="tui">tail state</span>
+<span class="danger">rewritten</span>
+</div>
+<figcaption><strong>Figure 1.</strong> The left side is today: a patch changes the memory message, so everything after it is cold. The right side is the new layout: the snapshot and the completed turns keep their bytes; each patch adds a small update. The tail state note is the only part that is rewritten every request, and it sits at the end.</figcaption>
+</figure>
+
+<table>
+<thead><tr><th>Block</th><th>What it is</th><th>When it changes</th></tr></thead>
+<tbody>
+<tr><td>system + POLICY</td><td>The standing instructions and the fixed pool limits.</td><td>When the profile or the plugin version changes.</td></tr>
+<tr><td>memory snapshot</td><td>The eight memory keys at the last freeze or compaction.</td><td>At the first freeze, then only at compaction.</td></tr>
+<tr><td>turns</td><td>Completed turns, verbatim. The current turn is last.</td><td>A new turn appends; a compaction keeps only a short tail.</td></tr>
+<tr><td>updates</td><td>The keys changed by a completed turn, with full values.</td><td>Once, at the next user turn. Never rewritten.</td></tr>
+<tr><td>tail state</td><td>Mode, budget, pending eviction and undo, in one small note.</td><td>Every request; it is at the end, so it is the only churn.</td></tr>
+</tbody>
+</table>
+
+<h2>3. A patch, step by step</h2>
+<ol>
+<li>The model calls <code>smart_context</code> with <code>action:"patch"</code> and only the keys that changed.</li>
+<li>The plugin merges the patch into <code>record.memory</code>, as it does today. The merged document is what <code>read</code>, <code>stats</code> and undo use.</li>
+<li>The plugin also appends one update entry for the turn. Multiple patches in one turn are coalesced into one entry.</li>
+<li>The update is not injected in the middle of the turn. The tool result already confirms the write. At the next user turn, the update is rendered once, after the turn that produced it.</li>
+<li>The model reads the snapshot first, then the updates in order. A later value for the same key wins; maps merge, lists replace, a cleared key stays cleared.</li>
+</ol>
+
+<p>An update is data, not a diff the model has to decode. It shows the full new value of each key that changed:</p>
+
+<pre><code>&lt;smart-context-update seq="7" turn="msg_abc"&gt;
+goal: "fix login and add the regression test"
+facts: {"login-flow": "the token is refreshed before the form renders"}
+plan: [
+  {"step": 1, "status": "done", "text": "reproduce the bug"},
+  {"step": 2, "status": "active", "text": "add the regression test"}
+]
+&lt;/smart-context-update&gt;</code></pre>
+
+<p>The snapshot still says the old goal. That is deliberate. The model is told, in POLICY, that the snapshot is the checkpoint and the updates after it are newer. If it needs the merged document, <code>smart_context</code> <code>read</code> returns it.</p>
+
+<h2>4. The shared pool</h2>
+<p>The two budgets are no longer separate walls. They share one pool. The memory allowance is a ceiling, not a reservation: if memory uses less, the working side may use the difference.</p>
+
+<figure class="diagram" id="fig-pool">
+<div class="canvas">
+<svg viewBox="0 0 1200 330" role="img" aria-labelledby="pool-title pool-desc">
+<title id="pool-title">The shared memory and working pool</title>
+<desc id="pool-desc">A 70k pool made of a 20k memory allowance and a 50k working allowance. When memory uses 5k, working can use 65k. When memory uses 20k, working is limited to 50k and compaction is due.</desc>
+<defs>
+<marker id="pool-head" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="head"/></marker>
+</defs>
+
+<text x="40" y="44" class="colhead">SHARED POOL · 70K ESTIMATED TOKENS</text>
+<text x="40" y="68" class="body muted">memory can use up to 20k. The working side gets 50k plus whatever memory leaves unused.</text>
+
+<!-- row 1 -->
+<text x="40" y="126" class="title">Memory uses 5k</text>
+<text x="40" y="148" class="label">working can use 65k</text>
+<rect x="300" y="108" width="63" height="34" rx="5" class="box core"/>
+<rect x="363" y="108" width="566" height="34" rx="5" class="box host"/>
+<rect x="929" y="108" width="251" height="34" rx="5" class="box plain"/>
+<text x="331" y="130" class="body muted" text-anchor="middle">5k</text>
+<text x="646" y="130" class="body muted" text-anchor="middle">working 45k</text>
+<text x="1054" y="130" class="body muted" text-anchor="middle">unused 20k</text>
+<text x="300" y="164" class="label">memory</text>
+<text x="363" y="164" class="label">working</text>
+<text x="929" y="164" class="label">free</text>
+
+<!-- row 2 -->
+<text x="40" y="236" class="title">Memory uses 20k</text>
+<text x="40" y="258" class="label">compaction is due</text>
+<rect x="300" y="218" width="251" height="34" rx="5" class="box core"/>
+<rect x="551" y="218" width="629" height="34" rx="5" class="box host"/>
+<text x="425" y="240" class="body muted" text-anchor="middle">memory 20k</text>
+<text x="865" y="240" class="body muted" text-anchor="middle">working 50k</text>
+<text x="300" y="274" class="label">memory</text>
+<text x="551" y="274" class="label">working</text>
+
+<path d="M300 84 L300 300" class="arrow dash" marker-end="url(#pool-head)"/>
+<text x="292" y="196" class="label" text-anchor="middle" transform="rotate(-90 292 196)">0</text>
+<path d="M1180 84 L1180 300" class="arrow dash" marker-end="url(#pool-head)"/>
+<text x="1172" y="196" class="label" text-anchor="middle" transform="rotate(-90 1172 196)">70k</text>
+</svg>
+</div>
+<figcaption><strong>Figure 2.</strong> The pool is 20k + 50k. If memory only uses 5k, the working side can grow to 65k before the pool is full. If memory uses all 20k, the working side stops at 50k and compaction is due. Sticky notes count as memory text: a 5k snapshot plus 10k of updates is 15k of the pool, even though the merged document is still 5k.</figcaption>
+</figure>
+
+<p>The trigger is a single number:</p>
+<pre><code>pool       = memoryTokens + workingTokens        // 20k + 50k
+memoryFoot = snapshot + all updates              // what the request carries
+workingFoot = the turns + the tail state note
+compact when memoryFoot + workingFoot &gt; pool</code></pre>
+
+<h2>5. Compaction</h2>
+<p>Compaction is the one deliberate reset. It folds the updates into a new snapshot, clears the update log, keeps a short tail of recent turns, and archives the rest. Everything before the reset was append-only; after it, the cycle starts again.</p>
+
+<figure class="diagram" id="fig-compact">
+<div class="canvas">
+<svg viewBox="0 0 1200 430" role="img" aria-labelledby="compact-title compact-desc">
+<title id="compact-title">Compaction folds updates into a new snapshot</title>
+<desc id="compact-desc">The snapshot, turns and updates grow until the pool is full. One turn earlier the model gets a compaction-due note and can add missed facts. Then the plugin folds the updates into a new snapshot, keeps a short tail, and archives the older turns.</desc>
+<defs>
+<marker id="cp-head" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="head"/></marker>
+<marker id="cp-head-accent" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="headAccent"/></marker>
+</defs>
+
+<text x="40" y="44" class="colhead">BEFORE COMPACTION</text>
+<rect x="40" y="66" width="130" height="58" rx="7" class="box core"/>
+<text x="56" y="90" class="body">snapshot</text>
+<text x="56" y="110" class="body muted">20k max</text>
+
+<rect x="186" y="66" width="90" height="58" rx="7" class="box plain"/>
+<text x="200" y="90" class="body">turn 1</text>
+<text x="200" y="110" class="body muted">U1</text>
+
+<rect x="292" y="66" width="90" height="58" rx="7" class="box plain"/>
+<text x="306" y="90" class="body">turn 2</text>
+<text x="306" y="110" class="body muted">U2</text>
+
+<rect x="398" y="66" width="90" height="58" rx="7" class="box plain"/>
+<text x="412" y="90" class="body">turn 3</text>
+<text x="412" y="110" class="body muted">U3</text>
+
+<rect x="504" y="66" width="90" height="58" rx="7" class="box plain"/>
+<text x="518" y="90" class="body">turn 4</text>
+<text x="518" y="110" class="body muted">U4</text>
+
+<rect x="610" y="66" width="90" height="58" rx="7" class="box plain"/>
+<text x="624" y="90" class="body">turn 5</text>
+<text x="624" y="110" class="body muted">U5</text>
+
+<rect x="716" y="66" width="90" height="58" rx="7" class="box danger"/>
+<text x="730" y="90" class="body">turn 6</text>
+<text x="730" y="110" class="body muted">pool full</text>
+
+<text x="840" y="90" class="body">updates U1–U6 are small</text>
+<text x="840" y="110" class="body muted">but they still count</text>
+
+<path d="M806 124 C806 168 700 176 660 196" class="arrowAccent" marker-end="url(#cp-head-accent)"/>
+<text x="820" y="166" class="label">one turn earlier: “compaction due”</text>
+
+<!-- compaction box -->
+<rect x="430" y="196" width="260" height="62" rx="9" class="box state"/>
+<text x="450" y="222" class="title">compaction</text>
+<text x="450" y="242" class="body muted">fold · clear · keep a tail · archive</text>
+
+<path d="M660 258 L660 292" class="arrow" marker-end="url(#cp-head)"/>
+
+<text x="40" y="322" class="colhead">AFTER COMPACTION</text>
+<rect x="40" y="344" width="170" height="58" rx="7" class="box core"/>
+<text x="56" y="368" class="body">new snapshot</text>
+<text x="56" y="388" class="body muted">snapshot + U1–U6</text>
+
+<rect x="226" y="344" width="190" height="58" rx="7" class="box plain"/>
+<text x="242" y="368" class="body">retained tail</text>
+<text x="242" y="388" class="body muted">the newest turns</text>
+
+<rect x="432" y="344" width="170" height="58" rx="7" class="box model"/>
+<text x="448" y="368" class="body">current turn</text>
+<text x="448" y="388" class="body muted">always kept</text>
+
+<rect x="618" y="344" width="180" height="58" rx="7" class="box plain" stroke-dasharray="6 5"/>
+<text x="634" y="368" class="body">older turns</text>
+<text x="634" y="388" class="body muted">pending / archive</text>
+
+<text x="826" y="368" class="body">The snapshot and the tail</text>
+<text x="826" y="388" class="body muted">are the new stable front.</text>
+</svg>
+</div>
+<figcaption><strong>Figure 3.</strong> The update log grows with the turns. When the pool is full, one turn gets a “compaction due” note; the model can add anything it missed. Then the updates are folded into a new snapshot, the log is cleared, a short tail is kept, and the older turns go to the archive. This is the only intentional cache reset.</figcaption>
+</figure>
+
+<p>What the model does, and what the plugin does:</p>
+<table>
+<thead><tr><th>Step</th><th>Who</th><th>What happens</th></tr></thead>
+<tbody>
+<tr><td>1. Pool is full</td><td>Plugin</td><td>At the next user turn, add a “compaction due” note. Do not drop anything yet.</td></tr>
+<tr><td>2. Last chance</td><td>Model</td><td>Read the working window, add any durable fact that is still only in the turns, then call <code>smart_context</code> with <code>action:"compact"</code>.</td></tr>
+<tr><td>3. Fold</td><td>Plugin</td><td><code>snapshot = memory</code>, <code>updates = []</code>. The merged document already contains every accepted patch.</td></tr>
+<tr><td>4. Reset</td><td>Plugin</td><td>Keep a short tail of recent turns, move the older ones to pending/archive, rebuild the request.</td></tr>
+<tr><td>5. No reply?</td><td>Plugin</td><td>If the model ignored the note, compact anyway on the next turn. A hard ceiling compacts immediately.</td></tr>
+</tbody>
+</table>
+
+<div class="note"><strong>What compaction cannot do.</strong> The plugin can fold patches mechanically. It cannot read a conversation and decide which unpatched detail matters. That is the model's job, which is why the “compaction due” note exists. If the model ignores it, the mechanical fold still keeps everything that was written to memory.</div>
+
+<h2>6. The tail state note</h2>
+<p>The mode, the live budget, pending evictions and undo all need to be visible, but none of them belongs in the snapshot. They go in one small note near the end, before the current turn.</p>
+
+<pre><code>&lt;smart-context-state&gt;
+mode: plan — do not modify files; tell the user to switch agents
+pool: 42k/70k (snapshot 8k · updates 4k · turns 30k)
+pending: msg_123 (the login spike) · archive or purge it
+undo: the previous turn was rolled back
+&lt;/smart-context-state&gt;</code></pre>
+
+<p>Why not put the mode in the header? Because a mode switch would then rewrite the header and reset the whole cache. The tail note is small and already regenerated every request, so adding the mode there costs nothing extra.</p>
+<p>Why before the current turn, not after it? If it is the last message, the model may read it as the latest user request and answer the note instead of your actual request. The note belongs between the completed turns and the current one.</p>
+
+<h2>7. What stays the same</h2>
+<ul>
+<li><strong>The transcript is read-only.</strong> The plugin still rebuilds every request from the host's messages and the session record.</li>
+<li><strong>The tool and its actions do not change.</strong> <code>read</code>, <code>patch</code>, <code>stats</code>, <code>ref</code>, <code>archive</code>, <code>purge</code>, <code>recall</code>, <code>expand</code> and <code>notice</code> keep their shapes; <code>compact</code> is added.</li>
+<li><strong>The archive still catches what leaves.</strong> A turn dropped at compaction becomes pending, then archives under the same rules.</li>
+<li><strong>Subagents keep their own records.</strong> The snapshot and the updates are per session.</li>
+<li><strong>The snapshot carries no live numbers.</strong> The budget line lives in the tail note and in tool results, never in the checkpoint.</li>
+</ul>
+
+<h2>8. Trade-offs and open questions</h2>
+<table>
+<thead><tr><th>Trade-off</th><th>Why it matters</th><th>Mitigation</th></tr></thead>
+<tbody>
+<tr><td>The request can grow to the pool limit</td><td>Today the working window is capped at 20k; the new layout can send up to 70k before compacting. Cached input is cheaper, but not free.</td><td>Measure total input and cached input. Let the user pick the pool size; keep the real model context as a hard ceiling.</td></tr>
+<tr><td>The model must combine the snapshot and the updates</td><td>If it reads an old value and misses a newer update, memory looks stale.</td><td>Updates show full new values, not cryptic diffs. POLICY says “the newest value wins”. <code>read</code> returns the merged document. Compaction refreshes the snapshot.</td></tr>
+<tr><td>The update log can grow</td><td>A patch every turn can cost more than the memory it describes.</td><td>One update per turn, not per call. Compact on a size ratio as well as the total pool.</td></tr>
+<tr><td>A mode switch must stay visible</td><td>Dropping the live Plan/Build instruction caused a real bug: the model read a stale Plan notice and refused to edit in Build mode.</td><td>Keep one compact mode line in the tail state note. Drop the history and the old nudges.</td></tr>
+<tr><td>Undo can contradict the update log</td><td>Restoring memory while old updates still say the undone values is wrong.</td><td>Undo writes a fresh snapshot immediately and clears the log. Rare, and correctness comes first.</td></tr>
+<tr><td>The host may prepare messages differently</td><td>The plugin controls <code>event.messages</code>, but the host builds the final request.</td><td>Verify the turn-boundary update live, not only in the smoke test.</td></tr>
+</tbody>
+</table>
+
+<h3>A simpler fallback</h3>
+<p>If the append-only log feels too heavy, keep the stable snapshot and put one <strong>current-state overlay</strong> at the very end, after the working turns. The overlay shows only the keys that differ from the snapshot, always with full values. It is rewritten on each patch, but it is the last thing, so the cache break is its own size, not the 70k header. It is less code and less risk; append-only is still better for cache because only the delta is new.</p>
+
+<h2>9. Rollout</h2>
+<ol>
+<li>Branch from a clean <code>main</code>: <code>feat/append-only-memory</code>.</li>
+<li>Add <code>contextLayout: "snapshot" | "append"</code>, defaulting to the shipped layout.</li>
+<li>Build the record split first: <code>base</code>, <code>updates</code>, merged <code>memory</code>. Old records load as <code>base = memory</code>, <code>updates = []</code>.</li>
+<li>Add the renderer and the byte-stability tests before touching compaction.</li>
+<li>Then the shared pool, the compaction protocol, and the tail state note.</li>
+<li>Measure <code>stableTokens</code> and <code>changedTokens</code> against the shipping layout on a recorded session. Flip the default only after the numbers say it is better.</li>
+</ol>
+
+<footer>
+<p>Design preview for <code>feat/append-only-memory</code>. The shipping layout is the <a href="how-it-works.html">current visual tour</a>. The mechanism lives in <a href="features/context-handoff.html">context-handoff</a>, <a href="features/memory-tool.html">memory-tool</a>, <a href="features/compaction.html">compaction</a>, <a href="features/archive.html">archive</a> and <a href="features/tui.html">tui</a>.</p>
+</footer>
+</main>
+</body>
+</html>
