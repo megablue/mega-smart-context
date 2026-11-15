@@ -125,7 +125,7 @@ The update check is the only network call the plugin makes, and it runs in the T
 - The palette command `Context status` opens the same numbers as a dialog, with `Switch profile...`, `Resume` and `Purge a turn...` below them, and the TUI sidebar carries a short block of the same numbers with clickable `status` / `profile` / `resume` / `purge`; see [The TUI status dialog](#the-tui-status-dialog).
 - `/undo` is followed: when the host commits a revert, the plugin rolls its own record back with it - memory written in the undone turn is undone, notices it retired are pinned again, purged turns come back, and the memory block says so for that turn. The journal covers the last eight turns; see "Undo" in the SPEC.
 
-Every request starts with a `<smart-context>` block. If `goal` is empty, the model is told to write the request there before the raw first message leaves the working window. In the append layout, that block is a checkpoint; a completed turn that wrote memory carries a `<smart-context-update>` delta, and a `<smart-context-state>` note before the current turn carries the mode and the shared pool.
+Every request starts with a `<smart-context>` block. If `goal` is empty, the model is told to write the request there before the raw first message leaves the working window. In the append layout, that block is a checkpoint; a completed turn that wrote memory carries a `<smart-context-update>` delta, and a `<smart-context-state>` note after the current turn carries the mode and the shared pool.
 
 ## The `/context` command
 

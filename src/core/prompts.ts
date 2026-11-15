@@ -86,8 +86,8 @@ The first block is a checkpoint, not the live document. A \`<smart-context-updat
 block after a turn carries that turn's accepted patches; the newest value wins.
 \`action:"read"\` returns the merged document. At compaction the checkpoint is
 replaced, the log is cleared, and a short tail is kept. The live mode, pool usage
-and pending evictions are in \`<smart-context-state>\` just before the current
-turn, not in the header.`
+and pending evictions are in \`<smart-context-state>\`, the last block after the
+current turn, not in the header.`
 
 export interface BudgetReport {
   readonly layout: "snapshot" | "append"
@@ -346,8 +346,9 @@ export interface TailBudget {
 /**
  * The tail state note: the only part of the prefix that is allowed to churn.
  *
- * It sits before the current turn, never after it, so the model does not read it
- * as the latest request. The mode is a compact label rather than the full host
+ * It is the last message, after the current turn. It carries live numbers that
+ * change on every pass, so anywhere earlier would invalidate the current turn
+ * on each tool loop. The mode is a compact label rather than the full host
  * reminder; the full text is still on the record for `action:"notice"`.
  */
 export function renderTailState(record: SessionRecord, budget: TailBudget): string {

@@ -180,18 +180,19 @@ svg .headDanger{fill:var(--danger-line)}
 <text x="678" y="429" class="body">update 2 · fact added</text>
 <text x="678" y="448" class="body muted">small, appended once</text>
 
+<rect x="660" y="404" width="480" height="54" rx="8" class="box model"/>
+<text x="678" y="429" class="body">current turn</text>
+<text x="678" y="448" class="body muted">grows during a tool loop, already cached</text>
+
 <rect x="660" y="466" width="480" height="54" rx="8" class="box tui"/>
 <text x="678" y="491" class="body">tail state note</text>
 <text x="678" y="510" class="body muted">mode · budget · pending · undo</text>
 
-<rect x="660" y="528" width="480" height="54" rx="8" class="box model"/>
-<text x="678" y="561" class="body">current turn</text>
-
-<path d="M636 96 L636 454" class="arrowAccent" marker-end="url(#sh-head-accent)"/>
+<path d="M636 96 L636 458" class="arrowAccent" marker-end="url(#sh-head-accent)"/>
 <text x="628" y="275" class="label" text-anchor="middle" transform="rotate(-90 628 275)">cached prefix</text>
-<path d="M636 466 L636 582" class="arrow" marker-end="url(#sh-head)"/>
-<text x="628" y="524" class="label" text-anchor="middle" transform="rotate(-90 628 524)">new suffix</text>
-<text x="660" y="606" class="body muted">Only the tail note and the current turn are new.</text>
+<path d="M636 470 L636 516" class="arrow" marker-end="url(#sh-head)"/>
+<text x="628" y="493" class="label" text-anchor="middle" transform="rotate(-90 628 493)">new suffix</text>
+<text x="660" y="606" class="body muted">Only the tail note is new; the turn keeps its bytes.</text>
 </svg>
 </div>
 <div class="legend">
@@ -414,7 +415,7 @@ compact when memoryFoot + workingFoot &gt; pool</code></pre>
 <div class="note"><strong>Measure before trusting it.</strong> A summarized edit result may make the model re-read the file, which can cost more than the diff. A summary of a successful test may hide the one warning that mattered. Add <code>rebuildOnCompaction</code> as a flag, record <code>charsSaved</code>, and compare a real session with and without it. Start with the conservative rules above; leave unknown tools alone.</div>
 
 <h2>6. The tail state note</h2>
-<p>The mode, the live budget, pending evictions and undo all need to be visible, but none of them belongs in the snapshot. They go in one small note near the end, before the current turn.</p>
+<p>The mode, the live budget, pending evictions and undo all need to be visible, but none of them belongs in the snapshot. They go in one small note at the very end, after the current turn.</p>
 
 <pre><code>&lt;smart-context-state&gt;
 mode: plan — do not modify files; tell the user to switch agents
@@ -424,7 +425,7 @@ undo: the previous turn was rolled back
 &lt;/smart-context-state&gt;</code></pre>
 
 <p>Why not put the mode in the header? Because a mode switch would then rewrite the header and reset the whole cache. The tail note is small and already regenerated every request, so adding the mode there costs nothing extra.</p>
-<p>Why before the current turn, not after it? If it is the last message, the model may read it as the latest user request and answer the note instead of your actual request. The note belongs between the completed turns and the current one.</p>
+<p>Why after the current turn, not before it? The note carries live numbers that change on every pass. Placed before the turn, a one-character change invalidates the whole turn and the provider re-reads it on every tool loop - measured live at 10-50k uncached tokens per pass. Trailing keeps the turn&#39;s bytes stable, the note still arrives before the model replies, and its first line (<code>mode:</code>) makes clear it is state rather than a new request.</p>
 
 <h2>7. What stays the same</h2>
 <ul>

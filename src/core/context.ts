@@ -349,8 +349,8 @@ interface AppendPlanInput {
  * The append-only pass.
  *
  * The order is the layout: a checkpoint first, then the turns, each completed
- * turn's accepted delta beside it, then one tail state note, then the current
- * turn. A patch therefore appends after its turn instead of rewriting the first
+ * turn's accepted delta beside it, then the current turn, then one tail state
+ * note. A patch therefore appends after its turn instead of rewriting the first
  * block. Compaction is the only step that moves the checkpoint: it folds the
  * log, keeps the newest turns that fit the working share, and evicts the rest
  * through the same pending/archive path as the snapshot layout.
@@ -506,12 +506,17 @@ async function buildAppendPlan(options: AppendPlanInput): Promise<ContextPlan> {
       role: "user",
       content: [{ type: "text", text: orphans.join("\n") }],
     })
-    tailIndex += 1
   }
 
   // The tail note is part of the working share. Render it once with the
   // turns-only number, then once with the number that includes the note; the
   // second render is the one inserted, so the printed split is honest.
+  //
+  // It goes after the current turn, not before it. These numbers change on
+  // every pass inside a turn, and a byte that changes before the current turn
+  // makes the provider re-read the whole turn on each tool loop. Trailing keeps
+  // the turn a stable prefix and the note is still the last thing the model
+  // reads before it replies.
   const poolCap = config.memoryTokens + config.workingTokens
   const snapshotTokens = estimateTokens(snapshotText.length, config.charsPerToken)
   const updateTokens = estimateTokens(sentUpdateChars, config.charsPerToken)
@@ -535,7 +540,7 @@ async function buildAppendPlan(options: AppendPlanInput): Promise<ContextPlan> {
   })
   workingTokens = estimateTokens(turnChars + tail.length, config.charsPerToken)
 
-  working.splice(tailIndex, 0, {
+  working.push({
     id: INJECTED_PREFIX + "state",
     role: "user",
     content: [{ type: "text", text: tail }],

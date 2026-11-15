@@ -787,10 +787,11 @@ ok(
     appendSecond.messages.findIndex((message) => message.id === "aa1"),
   "the update block follows the turn's last message",
 )
+const stateIndex = appendSecond.messages.findIndex((message) => message.id === "megasc_state")
+ok(stateIndex === appendSecond.messages.length - 1, "the tail state note is the last message")
 ok(
-  appendSecond.messages.findIndex((message) => message.id === "megasc_state") <
-    appendSecond.messages.findIndex((message) => message.id === "au2"),
-  "the tail state note sits before the current turn",
+  stateIndex > appendSecond.messages.findIndex((message) => message.id === "aa2"),
+  "the tail state note trails the current turn",
 )
 
 const currentPatch = await runMemoryTool(
@@ -802,6 +803,25 @@ const appendSecondAgain = await appendPass(appendTurn2)
 ok(
   !appendSecondAgain.messages.some((message) => message.id === "megasc_update_au2"),
   "the current turn's update is deferred",
+)
+const loopPass = await appendPass([
+  ...appendTurn2,
+  call("aa2b", "c2", "read", { path: "docs/SPEC.html" }),
+  result("rr2", "c2", "read", "line. ".repeat(50)),
+])
+ok(
+  JSON.stringify(loopPass.messages.slice(0, appendSecondAgain.messages.length - 1)) ===
+    JSON.stringify(appendSecondAgain.messages.slice(0, -1)),
+  "a second pass in the same turn leaves the earlier bytes alone",
+)
+ok(
+  loopPass.messages[loopPass.messages.length - 1].id === "megasc_state",
+  "the trailing note is the only block that moves inside a turn",
+)
+ok(
+  loopPass.messages[loopPass.messages.length - 1].content[0].text !==
+    appendSecondAgain.messages[appendSecondAgain.messages.length - 1].content[0].text,
+  "the trailing note carries the grown pool",
 )
 const appendThird = await appendPass([
   ...appendTurn2,
