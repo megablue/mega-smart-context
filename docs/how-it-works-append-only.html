@@ -97,7 +97,7 @@ svg .headDanger{fill:var(--danger-line)}
 <h1>Append-only memory</h1>
 <p class="lede">Today the memory block is rewritten every time the model saves a patch. This design keeps a big snapshot still and appends small updates after it. The provider can keep the old prefix cached; only the new tail is read.</p>
 
-<div class="note"><strong>Behind a flag.</strong> This layout is implemented on <code>feat/append-only-memory</code> behind <code>contextLayout:&quot;append&quot;</code>. The default remains the snapshot layout; this page is the design explanation, and the <a href="how-it-works.html">current visual tour</a> describes the default. The request shape, the update blocks and the compaction reset are live; the code is in <code>src/core/append.ts</code> and <code>buildAppendPlan</code>.</div>
+<div class="note"><strong>Shipped behind a flag.</strong> This layout is enabled with <code>contextLayout:&quot;append&quot;</code>; the built-in default stays the snapshot layout, which <a href="how-it-works.html">the current visual tour</a> describes. The request shape, the update blocks, the commit window and the compaction tail are live; the code is in <code>src/core/append.ts</code> and <code>buildAppendPlan</code>.</div>
 
 <div class="idea">
 <p><strong>The one idea:</strong> do not edit page 1. Add a sticky note at the end.</p>
@@ -209,7 +209,7 @@ svg .headDanger{fill:var(--danger-line)}
 <tbody>
 <tr><td>system + POLICY</td><td>The standing instructions and the fixed pool limits.</td><td>When the profile or the plugin version changes.</td></tr>
 <tr><td>memory snapshot</td><td>The eight memory keys at the last freeze or compaction.</td><td>At the first freeze, then only at compaction.</td></tr>
-<tr><td>turns</td><td>Completed turns, verbatim. The current turn is last.</td><td>A new turn appends; a compaction keeps only a short tail.</td></tr>
+<tr><td>turns</td><td>Completed turns, verbatim. The current turn is last.</td><td>A new turn appends; a compaction keeps the newest <code>compactKeepTokens</code> (20k default).</td></tr>
 <tr><td>updates</td><td>The keys changed by a completed turn, with full values.</td><td>Once, at the next user turn. Never rewritten.</td></tr>
 <tr><td>tail state</td><td>Mode, budget, pending eviction and undo, in one small note.</td><td>Every request; it is at the end, so it is the only churn.</td></tr>
 </tbody>
@@ -238,7 +238,7 @@ plan: [
 <p>The snapshot still says the old goal. That is deliberate. The model is told, in POLICY, that the snapshot is the checkpoint and the updates after it are newer. If it needs the merged document, <code>smart_context</code> <code>read</code> returns it.</p>
 
 <h2>4. The shared pool</h2>
-<p>The two budgets are no longer separate walls. They share one pool. The memory allowance is a ceiling, not a reservation: if memory uses less, the working side may use the difference.</p>
+<p>The two budgets are no longer separate walls. They share one pool. The memory allowance is a ceiling, not a reservation: if memory uses less, the working side may use the difference before the pool fills. The tail a fold keeps is its own fixed budget, <code>compactKeepTokens</code> (20k default), not that leftover — otherwise a big working share would keep almost everything and free nothing.</p>
 
 <figure class="diagram" id="fig-pool">
 <div class="canvas">
@@ -291,13 +291,13 @@ workingFoot = the turns + the tail state note
 compact when memoryFoot + workingFoot &gt; pool</code></pre>
 
 <h2>5. Compaction</h2>
-<p>Compaction is the one deliberate reset. It folds the updates into a new snapshot, clears the update log, keeps a short tail of recent turns, and archives the rest. Everything before the reset was append-only; after it, the cycle starts again.</p>
+<p>Compaction is the one deliberate reset. A due note lists the turns that will leave and opens a commit window; the model has until the next prompt to write what matters into memory (or calls <code>action:&quot;compact&quot;</code> to fold sooner). The fold then makes the updates part of a new snapshot, clears the log, keeps the newest <code>compactKeepTokens</code> (20k default) of turns, and archives the rest immediately with their raw messages. Everything before the reset was append-only; after it, the cycle starts again.</p>
 
 <figure class="diagram" id="fig-compact">
 <div class="canvas">
 <svg viewBox="0 0 1200 430" role="img" aria-labelledby="compact-title compact-desc">
 <title id="compact-title">Compaction folds updates into a new snapshot</title>
-<desc id="compact-desc">The snapshot, turns and updates grow until the pool is full. One turn earlier the model gets a compaction-due note and can add missed facts. Then the plugin folds the updates into a new snapshot, keeps a short tail, and archives the older turns.</desc>
+<desc id="compact-desc">The snapshot, turns and updates grow until the pool is full. A compaction-due note then lists the turns that will leave and opens a commit window until the next prompt. The plugin folds the updates into a new snapshot, keeps the newest compactKeepTokens of turns, and archives the older ones with their raw messages.</desc>
 <defs>
 <marker id="cp-head" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="head"/></marker>
 <marker id="cp-head-accent" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="headAccent"/></marker>
@@ -336,7 +336,7 @@ compact when memoryFoot + workingFoot &gt; pool</code></pre>
 <text x="840" y="110" class="body muted">but they still count</text>
 
 <path d="M806 124 C806 168 700 176 660 196" class="arrowAccent" marker-end="url(#cp-head-accent)"/>
-<text x="820" y="166" class="label">one turn earlier: “compaction due”</text>
+<text x="820" y="166" class="label">commit window: “compaction due”</text>
 
 <!-- compaction box -->
 <rect x="430" y="196" width="260" height="62" rx="9" class="box state"/>
@@ -360,24 +360,24 @@ compact when memoryFoot + workingFoot &gt; pool</code></pre>
 
 <rect x="618" y="344" width="180" height="58" rx="7" class="box plain" stroke-dasharray="6 5"/>
 <text x="634" y="368" class="body">older turns</text>
-<text x="634" y="388" class="body muted">pending / archive</text>
+<text x="634" y="388" class="body muted">archived · raw kept</text>
 
 <text x="826" y="368" class="body">The snapshot and the tail</text>
 <text x="826" y="388" class="body muted">are the new stable front.</text>
 </svg>
 </div>
-<figcaption><strong>Figure 3.</strong> The update log grows with the turns. When the pool is full, one turn gets a “compaction due” note; the model can add anything it missed. Then the updates are folded into a new snapshot, the log is cleared, a short tail is kept, and the older turns go to the archive. This is the only intentional cache reset.</figcaption>
+<figcaption><strong>Figure 3.</strong> The update log grows with the turns. When the pool is full, a “compaction due” note lists the turns about to leave and the window stays open until the next prompt, so the model can commit what matters into memory. Then the updates are folded into a new snapshot, the log is cleared, the newest <code>compactKeepTokens</code> of turns are kept, and the older turns are archived with their raw messages. This is the only intentional cache reset.</figcaption>
 </figure>
 
 <p>What the model does, and what the plugin does:</p>
 <table>
 <thead><tr><th>Step</th><th>Who</th><th>What happens</th></tr></thead>
 <tbody>
-<tr><td>1. Pool is full</td><td>Plugin</td><td>At the next user turn, add a “compaction due” note. Do not drop anything yet.</td></tr>
-<tr><td>2. Last chance</td><td>Model</td><td>Read the working window, add any durable fact that is still only in the turns, then call <code>smart_context</code> with <code>action:"compact"</code>.</td></tr>
-<tr><td>3. Fold</td><td>Plugin</td><td><code>snapshot = memory</code>, <code>updates = []</code>. The merged document already contains every accepted patch.</td></tr>
-<tr><td>4. Reset</td><td>Plugin</td><td>Keep a short tail of recent turns, move the older ones to pending/archive, rebuild the request.</td></tr>
-<tr><td>5. No reply?</td><td>Plugin</td><td>If the model ignored the note, compact anyway on the next turn. A hard ceiling compacts immediately.</td></tr>
+<tr><td>1. Pool is full</td><td>Plugin</td><td>Add a “compaction due” note that lists the turns about to leave. Do not drop anything yet; the turn keeps running with full context.</td></tr>
+<tr><td>2. Commit window</td><td>Model</td><td>Write any durable fact that is still only in the leaving turns into memory. <code>action:"compact"</code> folds sooner; otherwise the fold waits for the next prompt.</td></tr>
+<tr><td>3. Fold</td><td>Plugin</td><td><code>snapshot = memory</code>, <code>updates = []</code>. The merged document already contains every accepted patch, including the commits.</td></tr>
+<tr><td>4. Reset</td><td>Plugin</td><td>Keep the newest <code>compactKeepTokens</code> (20k) of turns, archive the older ones immediately with their raw files kept, rebuild the request.</td></tr>
+<tr><td>5. No commit?</td><td>Plugin</td><td>The fold runs anyway at the next prompt. Nothing is lost: the leaving turns are archived raw and stay readable with <code>recall</code>/<code>expand</code>.</td></tr>
 </tbody>
 </table>
 
@@ -454,7 +454,7 @@ undo: the previous turn was rolled back
 
 <h2>9. Rollout</h2>
 <ol>
-<li>Branch from a clean <code>main</code>: <code>feat/append-only-memory</code>.</li>
+<li>Branch from a clean <code>main</code>: <code>feat/append-only-memory</code> — done; it was merged into <code>main</code> and ships behind the flag.</li>
 <li>Add <code>contextLayout: "snapshot" | "append"</code>, defaulting to the shipped layout.</li>
 <li>Build the record split first: <code>base</code>, <code>updates</code>, merged <code>memory</code>. Old records load as <code>base = memory</code>, <code>updates = []</code>.</li>
 <li>Add the renderer and the byte-stability tests before touching compaction.</li>
@@ -463,7 +463,7 @@ undo: the previous turn was rolled back
 </ol>
 
 <footer>
-<p>Design preview for <code>feat/append-only-memory</code>. The shipping layout is the <a href="how-it-works.html">current visual tour</a>. The mechanism lives in <a href="features/context-handoff.html">context-handoff</a>, <a href="features/memory-tool.html">memory-tool</a>, <a href="features/compaction.html">compaction</a>, <a href="features/archive.html">archive</a> and <a href="features/tui.html">tui</a>.</p>
+<p>Design tour for the shipped append layout (<code>contextLayout:&quot;append&quot;</code>). The built-in default is still the snapshot layout, described in <a href="how-it-works.html">the current visual tour</a>. The mechanism lives in <a href="features/context-handoff.html">context-handoff</a>, <a href="features/memory-tool.html">memory-tool</a>, <a href="features/compaction.html">compaction</a>, <a href="features/archive.html">archive</a> and <a href="features/tui.html">tui</a>.</p>
 </footer>
 </main>
 </body>
