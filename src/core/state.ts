@@ -262,6 +262,7 @@ function normalizeCompact(value: unknown): CompactMark | undefined {
   return {
     mode: value.mode,
     at: typeof value.at === "number" && Number.isFinite(value.at) ? value.at : 0,
+    turn: typeof value.turn === "string" ? value.turn : undefined,
   }
 }
 

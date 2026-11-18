@@ -32,7 +32,7 @@ Actions:
 - read { key? } — print one key, or the whole memory document.
 - patch { patch: { goal?, plan?, facts?, files?, decisions?, open?, refs?, notes? } } — merge a patch. Maps merge key by key, lists replace, null resets a key (or deletes one map entry). Unknown keys are dropped; a write over the memory cap is rejected, not trimmed.
 - stats — memory, working-window and archive usage.
-- compact — fold the append-only update log into a new checkpoint and reset the window. Only meaningful when contextLayout is "append", and only when the state note says compaction is due: it rewrites the checkpoint and discards the provider cache the layout exists to keep. It does not shrink memory; edit memory for that.
+- compact — fold the append-only update log into a new checkpoint and cut the window to the newest ~compactKeepTokens of turns; the rest is archived raw and stays searchable with recall/expand. Only meaningful when contextLayout is "append", and only when the state note says compaction is due — a due note lists the turns about to leave, so write what matters from them into memory first: it rewrites the checkpoint and discards the provider cache the layout exists to keep. It does not shrink memory; edit memory for that.
 - ref { page, section, gist } — store a feature-map pointer and report the gist vs section cost.
 - archive { turn, gist, keepRaw? } — move a pending turn into the cold archive. Without keepRaw:true the raw messages are discarded and expand can only return the gist.
 - purge { turn? | query? } — delete a pending or archived turn, or matching entries.

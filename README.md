@@ -21,7 +21,7 @@ An OpenCode 2.0 plugin that hands context management to the model. Instead of re
 ## What it does
 
 - The model writes a **memory document** with the `smart_context` tool — the goal, plan, facts, files, decisions and open threads — and every request starts with it.
-- An optional **append-only layout** (`contextLayout: "append"`) keeps that document as a checkpoint and appends one accepted delta after each completed turn, so a patch does not rewrite the provider prefix; compaction folds the log into a new checkpoint.
+- An optional **append-only layout** (`contextLayout: "append"`) keeps that document as a checkpoint and appends one accepted delta after each completed turn, so a patch does not rewrite the provider prefix; when the shared pool fills, a due note lists what will leave and the fold waits for the next prompt, keeping the newest `compactKeepTokens` (20k default) of turns and archiving the rest.
 - A short **verbatim working window** keeps the newest turns exactly as they happened, so nothing in the live tool loop is paraphrased.
 - When a turn leaves the window it moves to a **gated archive**, kept for `recall` rather than replayed or dropped silently.
 - **Compaction is owned by the plugin.** When the host makes a checkpoint, the plugin answers with the memory document itself instead of a separate summarization call.

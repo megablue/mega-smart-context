@@ -150,11 +150,25 @@ export interface MemoryUpdate {
   patch: Record<string, unknown>
 }
 
-/** A pending append-only compaction, set by the tool or by the pool. */
+/**
+ * A pending append-only compaction, set by the tool or by the pool.
+ *
+ * `requested` folds on the next pass: the model asked, so it has already
+ * written what it wanted to keep. `due` is a commit window, not an order to
+ * fold at once — the mark records the turn it was raised in, every pass of that
+ * same turn keeps the window open (the real context window has room the
+ * estimated pool does not), and the fold runs on the first pass whose current
+ * turn is newer: the next prompt.
+ */
 export interface CompactMark {
-  /** `requested`: the model asked now. `due`: the pool is full and the next pass folds. */
   mode: "requested" | "due"
   at: number
+  /**
+   * The current turn when a `due` mark was raised. Absent on `requested` marks
+   * and on records written before the field existed; a `due` mark without it
+   * folds on the next over-cap pass, as it always did.
+   */
+  turn?: string
 }
 
 // ---------------------------------------------------------------------------

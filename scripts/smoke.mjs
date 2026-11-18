@@ -736,6 +736,10 @@ ok(
 ok(parseLayer({ contextLayout: "append" }, "test").contextLayout === "append", "contextLayout accepts append")
 assert.throws(() => parseLayer({ contextLayout: "bogus" }, "test"), /contextLayout/, "an unknown layout is rejected")
 passed += 1
+ok(
+  parseLayer({ compactKeepTokens: 100 }, "test").compactKeepTokens === 500,
+  "compactKeepTokens clamps at a 500-token floor",
+)
 
 const appendConfig = resolveConfig({
   options: { contextLayout: "append", workingTokens: 20_000, memoryTokens: 3000, charsPerToken: 2 },
@@ -858,7 +862,13 @@ ok(
 
 // A narrow working share keeps only the newest turn as the retained tail.
 const narrowConfig = resolveConfig({
-  options: { contextLayout: "append", workingTokens: 500, memoryTokens: 1000, charsPerToken: 2 },
+  options: {
+    contextLayout: "append",
+    workingTokens: 500,
+    memoryTokens: 1000,
+    charsPerToken: 2,
+    compactKeepTokens: 500,
+  },
 })
 const narrowStore = new SessionStore()
 const narrowDeps = { store: narrowStore, config: narrowConfig }
@@ -887,40 +897,100 @@ ok(
 )
 ok(narrowRecord.windowStart === "nu3", "the retained tail is the newest turn that fits")
 ok(
-  narrowRecord.pending.some((pending) => pending.id === "nu1") &&
-    narrowRecord.pending.some((pending) => pending.id === "nu2"),
-  "the dropped turns become pending",
+  narrowRecord.archive.some((entry) => entry.id === "nu1") &&
+    narrowRecord.archive.some((entry) => entry.id === "nu2"),
+  "the dropped turns are archived at the fold",
 )
 ok(narrowPlan.report.workingTurns === 1, "the request keeps only the tail turn")
 
-// A full pool marks the next pass due, then compacts mechanically.
+// A full pool opens a commit window: due records the current turn, the note
+// lists what leaves, and the fold waits for the next prompt.
 const dueConfig = resolveConfig({
-  options: { contextLayout: "append", workingTokens: 500, memoryTokens: 1000, charsPerToken: 1 },
+  options: {
+    contextLayout: "append",
+    workingTokens: 3000,
+    memoryTokens: 2000,
+    charsPerToken: 1,
+    compactKeepTokens: 500,
+  },
 })
 const dueStore = new SessionStore()
 const dueDeps = { store: dueStore, config: dueConfig }
-const dueMessages = [user("du1", "D".repeat(4000)), assistant("da1", "ok")]
-const dueFirst = await buildPayload(
-  { sessionID: "append-due", system: [], messages: dueMessages, model: {} },
-  dueDeps,
-)
-const dueRecord = await dueStore.load("append-due")
+const duePass = (messages) =>
+  buildPayload({ sessionID: "append-due", system: [], messages, model: {} }, dueDeps)
+
+const dueTurn1 = [user("du1", "D".repeat(3400)), assistant("da1", "ok")]
+const dueTurn2 = [...dueTurn1, user("du2", "E".repeat(3400)), assistant("da2", "ok")]
+await duePass(dueTurn1)
+await duePass(dueTurn2)
+const dueTurn3 = [...dueTurn2, user("du3", "F".repeat(3400)), assistant("da3", "ok")]
+const dueMarked = await duePass(dueTurn3)
+let dueRecord = await dueStore.load("append-due")
 ok(dueRecord.compact?.mode === "due", "a full pool marks compaction due")
+ok(dueRecord.compact?.turn === "du3", "the due mark records the current turn")
 ok(
-  dueFirst.messages.some(
+  dueMarked.messages.some(
     (message) => message.id === "megasc_state" && message.content[0].text.includes("compaction due"),
   ),
   "the tail says compaction is due",
 )
-const dueSecond = await buildPayload(
-  { sessionID: "append-due", system: [], messages: dueMessages, model: {} },
+ok(
+  dueMarked.messages.some(
+    (message) =>
+      message.id === "megasc_state" &&
+      message.content[0].text.includes("du1") &&
+      message.content[0].text.includes("du2"),
+  ),
+  "the due note lists the turns that will leave",
+)
+const dueStayed = await duePass([
+  ...dueTurn3,
+  call("da3b", "c9", "read", { path: "src" }),
+  result("rr9", "c9", "read", "y".repeat(40)),
+])
+dueRecord = await dueStore.load("append-due")
+ok(dueRecord.compact?.mode === "due", "the commit window stays open inside the turn")
+ok(dueRecord.windowStart === "du1", "the window is not re-cut while the commit window is open")
+ok(
+  dueStayed.messages[0].content[0].text.includes("goal: (empty"),
+  "the checkpoint has not folded mid-window",
+)
+const committed = await runMemoryTool(
+  { sessionID: "append-due", action: "patch", patch: { goal: "committed during the window" } },
   dueDeps,
 )
-const dueAfter = await dueStore.load("append-due")
-ok(dueAfter.compact === undefined, "the next pass performs the mechanical compaction")
+ok(committed.ok, "a commit-window patch is accepted")
+const dueFolded = await duePass([
+  ...dueTurn3,
+  call("da3b", "c9", "read", { path: "src" }),
+  result("rr9", "c9", "read", "y".repeat(40)),
+  user("du4", "Next prompt."),
+  assistant("da4", "ok"),
+])
+dueRecord = await dueStore.load("append-due")
+ok(dueRecord.compact === undefined, "the next prompt performs the compaction")
 ok(
-  dueSecond.messages[0].content[0].text.includes("goal: (empty"),
-  "the checkpoint is folded before the second pass is built",
+  dueRecord.base?.goal === "committed during the window",
+  "the committed memory is folded into the checkpoint",
+)
+ok(
+  dueFolded.messages[0].content[0].text.includes("committed during the window"),
+  "the folded request carries the committed checkpoint",
+)
+ok((dueRecord.updates ?? []).length === 0, "the due fold clears the update log")
+ok(dueRecord.windowStart === "du4", "the folded tail keeps only the newest turn")
+ok(
+  dueRecord.archive.some((entry) => entry.id === "du1") &&
+    dueRecord.archive.some((entry) => entry.id === "du2") &&
+    dueRecord.archive.some((entry) => entry.id === "du3"),
+  "the dropped turns are archived at the fold",
+)
+ok(dueRecord.pending.length === 0, "nothing waits in pending after the fold")
+ok(
+  !dueFolded.messages.some(
+    (message) => message.id === "megasc_state" && message.content[0].text.includes("compaction due"),
+  ),
+  "the folded request drops the due note",
 )
 
 // An old record's memory becomes the first checkpoint without replaying a log.

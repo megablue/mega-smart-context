@@ -158,6 +158,7 @@ const LABELS: Record<SessionKey, string> = {
   contextLayout: "layout",
   memoryTokens: "memory",
   workingTokens: "working",
+  compactKeepTokens: "compact keep",
   charsPerToken: "chars/token",
   evictionLead: "lead",
   autoArchive: "auto-archive",
@@ -172,6 +173,7 @@ const LABELS: Record<SessionKey, string> = {
 const TOKEN_KEYS = new Set<SessionKey>([
   "memoryTokens",
   "workingTokens",
+  "compactKeepTokens",
   "archiveMaxChars",
   "expandDigestChars",
   "maxResultChars",

@@ -355,7 +355,8 @@ function compact(record: SessionRecord, config: ResolvedConfig, now: number): Me
   record.compact = { mode: "requested", at: now }
   return {
     text:
-      "smart_context: checkpoint written; the next request keeps the newest turns and moves the rest to pending.\n" +
+      "smart_context: checkpoint written; the next request keeps the newest turns that fit the compaction tail " +
+      `(~${formatTokens(config.compactKeepTokens)} est) and archives the rest with their raw messages.\n` +
       usage(record, config),
     ok: true,
   }

@@ -341,6 +341,10 @@ export interface TailBudget {
   readonly updateTokens: number
   readonly workingTokens: number
   readonly compactDue: boolean
+  /** The verbatim tail a fold would keep, so the due line can name its size. */
+  readonly keepTokens: number
+  /** Pre-rendered previews of the turns a fold would archive. */
+  readonly leaving: ReadonlyArray<string>
 }
 
 /**
@@ -383,7 +387,12 @@ export function renderTailState(record: SessionRecord, budget: TailBudget): stri
   }
 
   if (budget.compactDue) {
-    lines.push('compaction due: write anything still only in the turns, then call smart_context action:"compact"')
+    lines.push(
+      `compaction due: the pool is full; the newest ~${formatTokens(budget.keepTokens)} of turns stay, the rest is archived at the next prompt. ` +
+        'Write what still matters from the turns below into memory now — they stay searchable (recall/expand); do not purge them. ' +
+        'Call smart_context action:"compact" to fold sooner.',
+    )
+    for (const line of budget.leaving) lines.push(`  leaving: ${line}`)
   }
 
   lines.push("</smart-context-state>")

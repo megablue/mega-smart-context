@@ -28,12 +28,16 @@ import {
   MEMORY_MESSAGE_ID,
   erodeToolResults,
   isInjected,
+  previewOf,
   selectAppendWindow,
   selectWorkingWindow,
   splitNotices,
   turnSpans,
   type TurnSpan,
 } from "./view.ts"
+
+/** Most leaving-turn previews the tail note lists before counting the rest. */
+const MAX_LEAVING_LISTED = 6
 
 export interface ContextInput {
   readonly sessionID: string
@@ -100,6 +104,15 @@ function evictTurns(options: {
   readonly currentIds: ReadonlyArray<string>
   readonly config: ResolvedConfig
   readonly now: () => number
+  /**
+   * Archive each newly dropped turn at once instead of leaving it pending.
+   *
+   * The compaction fold is the one drop whose decision window already happened:
+   * the commit window was the model's chance to summarize the turn into
+   * memory. Straight to the archive with the raw kept, searchable via
+   * `recall`/`expand`, rather than sitting in a queue that begs to be purged.
+   */
+  readonly archiveNow?: boolean
 }): void {
   const { record, spans, raw, currentIds, config } = options
   const bootstrap = record.seenTurns.length === 0
@@ -125,6 +138,13 @@ function evictTurns(options: {
     let chars = gist.length
     for (const message of messages) chars += messageChars(message)
     record.pending.push({ id, gist, chars, messages, createdAt: options.now(), age: 0 })
+    if (options.archiveNow === true) {
+      archivePending(record, id, gist, true, {
+        now: options.now(),
+        maxTurns: config.archiveMaxTurns,
+        maxChars: config.archiveMaxChars,
+      })
+    }
   }
   record.seenTurns = [...currentIds]
 
@@ -408,17 +428,30 @@ async function buildAppendPlan(options: AppendPlanInput): Promise<ContextPlan> {
   let footChars = snapshotText.length + updateTexts.reduce((sum, text) => sum + text.length, 0) + turnChars
   let over = footChars > poolChars
 
-  const mark = record.compact?.mode
-  if (mark === "requested" || (mark === "due" && over)) {
-    // The tail may use the memory share the merged checkpoint does not need:
-    // the pool is shared, and unused memory room spills to the turns.
-    const mergedSnapshotText = renderSnapshot(record.memory)
-    const mergedSnapshotTokens = estimateTokens(mergedSnapshotText.length, config.charsPerToken)
-    const spillTokens = Math.max(0, config.memoryTokens - mergedSnapshotTokens)
-    // Keep the newest turns that fit the working share plus the spill. The rest
-    // become pending, exactly as a snapshot-mode window drop would.
+  // A `due` mark is a commit window, not an order to fold at once. It records
+  // the turn it was raised in; every pass of that same turn keeps the window
+  // open — a real context window has room the estimated pool does not — and the
+  // state note lists what will leave so the model can write it into memory
+  // first. The fold runs on the first pass whose current turn is newer: the
+  // next prompt. A mark without a turn is a legacy record; it folds on the next
+  // over-cap pass, as it always did. `requested` folds at once: the model
+  // called for it, so it has already written what matters.
+  const mark = record.compact
+  const currentTurnId = currentIds.length > 0 ? currentIds[currentIds.length - 1] : ""
+  const dueFolds =
+    mark !== undefined &&
+    mark.mode === "due" &&
+    over &&
+    (mark.turn === undefined || mark.turn !== currentTurnId)
+  const folds = (mark !== undefined && mark.mode === "requested") || dueFolds
+  if (folds) {
+    // The retained tail is `compactKeepTokens`, not the working share: the
+    // fold is the one step that shrinks the era, and a working-share tail would
+    // keep almost everything and free nothing. What falls outside the tail is
+    // archived immediately with the raw kept — the commit window was the
+    // model's chance to summarize it into memory.
     const tail = selectWorkingWindow(raw, {
-      workingTokens: config.workingTokens + spillTokens,
+      workingTokens: config.compactKeepTokens,
       charsPerToken: config.charsPerToken,
     })
     checkpointAppend(record)
@@ -435,12 +468,33 @@ async function buildAppendPlan(options: AppendPlanInput): Promise<ContextPlan> {
     updateTexts = []
     turnChars = messagesChars(workingTurns)
   } else if (over && record.compact === undefined) {
-    record.compact = { mode: "due", at: now() }
+    record.compact = { mode: "due", at: now(), turn: currentTurnId }
   } else if (!over && record.compact?.mode === "due") {
     delete record.compact
   }
 
-  evictTurns({ record, spans, raw, currentIds, config, now })
+  evictTurns({ record, spans, raw, currentIds, config, now, archiveNow: folds })
+
+  // What the commit window would drop: the era turns outside the retained
+  // tail. The note names them so the model can write them into memory before
+  // the fold; the list is recomputed every pass because the tail depends on
+  // the checkpoint, which the commits are growing.
+  let leaving: string[] = []
+  if (record.compact?.mode === "due") {
+    const tailIds = new Set(
+      selectWorkingWindow(raw, {
+        workingTokens: config.compactKeepTokens,
+        charsPerToken: config.charsPerToken,
+      }).turns.map((span) => span.id),
+    )
+    const going = window.turns.filter((span) => !tailIds.has(span.id))
+    leaving = going.slice(0, MAX_LEAVING_LISTED).map(
+      (span) => `${span.id} · ${previewOf(span, config.charsPerToken)}`,
+    )
+    if (going.length > MAX_LEAVING_LISTED) {
+      leaving.push(`… and ${going.length - MAX_LEAVING_LISTED} more older turn(s)`)
+    }
+  }
 
   // The mode is a tail line now, so the system keeps only the non-mode
   // notices. A Plan/Build switch does not move the system prefix.
@@ -528,6 +582,8 @@ async function buildAppendPlan(options: AppendPlanInput): Promise<ContextPlan> {
     updateTokens,
     workingTokens,
     compactDue: record.compact?.mode === "due",
+    keepTokens: config.compactKeepTokens,
+    leaving,
   })
   workingTokens = estimateTokens(turnChars + tail.length, config.charsPerToken)
   tail = renderTailState(record, {
@@ -537,6 +593,8 @@ async function buildAppendPlan(options: AppendPlanInput): Promise<ContextPlan> {
     updateTokens,
     workingTokens,
     compactDue: record.compact?.mode === "due",
+    keepTokens: config.compactKeepTokens,
+    leaving,
   })
   workingTokens = estimateTokens(turnChars + tail.length, config.charsPerToken)
 

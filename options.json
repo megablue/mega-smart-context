@@ -3,6 +3,7 @@
   "contextLayout": "snapshot",
   "memoryTokens": 20000,
   "workingTokens": 20000,
+  "compactKeepTokens": 20000,
   "charsPerToken": 4,
   "subagents": true,
   "evictionLead": 1,

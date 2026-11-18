@@ -145,6 +145,11 @@ img{max-width:100%;height:auto}
 <td>the verbatim working window, estimated</td>
 </tr>
 <tr>
+<td><code>compactKeepTokens</code></td>
+<td>20,000</td>
+<td>the verbatim turns an append-layout compaction keeps, estimated</td>
+</tr>
+<tr>
 <td><code>charsPerToken</code></td>
 <td>4</td>
 <td>the divisor that turns characters into estimated tokens</td>
@@ -157,7 +162,7 @@ img{max-width:100%;height:auto}
 </tbody>
 </table>
 <p>A tool result is shortened by keeping a head, a tail and a marker with the number of missing characters. The tool call and its result keep their ids and their order. A turn that alone exceeds the working budget is still kept; <code>/context</code> and <code>action:&quot;stats&quot;</code> report <code>OVER CAP</code> and the policy asks the model to fold sooner.</p>
-<p>In the append layout <code>memoryTokens</code> and <code>workingTokens</code> form one shared pool. The checkpoint plus the update log may use the memory share; the turns use the rest, and memory room the checkpoint does not need is available to the turns. When the rendered checkpoint, log and turns exceed the pool, the state note says compaction is due; the next pass folds the log and keeps a short tail if the model has not called <code>action:&quot;compact&quot;</code>.</p>
+<p>In the append layout <code>memoryTokens</code> and <code>workingTokens</code> form one shared pool. When the rendered checkpoint, log and turns exceed the pool, the state note says compaction is due and lists the turns that will leave. The fold waits for the next prompt — the current turn keeps its full context, and the model is expected to write what matters from the leaving turns into memory first — or runs sooner on <code>action:&quot;compact&quot;</code>. It then keeps the newest <code>compactKeepTokens</code> of turns and archives the rest with their raw messages.</p>
 <p>When the host reports a model context size, the plugin also warns when memory plus working would exceed 90% of it. It does not silently shrink either side.</p>
 </section>
 <section id="profiles">
@@ -195,7 +200,7 @@ img{max-width:100%;height:auto}
 <section id="compaction">
 <h2>Compaction</h2>
 <p>When the host asks for a checkpoint summary, the plugin returns the rendered memory document and skips the host&#39;s summarizer. If memory is empty, it declines and lets the host summarize; returning an empty block would erase the checkpoint in the name of owning it. The summary is the same block the model reads, so it too carries no live counters.</p>
-<p>In the append layout there is a second, plugin-owned checkpoint: <code>smart_context { action:&quot;compact&quot; }</code> folds the update log into the checkpoint immediately, and a full shared pool marks the next pass with a &quot;compaction due&quot; line and folds it mechanically if the model does not. The pass keeps the newest turns that fit the working share plus any unused memory room and sends the rest to pending/archive. The host hook still returns the merged document. A routine compact is a loss, not a tidy-up: it moves the checkpoint and makes the provider re-read it, so the tool description reserves it for a state note that says compaction is due.</p>
+<p>In the append layout there is a second, plugin-owned checkpoint: <code>smart_context { action:&quot;compact&quot; }</code> folds the update log into the checkpoint immediately, and a full shared pool raises a &quot;compaction due&quot; line that lists the turns about to leave. The due mark is a commit window: the fold waits for the next prompt so the model can write what matters into memory first, and a routine compact is still a loss - it moves the checkpoint and makes the provider re-read it, so the tool description reserves it for a due note. The fold keeps the newest <code>compactKeepTokens</code> of turns and archives the rest immediately, raw kept, rather than leaving them in a pending queue. The host hook still returns the merged document.</p>
 </section>
 <section id="undo">
 <h2>Undo</h2>

@@ -30,6 +30,14 @@ export interface ResolvedConfig {
   memoryTokens: number
   /** Cap on the verbatim working window, in estimated tokens. */
   workingTokens: number
+  /**
+   * Verbatim turns an append-layout compaction keeps, in estimated tokens.
+   *
+   * The fold is the one step that shrinks the era: it keeps the newest turns
+   * that fit this budget and archives the rest, instead of keeping the whole
+   * working share and freeing nothing.
+   */
+  compactKeepTokens: number
   /** The divisor used to turn characters into estimated tokens. */
   charsPerToken: number
   /** Manage child (subagent) sessions independently. */
@@ -81,6 +89,7 @@ export const SESSION_KEYS = [
   "contextLayout",
   "memoryTokens",
   "workingTokens",
+  "compactKeepTokens",
   "charsPerToken",
   "evictionLead",
   "autoArchive",
@@ -102,6 +111,7 @@ export const DEFAULT_CONFIG: ResolvedConfig = {
   contextLayout: "snapshot",
   memoryTokens: 20_000,
   workingTokens: 20_000,
+  compactKeepTokens: 20_000,
   charsPerToken: 4,
   subagents: true,
   evictionLead: 1,
@@ -148,6 +158,7 @@ const BOOLEAN_KEYS = new Set([
 const NUMBER_KEYS = new Set([
   "memoryTokens",
   "workingTokens",
+  "compactKeepTokens",
   "charsPerToken",
   "evictionLead",
   "archiveMaxTurns",
@@ -186,6 +197,8 @@ function coerceValue(key: string, raw: unknown, where: string): unknown {
     case "memoryTokens":
       return Math.max(1000, Math.round(raw))
     case "workingTokens":
+      return Math.max(500, Math.round(raw))
+    case "compactKeepTokens":
       return Math.max(500, Math.round(raw))
     case "charsPerToken":
       return clampInteger(raw * 100, 200, 800) / 100
