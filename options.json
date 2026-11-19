@@ -1,8 +1,8 @@
 {
   "enabled": true,
   "contextLayout": "snapshot",
-  "memoryTokens": 20000,
-  "workingTokens": 20000,
+  "memoryTokens": 100000,
+  "workingTokens": 200000,
   "compactKeepTokens": 20000,
   "charsPerToken": 4,
   "subagents": true,

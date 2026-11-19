@@ -333,10 +333,10 @@ export function renderUpdate(update: MemoryUpdate): string {
   return lines.join("\n")
 }
 
-/** The numbers the tail state note prints. Kept separate so `renderTailState` stays pure. */
 /** The real model context window below which the note may print the pool cap. */
 export const SMALL_WINDOW_MAX = 300_000
 
+/** The numbers the tail state note prints. Kept separate so `renderTailState` stays pure. */
 export interface TailBudget {
   readonly poolTokens: number
   readonly poolCap: number

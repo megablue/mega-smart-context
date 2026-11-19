@@ -17,6 +17,7 @@
  */
 
 import assert from "node:assert/strict"
+import { readFileSync } from "node:fs"
 import { resolve } from "node:path"
 import { pathToFileURL } from "node:url"
 
@@ -130,6 +131,19 @@ assert.equal(parseLayer({ memoryTokens: 10 }, "test").memoryTokens, 1000, "memor
 passed += 1
 assert.equal(parseLayer({ charsPerToken: 0 }, "test").charsPerToken, 2, "charsPerToken is clamped")
 passed += 1
+
+const defaultBudgets = resolveConfig({})
+ok(
+  defaultBudgets.memoryTokens === 100_000 && defaultBudgets.workingTokens === 200_000,
+  "the default budgets are 100k memory and 200k working",
+)
+const packageOptions = JSON.parse(readFileSync(new URL("../options.json", import.meta.url), "utf8"))
+const packageBudgets = resolveConfig({ package: packageOptions })
+ok(
+  packageBudgets.memoryTokens === defaultBudgets.memoryTokens &&
+    packageBudgets.workingTokens === defaultBudgets.workingTokens,
+  "the package options layer carries the same default budgets",
+)
 
 // ---------------------------------------------------------------------------
 // Unit: the per-commit version arithmetic
