@@ -334,6 +334,9 @@ export function renderUpdate(update: MemoryUpdate): string {
 }
 
 /** The numbers the tail state note prints. Kept separate so `renderTailState` stays pure. */
+/** The real model context window below which the note may print the pool cap. */
+export const SMALL_WINDOW_MAX = 300_000
+
 export interface TailBudget {
   readonly poolTokens: number
   readonly poolCap: number
@@ -345,6 +348,12 @@ export interface TailBudget {
   readonly keepTokens: number
   /** Pre-rendered previews of the turns a fold would archive. */
   readonly leaving: ReadonlyArray<string>
+  /**
+   * The model's real context window when the host supplies one; gates the cap.
+   * Above the threshold (or when unknown) the note prints usage without a cap:
+   * a small cap makes a big-window model conserve instead of keep going.
+   */
+  readonly modelContext?: number
 }
 
 /**
@@ -366,9 +375,11 @@ export function renderTailState(record: SessionRecord, budget: TailBudget): stri
   if (mode === "plan") lines.push("mode: plan — do not modify files; tell the user to switch agents")
   else if (mode === "build") lines.push("mode: build — edit and run commands")
 
-  const over = budget.poolTokens > budget.poolCap ? " · over cap" : ""
+  const smallWindow = budget.modelContext !== undefined && budget.modelContext < SMALL_WINDOW_MAX
+  const cap = smallWindow ? `/${formatTokens(budget.poolCap)}` : ""
+  const over = smallWindow && budget.poolTokens > budget.poolCap ? " · over cap" : ""
   lines.push(
-    `pool: ${formatTokens(budget.poolTokens)}/${formatTokens(budget.poolCap)}` +
+    `pool: ${formatTokens(budget.poolTokens)}${cap}` +
       ` (snapshot ${formatTokens(budget.snapshotTokens)} · updates ${formatTokens(budget.updateTokens)} · turns ${formatTokens(budget.workingTokens)})${over}`,
   )
 

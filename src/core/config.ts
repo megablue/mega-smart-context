@@ -109,8 +109,8 @@ export type SessionOverrides = Partial<Pick<ResolvedConfig, SessionKey>>
 export const DEFAULT_CONFIG: ResolvedConfig = {
   enabled: true,
   contextLayout: "snapshot",
-  memoryTokens: 20_000,
-  workingTokens: 20_000,
+  memoryTokens: 100_000,
+  workingTokens: 200_000,
   compactKeepTokens: 20_000,
   charsPerToken: 4,
   subagents: true,

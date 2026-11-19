@@ -746,8 +746,8 @@ const appendConfig = resolveConfig({
 })
 const appendStore = new SessionStore()
 const appendDeps = { store: appendStore, config: appendConfig }
-const appendPass = (messages) =>
-  buildPayload({ sessionID: "append", system: [{ type: "text", text: "base" }], messages, model: {} }, appendDeps)
+const appendPass = (messages, model) =>
+  buildPayload({ sessionID: "append", system: [{ type: "text", text: "base" }], messages, model: model ?? {} }, appendDeps)
 
 const appendTurn1 = [user("au1", "First append turn. ".repeat(20)), assistant("aa1", "Done.")]
 const appendFirst = await appendPass(appendTurn1)
@@ -991,6 +991,32 @@ ok(
     (message) => message.id === "megasc_state" && message.content[0].text.includes("compaction due"),
   ),
   "the folded request drops the due note",
+)
+
+// The note hides the pool cap unless the model's real context window is small.
+const limitNote = async (model) =>
+  (await appendPass([user("lg1", "Hello."), assistant("la1", "Hi.")], model)).messages.find(
+    (message) => message.id === "megasc_state",
+  )
+const smallCapNote = await limitNote({ limit: { context: 280_000 } })
+ok(
+  smallCapNote !== undefined && smallCapNote.content[0].text.includes("/23k"),
+  "the note prints the cap when the model window is small",
+)
+const bigWindowNote = await limitNote({ limit: { context: 1_000_000 } })
+ok(
+  bigWindowNote !== undefined && !bigWindowNote.content[0].text.includes("/23k"),
+  "the note omits the cap when the model window is large",
+)
+const boundaryWindowNote = await limitNote({ limit: { context: 300_000 } })
+ok(
+  boundaryWindowNote !== undefined && !boundaryWindowNote.content[0].text.includes("/23k"),
+  "a 300k window is not small enough to print the cap",
+)
+const unknownWindowNote = await limitNote({})
+ok(
+  unknownWindowNote !== undefined && !unknownWindowNote.content[0].text.includes("/23k"),
+  "the note omits the cap when the model window is unknown",
 )
 
 // An old record's memory becomes the first checkpoint without replaying a log.
@@ -2138,7 +2164,7 @@ ok(tuiFour.toasts.length === 0, "updateCheck:false says nothing")
 // The status bridge and the TUI dialog it feeds
 // ---------------------------------------------------------------------------
 
-const statusConfig = resolveConfig({})
+const statusConfig = resolveConfig({ options: { memoryTokens: 20_000, workingTokens: 20_000 } })
 const statusRecord = blankRecord()
 statusRecord.memory.goal = "ship the status dialog"
 statusRecord.pending = [

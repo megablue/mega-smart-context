@@ -572,6 +572,7 @@ async function buildAppendPlan(options: AppendPlanInput): Promise<ContextPlan> {
   // the turn a stable prefix and the note is still the last thing the model
   // reads before it replies.
   const poolCap = config.memoryTokens + config.workingTokens
+  const modelContext = modelContextOf(input.model)
   const snapshotTokens = estimateTokens(snapshotText.length, config.charsPerToken)
   const updateTokens = estimateTokens(sentUpdateChars, config.charsPerToken)
   let workingTokens = estimateTokens(turnChars, config.charsPerToken)
@@ -584,6 +585,7 @@ async function buildAppendPlan(options: AppendPlanInput): Promise<ContextPlan> {
     compactDue: record.compact?.mode === "due",
     keepTokens: config.compactKeepTokens,
     leaving,
+    modelContext,
   })
   workingTokens = estimateTokens(turnChars + tail.length, config.charsPerToken)
   tail = renderTailState(record, {
@@ -595,6 +597,7 @@ async function buildAppendPlan(options: AppendPlanInput): Promise<ContextPlan> {
     compactDue: record.compact?.mode === "due",
     keepTokens: config.compactKeepTokens,
     leaving,
+    modelContext,
   })
   workingTokens = estimateTokens(turnChars + tail.length, config.charsPerToken)
 
@@ -606,7 +609,6 @@ async function buildAppendPlan(options: AppendPlanInput): Promise<ContextPlan> {
 
   const memoryTokens = snapshotTokens + updateTokens
   const totalTokens = memoryTokens + workingTokens
-  const modelContext = modelContextOf(input.model)
   const overBudget =
     totalTokens > poolCap ||
     (modelContext !== undefined && totalTokens > Math.floor(modelContext * 0.9))
