@@ -16,7 +16,9 @@
  * Byte stability: nothing here may depend on a newer turn, or a provider prefix
  * cache above the change goes cold. `erodeToolResults` is a pure function of one
  * message's own bytes, and reasoning is passed through exactly as the host sent
- * it, so once a message is in the window its bytes never change.
+ * it, so once a message is in the window its bytes never change - except the
+ * opt-in rebuild of a completed turn at a fold (`rebuildTurn`), which stores the
+ * turn ids and re-derives the same bytes on every later pass.
  *
  * @module mega-smart-context/view
  */
@@ -242,6 +244,95 @@ export function valueText(part: ToolResultPart): string {
   } catch {
     return String(value)
   }
+}
+
+/** Tools whose successful text result becomes a short confirmation. */
+const WRITE_TOOLS = new Set(["write", "edit", "create", "patch"])
+
+/** Tools whose successful text output keeps only its tail. */
+const SHELL_TOOLS = new Set(["bash", "shell"])
+
+/** A word that marks an error or a refusal; those results are kept verbatim. */
+const ERROR_TEXT = /\b(error|failed|failure|exception|denied|cannot|not found)\b/i
+
+export interface RebuiltTurn {
+  readonly messages: Message[]
+  readonly charsSaved: number
+}
+
+/**
+ * Rebuild one completed turn's bytes for the append layout's compaction reset.
+ *
+ * The cache is already cold at a fold, so rewriting the retained tail is free
+ * there - and only there. The rules are conservative: reasoning parts are
+ * dropped; a successful write/edit text result becomes "<path> ok"; a long
+ * successful bash/shell text keeps its last 20 lines; any result with an error
+ * marker is kept verbatim; content and json results are left alone (their shape
+ * is part of the contract); unknown tools are left alone. A call and its result
+ * stay paired: nothing is removed.
+ */
+export function rebuildTurn(messages: ReadonlyArray<Message>): RebuiltTurn {
+  const inputs = new Map<string, any>()
+  for (const message of messages) {
+    for (const call of toolCalls(message)) inputs.set(call.id, call.input)
+  }
+
+  const out = messages.map((message) => {
+    let touched = false
+    const content: ContentPart[] = []
+    for (const part of message.content ?? []) {
+      if (part.type === "reasoning") {
+        touched = true
+        continue
+      }
+      if (part.type !== "tool-result") {
+        content.push(part)
+        continue
+      }
+      const result = part as ToolResultPart
+      const value = result.result?.value
+      if (result.result?.type !== "text" || typeof value !== "string" || ERROR_TEXT.test(value)) {
+        content.push(part)
+        continue
+      }
+      const name = result.name ?? ""
+      if (WRITE_TOOLS.has(name)) {
+        const input = inputs.get(result.id)
+        const path =
+          typeof input?.path === "string"
+            ? input.path
+            : typeof input?.filePath === "string"
+              ? input.filePath
+              : typeof input?.file_path === "string"
+                ? input.file_path
+                : undefined
+        const next = path === undefined ? `[${name} ok]` : `${path} ok`
+        if (next.length < value.length) {
+          content.push({ ...result, result: { ...result.result, value: next } })
+          touched = true
+          continue
+        }
+      }
+      if (SHELL_TOOLS.has(name)) {
+        const lines = value.split("\n")
+        if (lines.length > 20) {
+          const next = `… [${lines.length - 20} lines dropped]\n` + lines.slice(-20).join("\n")
+          if (next.length < value.length) {
+            content.push({ ...result, result: { ...result.result, value: next } })
+            touched = true
+            continue
+          }
+        }
+      }
+      content.push(part)
+    }
+    if (!touched || content.length === 0) return message
+    return { ...message, content }
+  })
+
+  const before = messages.reduce((sum, message) => sum + messageChars(message), 0)
+  const after = out.reduce((sum, message) => sum + messageChars(message), 0)
+  return { messages: out, charsSaved: Math.max(0, before - after) }
 }
 
 /** One turn's shape, for the budget walk and the eviction preview. */

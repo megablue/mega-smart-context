@@ -38,6 +38,15 @@ export interface ResolvedConfig {
    * working share and freeing nothing.
    */
   compactKeepTokens: number
+  /**
+   * Rebuild the retained tail's bytes at an append-layout fold.
+   *
+   * The fold is the one moment the provider re-reads the tail anyway, so
+   * dropping completed-turn reasoning and shortening successful tool results
+   * there costs no extra cache. Off by default: measure `rebuildSaved` before
+   * trusting it.
+   */
+  rebuildOnCompaction: boolean
   /** The divisor used to turn characters into estimated tokens. */
   charsPerToken: number
   /** Manage child (subagent) sessions independently. */
@@ -90,6 +99,7 @@ export const SESSION_KEYS = [
   "memoryTokens",
   "workingTokens",
   "compactKeepTokens",
+  "rebuildOnCompaction",
   "charsPerToken",
   "evictionLead",
   "autoArchive",
@@ -112,6 +122,7 @@ export const DEFAULT_CONFIG: ResolvedConfig = {
   memoryTokens: 100_000,
   workingTokens: 200_000,
   compactKeepTokens: 20_000,
+  rebuildOnCompaction: false,
   charsPerToken: 4,
   subagents: true,
   evictionLead: 1,
@@ -147,6 +158,7 @@ const BOOLEAN_KEYS = new Set([
   "enabled",
   "subagents",
   "autoArchive",
+  "rebuildOnCompaction",
   "parentArchive",
   "refs",
   "manualCommand",

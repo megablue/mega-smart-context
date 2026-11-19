@@ -459,6 +459,17 @@ export interface SessionRecord {
   windowStart?: string
   /** A compaction the next pass must perform, or a `due` note waiting for that pass. */
   compact?: CompactMark
+  /**
+   * Turn ids whose bytes are rebuilt: reasoning dropped, successful write/edit
+   * results replaced with a short confirmation, long shell output tail-cut.
+   *
+   * Stored as ids rather than bytes, so every pass re-derives the same result
+   * from the raw transcript. Set at a fold when `rebuildOnCompaction` is on; the
+   * current turn is never in the set.
+   */
+  rebuilt?: string[]
+  /** Characters the last fold's rebuild removed, for the measurement. */
+  rebuildSaved?: number
   /** Turn ids that were in the working window on the previous pass. */
   seenTurns: string[]
   pending: PendingTurn[]

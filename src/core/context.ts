@@ -29,6 +29,7 @@ import {
   erodeToolResults,
   isInjected,
   previewOf,
+  rebuildTurn,
   selectAppendWindow,
   selectWorkingWindow,
   splitNotices,
@@ -164,6 +165,38 @@ function evictTurns(options: {
     record.pending = record.pending.filter((pending) => pending.age <= config.evictionLead)
   }
   trimArchive(record, config.archiveMaxTurns, config.archiveMaxChars)
+}
+
+/**
+ * The window with the rebuilt turns applied, then eroded.
+ *
+ * The rebuild is stored as turn ids (`record.rebuilt`), not as bytes, so every
+ * pass re-derives the same result from the raw transcript. The current turn is
+ * never rebuilt: its newest tool result is what the model is waiting for.
+ */
+function renderWindow(
+  raw: ReadonlyArray<Message>,
+  window: { readonly startIdx: number; readonly turns: ReadonlyArray<TurnSpan> },
+  rebuilt: ReadonlySet<string>,
+  config: ResolvedConfig,
+): { messages: Message[]; saved: number } {
+  if (rebuilt.size === 0 || window.turns.length === 0) {
+    return { messages: erodeToolResults(raw.slice(window.startIdx), config.maxResultChars).messages, saved: 0 }
+  }
+  const currentId = window.turns[window.turns.length - 1].id
+  const pieces: Message[] = []
+  let saved = 0
+  for (const span of window.turns) {
+    const turn = raw.slice(span.startIdx, span.endIdx + 1)
+    if (span.id !== currentId && rebuilt.has(span.id)) {
+      const result = rebuildTurn(turn)
+      pieces.push(...result.messages)
+      saved += result.charsSaved
+    } else {
+      pieces.push(...turn)
+    }
+  }
+  return { messages: erodeToolResults(pieces, config.maxResultChars).messages, saved }
 }
 
 export async function buildPayload(input: ContextInput, deps: ContextDeps): Promise<ContextPlan> {
@@ -408,7 +441,18 @@ async function buildAppendPlan(options: AppendPlanInput): Promise<ContextPlan> {
     record.windowStart = fallback.turns[0]?.id
   }
 
-  let workingTurns = erodeToolResults(raw.slice(window.startIdx), config.maxResultChars).messages
+  // A fold rebuilds the retained tail's bytes; the switch is re-read every pass,
+  // so turning it off returns the original transcript bytes. The current turn is
+  // never rebuilt: its newest tool result is what the model is waiting for.
+  if (!config.rebuildOnCompaction) {
+    delete record.rebuilt
+    delete record.rebuildSaved
+  } else if (record.rebuilt !== undefined) {
+    const known = new Set(spans.map((span) => span.id))
+    record.rebuilt = record.rebuilt.filter((id) => known.has(id))
+    if (record.rebuilt.length === 0) delete record.rebuilt
+  }
+  let workingTurns = renderWindow(raw, window, new Set(record.rebuilt ?? []), config).messages
   let currentIds = window.turns.map((span) => span.id)
 
   if (undo !== undefined) {
@@ -462,7 +506,16 @@ async function buildAppendPlan(options: AppendPlanInput): Promise<ContextPlan> {
       dropped: tail.dropped,
       chars: tail.chars,
     }
-    workingTurns = erodeToolResults(raw.slice(window.startIdx), config.maxResultChars).messages
+    const tailCurrent = window.turns.length > 0 ? window.turns[window.turns.length - 1].id : ""
+    if (config.rebuildOnCompaction) {
+      record.rebuilt = window.turns.filter((span) => span.id !== tailCurrent).map((span) => span.id)
+    } else {
+      delete record.rebuilt
+      delete record.rebuildSaved
+    }
+    const rendered = renderWindow(raw, window, new Set(record.rebuilt ?? []), config)
+    workingTurns = rendered.messages
+    if (config.rebuildOnCompaction) record.rebuildSaved = rendered.saved
     currentIds = window.turns.map((span) => span.id)
     snapshotText = renderSnapshot(record.base ?? record.memory)
     updateTexts = []
@@ -671,6 +724,7 @@ async function buildAppendPlan(options: AppendPlanInput): Promise<ContextPlan> {
       `context ${input.sessionID}: append snapshot ${report.memoryTokens}/${config.memoryTokens}, ` +
         `updates ${updateTokens} est, working ${report.workingTokens}/${config.workingTokens}, ` +
         `pool ${report.totalTokens}/${poolCap}, ${report.workingTurns} kept, ${report.droppedTurns} dropped, ` +
+        `${record.rebuildSaved === undefined ? "" : `rebuild ${record.rebuildSaved} chars saved, `}` +
         `${report.pending} pending, ${report.archived} archived, ` +
         `profile ${choiceLabel(chooseProfile(deps.config, record.profile, record.lastModel))}`,
     )

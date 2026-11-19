@@ -150,6 +150,11 @@ img{max-width:100%;height:auto}
 <td>the verbatim turns an append-layout compaction keeps, estimated</td>
 </tr>
 <tr>
+<td><code>rebuildOnCompaction</code></td>
+<td>false</td>
+<td>rebuild the retained tail's bytes at a fold</td>
+</tr>
+<tr>
 <td><code>charsPerToken</code></td>
 <td>4</td>
 <td>the divisor that turns characters into estimated tokens</td>
@@ -200,7 +205,7 @@ img{max-width:100%;height:auto}
 <section id="compaction">
 <h2>Compaction</h2>
 <p>When the host asks for a checkpoint summary, the plugin returns the rendered memory document and skips the host&#39;s summarizer. If memory is empty, it declines and lets the host summarize; returning an empty block would erase the checkpoint in the name of owning it. The summary is the same block the model reads, so it too carries no live counters.</p>
-<p>In the append layout there is a second, plugin-owned checkpoint: <code>smart_context { action:&quot;compact&quot; }</code> folds the update log into the checkpoint immediately, and a full shared pool raises a &quot;compaction due&quot; line that lists the turns about to leave. The due mark is a commit window: the fold waits for the next prompt so the model can write what matters into memory first, and a routine compact is still a loss - it moves the checkpoint and makes the provider re-read it, so the tool description reserves it for a due note. The fold keeps the newest <code>compactKeepTokens</code> of turns and archives the rest immediately, raw kept, rather than leaving them in a pending queue. The host hook still returns the merged document.</p>
+<p>In the append layout there is a second, plugin-owned checkpoint: <code>smart_context { action:&quot;compact&quot; }</code> folds the update log into the checkpoint immediately, and a full shared pool raises a &quot;compaction due&quot; line that lists the turns about to leave. The due mark is a commit window: the fold waits for the next prompt so the model can write what matters into memory first, and a routine compact is still a loss - it moves the checkpoint and makes the provider re-read it, so the tool description reserves it for a due note. The fold keeps the newest <code>compactKeepTokens</code> of turns and archives the rest immediately, raw kept, rather than leaving them in a pending queue. With <code>rebuildOnCompaction</code> on, the fold also rebuilds the retained tail&#39;s bytes: completed-turn reasoning is dropped, a successful write/edit text result becomes <code>&lt;path&gt; ok</code>, a long successful shell output keeps its last 20 lines, and error results, content/json shapes, user text and the current turn are untouched; <code>rebuildSaved</code> records the characters removed. The host hook still returns the merged document.</p>
 </section>
 <section id="undo">
 <h2>Undo</h2>

@@ -4,6 +4,7 @@
   "memoryTokens": 100000,
   "workingTokens": 200000,
   "compactKeepTokens": 20000,
+  "rebuildOnCompaction": false,
   "charsPerToken": 4,
   "subagents": true,
   "evictionLead": 1,

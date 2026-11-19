@@ -91,7 +91,7 @@ import {
 import { MAX_HISTORY, MAX_NOTICES, MAX_NOTICE_CHARS, MAX_RETIRED, SessionStore, StoreConflictError, pruneOrphans, retireNotice, sameDirectory, trimHistory, upsertNotices } from "../src/core/state.ts"
 import { extractHtmlSection, extractSection, htmlToText, pageCandidates } from "../src/core/refs.ts"
 import { deriveVersion, readVersionBase } from "../src/core/version.ts"
-import { balanceCuts, erodeToolResults, gistText, hostMessageOf, isHostCue, isHostJob, isHostMessage, isHostTail, isRealUser, modeReminderOf, noticeOf, RESUMED_TEXT, selectAppendWindow, selectWorkingWindow, splitNotices, turnSpans } from "../src/core/view.ts"
+import { balanceCuts, erodeToolResults, gistText, hostMessageOf, isHostCue, isHostJob, isHostMessage, isHostTail, isRealUser, modeReminderOf, noticeOf, rebuildTurn, RESUMED_TEXT, selectAppendWindow, selectWorkingWindow, splitNotices, turnSpans } from "../src/core/view.ts"
 import { livenessFromError } from "../src/adapters/opencode/sessions.ts"
 import { TOOL_DESCRIPTION } from "../src/adapters/opencode/tool.ts"
 import { readPluginVersion } from "../src/adapters/opencode/version.ts"
@@ -137,6 +137,7 @@ ok(
   defaultBudgets.memoryTokens === 100_000 && defaultBudgets.workingTokens === 200_000,
   "the default budgets are 100k memory and 200k working",
 )
+ok(defaultBudgets.rebuildOnCompaction === false, "the tail rebuild is off by default")
 const packageOptions = JSON.parse(readFileSync(new URL("../options.json", import.meta.url), "utf8"))
 const packageBudgets = resolveConfig({ package: packageOptions })
 ok(
@@ -1032,6 +1033,106 @@ ok(
   unknownWindowNote !== undefined && !unknownWindowNote.content[0].text.includes("/23k"),
   "the note omits the cap when the model window is unknown",
 )
+
+// A fold can rebuild the retained tail's bytes when the flag is on.
+const rebuiltUnit = rebuildTurn([
+  withReasoning("ub1", "scratch work ".repeat(20), "Answer."),
+  call("ub2", "uc1", "edit", { path: "src/a.ts" }),
+  result("ub3", "uc1", "edit", "Applied 1 edit to src/a.ts"),
+  result("ub4", "uc2", "edit", "Error: no such file"),
+  result("ub5", "uc3", "bash", "line\n".repeat(40)),
+  result("ub6", "uc4", "custom", "keep me"),
+])
+ok(
+  !(rebuiltUnit.messages.find((m) => m.id === "ub1").content ?? []).some((p) => p.type === "reasoning"),
+  "the rebuild drops completed-turn reasoning",
+)
+ok(
+  rebuiltUnit.messages.find((m) => m.id === "ub1").content[0].text === "Answer.",
+  "the rebuild keeps the assistant text",
+)
+ok(
+  rebuiltUnit.messages.find((m) => m.id === "ub3").content[0].result.value === "src/a.ts ok" &&
+    rebuiltUnit.messages.find((m) => m.id === "ub3").content[0].result.type === "text",
+  "a successful edit result becomes the path and ok, with its shape kept",
+)
+ok(
+  rebuiltUnit.messages.find((m) => m.id === "ub4").content[0].result.value === "Error: no such file",
+  "an error result is kept verbatim",
+)
+ok(
+  rebuiltUnit.messages.find((m) => m.id === "ub5").content[0].result.value.includes("lines dropped"),
+  "a long successful shell result keeps its tail",
+)
+ok(
+  rebuiltUnit.messages.find((m) => m.id === "ub6").content[0].result.value === "keep me",
+  "an unknown tool result is left alone",
+)
+const contentShape = {
+  id: "ub7",
+  role: "tool",
+  content: [
+    { type: "tool-result", id: "uc5", name: "edit", result: { type: "content", value: [{ type: "text", text: "done" }] } },
+  ],
+}
+ok(rebuildTurn([contentShape]).messages[0] === contentShape, "a content result keeps its shape untouched")
+ok(rebuiltUnit.charsSaved > 0, "the rebuild reports the characters it saved")
+
+// The fold applies the rebuild to the retained tail, and only there.
+const rebuildConfig = resolveConfig({
+  options: {
+    contextLayout: "append",
+    workingTokens: 20_000,
+    memoryTokens: 3000,
+    charsPerToken: 2,
+    rebuildOnCompaction: true,
+    compactKeepTokens: 5000,
+  },
+})
+const rebuildStore = new SessionStore()
+const rebuildDeps = { store: rebuildStore, config: rebuildConfig }
+const rebuildPass = (messages) =>
+  buildPayload({ sessionID: "append-rebuild", system: [], messages, model: {} }, rebuildDeps)
+
+const rebuildTurn1 = [
+  user("ru1", "Edit the file."),
+  call("ra1", "rc1", "edit", { path: "src/x.ts", oldString: "a", newString: "b" }),
+  result("rr1", "rc1", "edit", "Applied 1 edit to src/x.ts"),
+  withReasoning("ra2", "private step ".repeat(30), "Done."),
+]
+const rebuildTurn2 = [
+  ...rebuildTurn1,
+  user("ru2", "Next."),
+  withReasoning("ra3", "more private ".repeat(30), "Alright."),
+]
+await rebuildPass(rebuildTurn1)
+await rebuildPass(rebuildTurn2)
+await runMemoryTool({ sessionID: "append-rebuild", action: "compact" }, rebuildDeps)
+const rebuiltPass = await rebuildPass([...rebuildTurn2, user("ru3", "Third."), assistant("ra4", "Ok.")])
+const rebuildRecord = await rebuildStore.load("append-rebuild")
+ok(
+  (rebuildRecord.rebuilt ?? []).includes("ru1") && !(rebuildRecord.rebuilt ?? []).includes("ru3"),
+  "the fold marks the completed tail turns for rebuild",
+)
+ok(
+  !(rebuiltPass.messages.find((m) => m.id === "ra2").content ?? []).some((p) => p.type === "reasoning"),
+  "the folded request drops completed-turn reasoning",
+)
+const sentEdit = rebuiltPass.messages.find((m) => m.id === "rr1")
+ok(
+  sentEdit !== undefined && sentEdit.content[0].result.value === "src/x.ts ok",
+  "the folded request replaces the successful edit result",
+)
+ok(
+  rebuiltPass.messages.find((m) => m.id === "ru1").content[0].text === "Edit the file.",
+  "the rebuild keeps user text verbatim",
+)
+const rebuiltAgain = await rebuildPass([...rebuildTurn2, user("ru3", "Third."), assistant("ra4", "Ok.")])
+ok(
+  JSON.stringify(rebuiltAgain.messages.find((m) => m.id === "rr1")) === JSON.stringify(sentEdit),
+  "a later pass reproduces the rebuilt bytes",
+)
+ok((rebuildRecord.rebuildSaved ?? 0) > 0, "the fold records the characters the rebuild saved")
 
 // An old record's memory becomes the first checkpoint without replaying a log.
 const oldStorage = new Map()

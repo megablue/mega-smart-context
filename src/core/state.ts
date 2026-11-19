@@ -500,6 +500,8 @@ export function normalizeRecord(value: unknown, now: number): SessionRecord {
   if (typeof value.windowStart === "string" && value.windowStart.length > 0) record.windowStart = value.windowStart
   const compact = normalizeCompact(value.compact)
   if (compact !== undefined) record.compact = compact
+  if (Array.isArray(value.rebuilt)) record.rebuilt = value.rebuilt.filter((id): id is string => typeof id === "string")
+  if (typeof value.rebuildSaved === "number" && Number.isFinite(value.rebuildSaved)) record.rebuildSaved = value.rebuildSaved
   if (Array.isArray(value.seenTurns)) record.seenTurns = value.seenTurns.filter((id): id is string => typeof id === "string")
   if (Array.isArray(value.pending)) {
     record.pending = value.pending.map(normalizePending).filter((entry): entry is PendingTurn => entry !== undefined)

@@ -159,6 +159,7 @@ const LABELS: Record<SessionKey, string> = {
   memoryTokens: "memory",
   workingTokens: "working",
   compactKeepTokens: "compact keep",
+  rebuildOnCompaction: "rebuild tail",
   charsPerToken: "chars/token",
   evictionLead: "lead",
   autoArchive: "auto-archive",

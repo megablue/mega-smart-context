@@ -412,7 +412,7 @@ compact when memoryFoot + workingFoot &gt; pool</code></pre>
 
 <div class="note warn"><strong>The call input can be the bigger cost.</strong> A <code>write</code> call carries the whole file, which can be larger than its “ok” result. But the input is part of the assistant message; truncating it may break the tool schema. Leave the call alone in v1. If call inputs dominate, the v2 move is to replace the whole call-and-result pair with one synthetic work-log note, not to edit the input in place.</div>
 
-<div class="note"><strong>Measure before trusting it.</strong> A summarized edit result may make the model re-read the file, which can cost more than the diff. A summary of a successful test may hide the one warning that mattered. Add <code>rebuildOnCompaction</code> as a flag, record <code>charsSaved</code>, and compare a real session with and without it. Start with the conservative rules above; leave unknown tools alone.</div>
+<div class="note"><strong>Measure before trusting it.</strong> A summarized edit result may make the model re-read the file, which can cost more than the diff. A summary of a successful test may hide the one warning that mattered. <code>rebuildOnCompaction</code> is that flag (off by default); a fold records <code>rebuildSaved</code> on the session record, so a real session can be compared with and without it. The conservative rules above are what ships; unknown tools are left alone.</div>
 
 <h2>6. The tail state note</h2>
 <p>The mode, the live budget, pending evictions and undo all need to be visible, but none of them belongs in the snapshot. They go in one small note at the very end, after the current turn.</p>
