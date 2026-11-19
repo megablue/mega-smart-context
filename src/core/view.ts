@@ -260,22 +260,130 @@ export interface RebuiltTurn {
   readonly charsSaved: number
 }
 
+/** A call's file argument, under any of the host's key spellings. */
+function pathEntryOf(input: any): { key: string; value: string } | undefined {
+  for (const key of ["path", "filePath", "file_path"]) {
+    if (typeof input?.[key] === "string") return { key, value: input[key] }
+  }
+  return undefined
+}
+
+/**
+ * Rewrite a grep result to the files and line numbers it matched.
+ *
+ * A grep result repeats each matched line's text, which a `read` shows in full
+ * and the same query can produce again. The durable fact is where the matches
+ * are, so each block becomes `path: 5, 22, 40`. Returns undefined when the
+ * result has no `Line N:` previews (a summary, a refusal), so those keep their
+ * bytes.
+ */
+function compactGrep(text: string): string | undefined {
+  const lines = text.split("\n")
+  if (!lines.some((line) => /^\s*Line \d+:/.test(line))) return undefined
+  const out: string[] = []
+  let header: string | undefined
+  let numbers: string[] = []
+  const flush = () => {
+    if (header === undefined) return
+    out.push(numbers.length === 0 ? header : `${header} ${numbers.join(", ")}`)
+    numbers = []
+  }
+  for (const line of lines) {
+    const match = /^\s*Line (\d+):/.exec(line)
+    if (match !== null) {
+      numbers.push(match[1])
+      continue
+    }
+    if (/:\s*$/.test(line)) {
+      flush()
+      header = line
+      continue
+    }
+    flush()
+    header = undefined
+    out.push(line)
+  }
+  flush()
+  return out.join("\n")
+}
+
+export interface RebuildOptions {
+  /** Read call ids a later read of the same path replaced, and that path. */
+  readonly supersededReads?: ReadonlyMap<string, string>
+}
+
+/**
+ * Read calls whose bytes a later read of the same path makes redundant.
+ *
+ * `turns` is the completed part of the window, in order, and the current turn
+ * is excluded: its newest result is what the model is waiting for, and counting
+ * its reads would rewrite an earlier turn's bytes mid-turn.
+ *
+ * A later read replaces an earlier one when it covers the same lines (the same
+ * `offset` and `limit`) or reads the whole file (neither given). A write or
+ * edit to the path in between clears the chain: the earlier copy is then
+ * history, not a duplicate, and stays verbatim. The map holds the replaced call
+ * id and the path, so the rebuild can leave a one-line marker and keep the
+ * call/result pair whole.
+ */
+export function supersededReads(turns: ReadonlyArray<ReadonlyArray<Message>>): Map<string, string> {
+  const pending = new Map<string, { id: string; offset: unknown; limit: unknown }[]>()
+  const out = new Map<string, string>()
+  for (const turn of turns) {
+    for (const message of turn) {
+      for (const part of message.content ?? []) {
+        if (part.type !== "tool-call") continue
+        const call = part as ToolCallPart
+        const path = pathEntryOf(call.input)
+        if (path === undefined) continue
+        const key = path.value.toLowerCase()
+        if (WRITE_TOOLS.has(call.name)) {
+          pending.delete(key)
+          continue
+        }
+        if (call.name !== "read") continue
+        const offset = call.input?.offset
+        const limit = call.input?.limit
+        const full = offset === undefined && limit === undefined
+        const kept: { id: string; offset: unknown; limit: unknown }[] = []
+        for (const read of pending.get(key) ?? []) {
+          if (full || (read.offset === offset && read.limit === limit)) out.set(read.id, path.value)
+          else kept.push(read)
+        }
+        kept.push({ id: call.id, offset, limit })
+        pending.set(key, kept)
+      }
+    }
+  }
+  return out
+}
+
 /**
  * Rebuild one completed turn's bytes for the append layout's compaction reset.
  *
  * The cache is already cold at a fold, so rewriting the retained tail is free
  * there - and only there. The rules are conservative: reasoning parts are
- * dropped; a successful write/edit text result becomes "<path> ok"; a long
- * successful bash/shell text keeps its last 20 lines; any result with an error
- * marker is kept verbatim; content and json results are left alone (their shape
- * is part of the contract); unknown tools are left alone. A call and its result
- * stay paired: nothing is removed.
+ * dropped; a successful write/edit result becomes "<path> ok" and its call
+ * keeps only the path (the body is on disk and already confirmed); a long
+ * successful bash/shell text keeps its last 20 lines; a grep result keeps the
+ * files and line numbers and drops the quoted lines; a read whose path is read
+ * again later becomes a one-line marker; any result with an error marker is
+ * kept verbatim; content and json results are left alone (their shape is part
+ * of the contract); unknown tools are left alone. A call and its result stay
+ * paired: nothing is removed.
  */
-export function rebuildTurn(messages: ReadonlyArray<Message>): RebuiltTurn {
+export function rebuildTurn(messages: ReadonlyArray<Message>, options: RebuildOptions = {}): RebuiltTurn {
   const inputs = new Map<string, any>()
+  const results = new Map<string, ToolResultPart>()
   for (const message of messages) {
     for (const call of toolCalls(message)) inputs.set(call.id, call.input)
+    for (const result of toolResults(message)) results.set(result.id, result)
   }
+  const succeeded = (result: ToolResultPart | undefined): boolean =>
+    result !== undefined &&
+    result.result?.type === "text" &&
+    typeof result.result.value === "string" &&
+    !ERROR_TEXT.test(result.result.value)
 
   const out = messages.map((message) => {
     let touched = false
@@ -283,6 +391,20 @@ export function rebuildTurn(messages: ReadonlyArray<Message>): RebuiltTurn {
     for (const part of message.content ?? []) {
       if (part.type === "reasoning") {
         touched = true
+        continue
+      }
+      if (part.type === "tool-call") {
+        const call = part as ToolCallPart
+        const path = pathEntryOf(call.input)
+        if (path !== undefined && WRITE_TOOLS.has(call.name) && succeeded(results.get(call.id))) {
+          const next = { [path.key]: path.value }
+          if (JSON.stringify(next).length < JSON.stringify(call.input ?? {}).length) {
+            content.push({ ...call, input: next })
+            touched = true
+            continue
+          }
+        }
+        content.push(part)
         continue
       }
       if (part.type !== "tool-result") {
@@ -296,17 +418,20 @@ export function rebuildTurn(messages: ReadonlyArray<Message>): RebuiltTurn {
         continue
       }
       const name = result.name ?? ""
+      if (name === "read") {
+        const path = options.supersededReads?.get(result.id)
+        if (path !== undefined) {
+          const next = `[superseded by a later read of ${path}]`
+          if (next.length < value.length) {
+            content.push({ ...result, result: { ...result.result, value: next } })
+            touched = true
+            continue
+          }
+        }
+      }
       if (WRITE_TOOLS.has(name)) {
-        const input = inputs.get(result.id)
-        const path =
-          typeof input?.path === "string"
-            ? input.path
-            : typeof input?.filePath === "string"
-              ? input.filePath
-              : typeof input?.file_path === "string"
-                ? input.file_path
-                : undefined
-        const next = path === undefined ? `[${name} ok]` : `${path} ok`
+        const path = pathEntryOf(inputs.get(result.id))
+        const next = path === undefined ? `[${name} ok]` : `${path.value} ok`
         if (next.length < value.length) {
           content.push({ ...result, result: { ...result.result, value: next } })
           touched = true
@@ -322,6 +447,14 @@ export function rebuildTurn(messages: ReadonlyArray<Message>): RebuiltTurn {
             touched = true
             continue
           }
+        }
+      }
+      if (name === "grep") {
+        const next = compactGrep(value)
+        if (next !== undefined && next.length < value.length) {
+          content.push({ ...result, result: { ...result.result, value: next } })
+          touched = true
+          continue
         }
       }
       content.push(part)

@@ -91,7 +91,7 @@ import {
 import { MAX_HISTORY, MAX_NOTICES, MAX_NOTICE_CHARS, MAX_RETIRED, SessionStore, StoreConflictError, pruneOrphans, retireNotice, sameDirectory, trimHistory, upsertNotices } from "../src/core/state.ts"
 import { extractHtmlSection, extractSection, htmlToText, pageCandidates } from "../src/core/refs.ts"
 import { deriveVersion, readVersionBase } from "../src/core/version.ts"
-import { balanceCuts, erodeToolResults, gistText, hostMessageOf, isHostCue, isHostJob, isHostMessage, isHostTail, isRealUser, modeReminderOf, noticeOf, rebuildTurn, RESUMED_TEXT, selectAppendWindow, selectWorkingWindow, splitNotices, turnSpans } from "../src/core/view.ts"
+import { balanceCuts, erodeToolResults, gistText, hostMessageOf, isHostCue, isHostJob, isHostMessage, isHostTail, isRealUser, modeReminderOf, noticeOf, rebuildTurn, RESUMED_TEXT, selectAppendWindow, selectWorkingWindow, splitNotices, supersededReads, turnSpans } from "../src/core/view.ts"
 import { livenessFromError } from "../src/adapters/opencode/sessions.ts"
 import { TOOL_DESCRIPTION } from "../src/adapters/opencode/tool.ts"
 import { readPluginVersion } from "../src/adapters/opencode/version.ts"
@@ -1078,6 +1078,81 @@ const contentShape = {
 ok(rebuildTurn([contentShape]).messages[0] === contentShape, "a content result keeps its shape untouched")
 ok(rebuiltUnit.charsSaved > 0, "the rebuild reports the characters it saved")
 
+// A successful write/edit call keeps only its path: the body is on disk and the
+// result already confirmed it.
+const trimmedCalls = rebuildTurn([
+  call("wc1", "w1", "write", { path: "src/a.ts", content: "body ".repeat(100) }),
+  result("wr1", "w1", "write", "Wrote 500 bytes to src/a.ts"),
+  call("ec1", "e1", "edit", { path: "src/b.ts", oldString: "old ".repeat(100), newString: "new ".repeat(100) }),
+  result("er1", "e1", "edit", "Applied 1 edit to src/b.ts"),
+])
+ok(
+  JSON.stringify(trimmedCalls.messages.find((m) => m.id === "wc1").content[0].input) === JSON.stringify({ path: "src/a.ts" }),
+  "a successful write call keeps only its path",
+)
+ok(
+  JSON.stringify(trimmedCalls.messages.find((m) => m.id === "ec1").content[0].input) === JSON.stringify({ path: "src/b.ts" }),
+  "a successful edit call keeps only its path",
+)
+const failedBody = rebuildTurn([
+  call("fc1", "f1", "write", { path: "src/c.ts", content: "body ".repeat(100) }),
+  result("fr1", "f1", "write", "Error: no such file"),
+])
+ok(
+  String(failedBody.messages[0].content[0].input.content).startsWith("body"),
+  "a failed write keeps its input body",
+)
+const orphanCall = rebuildTurn([call("oc1", "o1", "write", { path: "src/d.ts", content: "z".repeat(100) })])
+ok(
+  String(orphanCall.messages[0].content[0].input.content).startsWith("z"),
+  "a call with no result keeps its input",
+)
+const pairCalls = trimmedCalls.messages.flatMap((m) => (m.content ?? []).filter((p) => p.type === "tool-call").map((p) => p.id))
+const pairResults = trimmedCalls.messages.flatMap((m) => (m.content ?? []).filter((p) => p.type === "tool-result").map((p) => p.id))
+ok(
+  pairCalls.length === pairResults.length && pairCalls.every((id) => pairResults.includes(id)),
+  "trimming a call input leaves every call/result pair whole",
+)
+
+// A read a later read of the same path repeats becomes a marker; the newest
+// copy, a different range, and a read before a write all stay.
+const readOne = [call("rd1", "r1", "read", { path: "src/a.ts" }), result("rr1", "r1", "read", "x".repeat(500))]
+const readTwo = [call("rd2", "r2", "read", { path: "src/a.ts" }), result("rr2", "r2", "read", "x".repeat(500))]
+const replaced = supersededReads([readOne, readTwo])
+ok(replaced.get("r1") === "src/a.ts" && !replaced.has("r2"), "a later full read replaces the earlier copy and not itself")
+const readPass = rebuildTurn([...readOne, ...readTwo], { supersededReads: replaced })
+ok(
+  readPass.messages.find((m) => m.id === "rr1").content[0].result.value.startsWith("[superseded by a later read of src/a.ts]"),
+  "a replaced read becomes a one-line marker",
+)
+ok(
+  readPass.messages.find((m) => m.id === "rr2").content[0].result.value === "x".repeat(500),
+  "the newest read keeps its bytes",
+)
+const partialOne = [call("pd1", "p1", "read", { path: "src/a.ts", offset: 1, limit: 40 }), result("pr1", "p1", "read", "y".repeat(300))]
+const partialTwo = [call("pd2", "p2", "read", { path: "src/a.ts", offset: 41, limit: 40 }), result("pr2", "p2", "read", "y".repeat(300))]
+ok(supersededReads([partialOne, partialTwo]).size === 0, "reads of different ranges are all kept")
+const editedBetween = [
+  readOne,
+  [call("wd1", "w9", "write", { path: "src/a.ts", content: "z" }), result("wdr1", "w9", "write", "ok")],
+  readTwo,
+]
+ok(supersededReads(editedBetween).size === 0, "a read before a write is history, not a duplicate")
+
+// A grep result keeps the files and line numbers and drops the quoted lines.
+const grepTurn = rebuildTurn([
+  result("gr1", "g1", "grep", "Found 2 matches\nsrc/a.ts:\n  Line 1: const a = 1\n  Line 2: export {}\n"),
+])
+ok(
+  grepTurn.messages[0].content[0].result.value.trimEnd() === "Found 2 matches\nsrc/a.ts: 1, 2",
+  "a grep result keeps the file and line numbers and drops the quoted lines",
+)
+const grepFailure = rebuildTurn([result("ge1", "g2", "grep", "Error: cannot search\nsrc/a.ts:\n  Line 1: x")])
+ok(
+  grepFailure.messages[0].content[0].result.value.startsWith("Error: cannot search"),
+  "an error grep result is kept verbatim",
+)
+
 // The fold applies the rebuild to the retained tail, and only there.
 const rebuildConfig = resolveConfig({
   options: {
@@ -1098,11 +1173,15 @@ const rebuildTurn1 = [
   user("ru1", "Edit the file."),
   call("ra1", "rc1", "edit", { path: "src/x.ts", oldString: "a", newString: "b" }),
   result("rr1", "rc1", "edit", "Applied 1 edit to src/x.ts"),
+  call("ra5", "rc5", "read", { path: "src/y.ts" }),
+  result("rr5", "rc5", "read", "read body ".repeat(30)),
   withReasoning("ra2", "private step ".repeat(30), "Done."),
 ]
 const rebuildTurn2 = [
   ...rebuildTurn1,
   user("ru2", "Next."),
+  call("ra6", "rc6", "read", { path: "src/y.ts" }),
+  result("rr6", "rc6", "read", "read body ".repeat(30)),
   withReasoning("ra3", "more private ".repeat(30), "Alright."),
 ]
 await rebuildPass(rebuildTurn1)
@@ -1133,6 +1212,23 @@ ok(
   "a later pass reproduces the rebuilt bytes",
 )
 ok((rebuildRecord.rebuildSaved ?? 0) > 0, "the fold records the characters the rebuild saved")
+const sentRead = rebuiltPass.messages.find((m) => m.id === "rr5")
+ok(
+  sentRead !== undefined && sentRead.content[0].result.value === "[superseded by a later read of src/y.ts]",
+  "the folded request replaces a read a later turn repeated",
+)
+ok(
+  rebuiltPass.messages.find((m) => m.id === "rr6").content[0].result.value.startsWith("read body"),
+  "the fold keeps the newest read of the path",
+)
+ok(
+  JSON.stringify(rebuiltPass.messages.find((m) => m.id === "ra1").content[0].input) === JSON.stringify({ path: "src/x.ts" }),
+  "the folded request trims the completed edit call to its path",
+)
+ok(
+  JSON.stringify(rebuiltAgain.messages.find((m) => m.id === "rr5")) === JSON.stringify(sentRead),
+  "a later pass reproduces the superseded marker",
+)
 
 // An old record's memory becomes the first checkpoint without replaying a log.
 const oldStorage = new Map()

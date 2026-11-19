@@ -33,6 +33,7 @@ import {
   selectAppendWindow,
   selectWorkingWindow,
   splitNotices,
+  supersededReads,
   turnSpans,
   type TurnSpan,
 } from "./view.ts"
@@ -184,12 +185,15 @@ function renderWindow(
     return { messages: erodeToolResults(raw.slice(window.startIdx), config.maxResultChars).messages, saved: 0 }
   }
   const currentId = window.turns[window.turns.length - 1].id
+  const replaced = supersededReads(
+    window.turns.filter((span) => span.id !== currentId).map((span) => raw.slice(span.startIdx, span.endIdx + 1)),
+  )
   const pieces: Message[] = []
   let saved = 0
   for (const span of window.turns) {
     const turn = raw.slice(span.startIdx, span.endIdx + 1)
     if (span.id !== currentId && rebuilt.has(span.id)) {
-      const result = rebuildTurn(turn)
+      const result = rebuildTurn(turn, { supersededReads: replaced })
       pieces.push(...result.messages)
       saved += result.charsSaved
     } else {
