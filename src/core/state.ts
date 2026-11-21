@@ -8,7 +8,8 @@
  *
  * The store is deliberately small. It holds the memory document, the turn ids
  * the last pass kept (so the next pass knows what left the window), the pending
- * evictions and the archive. The raw transcript is never stored here; it comes
+ * evictions and the archive. The raw transcript is never stored here; only the
+ * tool results shortened in the request are kept, under `raw`, and they come
  * from the host on every request.
  *
  * @module mega-smart-context/state
@@ -16,6 +17,7 @@
 
 import { emptyMemory, normalizeMemory } from "./schema.ts"
 import { normalizeUpdate } from "./append.ts"
+import { normalizeRaw } from "./raw.ts"
 import type {
   ArchivedTurn,
   CompactMark,
@@ -509,6 +511,8 @@ export function normalizeRecord(value: unknown, now: number): SessionRecord {
   if (Array.isArray(value.archive)) {
     record.archive = value.archive.map(normalizeArchived).filter((entry): entry is ArchivedTurn => entry !== undefined)
   }
+  const raw = normalizeRaw(value.raw)
+  if (raw !== undefined) record.raw = raw
   if (typeof value.createdAt === "number") record.createdAt = value.createdAt
   if (typeof value.updatedAt === "number") record.updatedAt = value.updatedAt
   if (typeof value.directory === "string" && value.directory.length > 0) record.directory = value.directory

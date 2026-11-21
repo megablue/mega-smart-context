@@ -196,6 +196,24 @@ export interface ArchivedTurn {
 }
 
 /**
+ * An original tool result shortened in the outbound request.
+ *
+ * The request carries a marker with this entry's id instead of the full value;
+ * `smart_context action:"raw"` pages the original back on demand. `chars` is the
+ * original length, so a page can say what it is missing even when `text` was
+ * capped for storage.
+ */
+export interface RawResult {
+  id: string
+  tool: string
+  chars: number
+  text: string
+  createdAt: number
+  /** True when `text` holds a prefix because the original exceeded the store cap. */
+  truncated?: boolean
+}
+
+/**
  * A host-injected notice, kept verbatim and pinned.
  *
  * The host admits a mode switch as a synthetic *user* message carrying a
@@ -474,6 +492,13 @@ export interface SessionRecord {
   seenTurns: string[]
   pending: PendingTurn[]
   archive: ArchivedTurn[]
+  /**
+   * Originals for tool results shortened in the request, keyed by marker id.
+   *
+   * Bounded by `mergeRaw`; absent until the first erosion, so a record written
+   * before the field existed stays valid.
+   */
+  raw?: Record<string, RawResult>
   lastReport?: LastReport
   /** One sample per context pass, oldest first, bounded by `MAX_HISTORY`. */
   history?: PassSample[]

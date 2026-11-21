@@ -24,6 +24,7 @@
  */
 
 import { estimateTokens, formatTokens, messageChars } from "./measure.ts"
+import { rawId, type RawDraft } from "./raw.ts"
 import type { ContentPart, Message, ToolCallPart, ToolResultPart } from "./types.ts"
 
 /** Every message this plugin mints carries this prefix on its id. */
@@ -636,18 +637,117 @@ export function balanceCuts(messages: ReadonlyArray<Message>): { cuts: boolean[]
  * There, only the text parts shrink; the array itself survives. `json` is left
  * alone for the same reason: there is no text to cut without changing its type.
  */
+/**
+ * Compact a structured result before the generic head/tail cut.
+ *
+ * The original is in the raw store, so this pass can be aggressive: keep the
+ * shape, the keys and the decisive lines, and leave a marker naming the id.
+ * JSON arrays get a sentinel row rather than a broken array; logs keep errors,
+ * warnings and the head/tail. Anything unrecognised falls through to the plain
+ * cut.
+ */
+function compactJson(text: string, id: string, limit: number): string | undefined {
+  let value: unknown
+  try {
+    value = JSON.parse(text)
+  } catch {
+    return undefined
+  }
+  if (!Array.isArray(value) || value.length <= 3) return undefined
+  const objectRows = value.every((item) => item !== null && typeof item === "object" && !Array.isArray(item))
+  for (const keep of [8, 4, 2, 1]) {
+    if (value.length <= keep * 2) continue
+    const omitted = value.length - keep * 2
+    const sentinel: unknown = objectRows
+      ? { _raw: id, _omitted: omitted }
+      : `… ${omitted} items omitted; raw: ${id}`
+    const out = JSON.stringify([...value.slice(0, keep), sentinel, ...value.slice(-keep)])
+    if (out.length <= limit) return out
+  }
+  return undefined
+}
+
+function compactLines(text: string, id: string, limit: number): string | undefined {
+  const lines = text.split("\n")
+  if (lines.length < 12) return undefined
+  const important = lines.filter((line) =>
+    /(?:^|\b)(?:error|fatal|panic|exception|traceback|failed|denied|warning|warn)\b/i.test(line),
+  )
+  if (important.length === 0 || important.length >= lines.length - 6) return undefined
+  const head = lines.slice(0, 3)
+  const tail = lines.slice(-3)
+  const omitted = lines.length - head.length - tail.length
+  const marker = `… [${omitted} lines omitted; raw: ${id}]`
+  const out = [...head, ...important.slice(0, 40), marker, ...tail].join("\n")
+  return out.length <= limit ? out : undefined
+}
+
+function compactStructured(text: string, id: string, limit: number): string | undefined {
+  const trimmed = text.trim()
+  if (trimmed.startsWith("[") && trimmed.endsWith("]")) {
+    const json = compactJson(trimmed, id, limit)
+    if (json !== undefined) return json
+  }
+  return compactLines(text, id, limit)
+}
+
+/**
+ * A result that is primarily an error is never shortened.
+ *
+ * A tool that failed is the one result the model must read whole: the exit
+ * status, the denial or the first stack frame is the answer. A log that merely
+ * contains a fatal line still compacts through `compactLines`, which keeps that
+ * line.
+ */
+function isErrorResult(text: string): boolean {
+  return /^(?:error|fatal|panic|exception|traceback|failed|denied|permission denied)\b/i.test(text.trimStart())
+}
+
+export interface ErodeOptions {
+  /**
+   * Leave the newest tool result alone. The current turn's last result is what
+   * the model is waiting for; shortening it can destroy the very answer it
+   * asked for. Older results in the same turn may still shrink.
+   */
+  readonly protectNewest?: boolean
+  /**
+   * Called once for each original shortened. The marker uses its id, so the
+   * caller must keep the draft retrievable. Without a sink the marker is the
+   * old plain truncation notice and no raw id is promised.
+   */
+  readonly sink?: (draft: RawDraft) => void
+}
+
 export function erodeToolResults(
   messages: ReadonlyArray<Message>,
   maxChars: number,
+  options: ErodeOptions = {},
 ): { messages: Message[]; eroded: number } {
   let eroded = 0
   const limit = Math.max(200, maxChars)
 
-  const cut = (text: string): string => {
-    const marker = `\n… [${text.length - limit} chars truncated] …\n`
+  let newestId: string | undefined
+  if (options.protectNewest === true) {
+    for (let index = messages.length - 1; index >= 0 && newestId === undefined; index -= 1) {
+      const results = toolResults(messages[index])
+      if (results.length > 0) newestId = results[results.length - 1].id
+    }
+  }
+
+  const cut = (text: string, tool: string, raw: string): string => {
+    const id = options.sink === undefined ? undefined : rawId(tool, raw)
+    if (id !== undefined) options.sink?.({ id, tool, chars: raw.length, text: raw })
+    const compacted = id === undefined ? undefined : compactStructured(text, id, limit)
+    if (compacted !== undefined && compacted.length <= limit) return compacted
+    const source = compacted ?? text
+    const omitted = Math.max(0, text.length - limit)
+    const marker =
+      id === undefined
+        ? `\n… [${omitted} chars truncated] …\n`
+        : `\n… [${omitted} chars omitted; raw: ${id}] …\n`
     const head = Math.max(0, Math.floor((limit - marker.length) * 0.6))
     const tail = Math.max(0, limit - marker.length - head)
-    return text.slice(0, head) + marker + text.slice(text.length - tail)
+    return source.slice(0, head) + marker + source.slice(source.length - tail)
   }
 
   const out = messages.map((message) => {
@@ -656,6 +756,7 @@ export function erodeToolResults(
     const content = (message.content ?? []).map((part) => {
       if (part.type !== "tool-result") return part
       const result = part as ToolResultPart
+      if (result.id === newestId) return part
       const value = result.result?.value
 
       if (result.result?.type === "content" && Array.isArray(value)) {
@@ -669,10 +770,11 @@ export function erodeToolResults(
           .filter((item) => typeof item?.text === "string")
           .map((item) => item.text)
           .join("\n")
+        if (isErrorResult(joined)) return part
         const next: any[] = []
         parts.forEach((item, index) => {
           if (typeof item?.text !== "string") next.push(item)
-          else if (index === firstText) next.push({ ...item, text: cut(joined) })
+          else if (index === firstText) next.push({ ...item, text: cut(joined, result.name, joined) })
         })
         eroded += 1
         return { ...result, result: { ...result.result, value: next } } as ContentPart
@@ -682,15 +784,17 @@ export function erodeToolResults(
       // passed on, so one bad turn does not poison every later request.
       if (result.result?.type === "content") {
         const text = valueText(result)
+        if (isErrorResult(text)) return part
         if (text.length <= limit) return part
         eroded += 1
-        return { ...result, result: { ...result.result, value: [{ type: "text", text: cut(text) }] } } as ContentPart
+        return { ...result, result: { ...result.result, value: [{ type: "text", text: cut(text, result.name, text) }] } } as ContentPart
       }
 
       if (typeof value !== "string") return part
+      if (isErrorResult(value)) return part
       if (value.length <= limit) return part
       eroded += 1
-      return { ...result, result: { ...result.result, value: cut(value) } } as ContentPart
+      return { ...result, result: { ...result.result, value: cut(value, result.name, value) } } as ContentPart
     })
     return { ...message, content }
   })

@@ -162,11 +162,11 @@ img{max-width:100%;height:auto}
 <tr>
 <td><code>maxResultChars</code></td>
 <td>4,000</td>
-<td>one tool result larger than this is shortened head/tail</td>
+<td>one tool result larger than this is shortened; JSON/log/normal results are content-aware, and the original stays retrievable by marker</td>
 </tr>
 </tbody>
 </table>
-<p>A tool result is shortened by keeping a head, a tail and a marker with the number of missing characters. The tool call and its result keep their ids and their order. A turn that alone exceeds the working budget is still kept; <code>/context</code> and <code>action:&quot;stats&quot;</code> report <code>OVER CAP</code> and the policy asks the model to fold sooner.</p>
+<p>A tool result over <code>maxResultChars</code> is shortened, never dropped. A JSON array is sampled with a sentinel row, a log keeps its error/warning lines and a head/tail, and any other text keeps a head and tail; the marker names a raw id. The original is stored in the session record under that id (bounded, 24-hour TTL) and <code>smart_context action:&quot;raw&quot; id</code> pages it back. The newest tool result is never eroded, and a result that is primarily an error or denial is preserved whole. The tool call and its result keep their ids and their order. A turn that alone exceeds the working budget is still kept; <code>/context</code> and <code>action:&quot;stats&quot;</code> report <code>OVER CAP</code> and the policy asks the model to fold sooner.</p>
 <p>In the append layout <code>memoryTokens</code> and <code>workingTokens</code> form one shared pool. When the rendered checkpoint, log and turns exceed the pool, the state note says compaction is due and lists the turns that will leave. The fold waits for the next prompt — the current turn keeps its full context, and the model is expected to write what matters from the leaving turns into memory first — or runs sooner on <code>action:&quot;compact&quot;</code>. It then keeps the newest <code>compactKeepTokens</code> of turns and archives the rest with their raw messages.</p>
 <p>When the host reports a model context size, the plugin also warns when memory plus working would exceed 90% of it. It does not silently shrink either side.</p>
 </section>
@@ -283,6 +283,10 @@ img{max-width:100%;height:auto}
 <tr>
 <td><code>expand { turn, mode?, offset?, limit?, from? }</code></td>
 <td>read an archived turn back as one honest page ending in its char range and how to continue; <code>mode:&quot;outline&quot;</code> lists each part with its offset and size. <code>from:&quot;parent&quot;</code> reads the spawning session&#39;s</td>
+</tr>
+<tr>
+<td><code>raw { id, offset?, limit? }</code></td>
+<td>page the original of a tool result shortened in the request; the marker carries the id. A miss means the original expired or belongs to another session</td>
 </tr>
 <tr>
 <td><code>notice { remove? }</code></td>

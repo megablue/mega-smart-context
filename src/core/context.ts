@@ -20,6 +20,7 @@ import type { ResolvedConfig } from "./config.ts"
 import { estimateTokens, memoryChars, messageChars, messagesChars } from "./measure.ts"
 import { APPEND_NOTE, POLICY, NOTICE_HEADING, renderMemory, renderNotices, renderSnapshot, renderTailState, renderUpdate } from "./prompts.ts"
 import { applyProfile, choiceLabel, chooseProfile, stampModel } from "./profiles.ts"
+import { mergeRaw, type RawDraft } from "./raw.ts"
 import { trimHistory, upsertNotices, type SessionStore } from "./state.ts"
 import type { Message, MemoryUpdate, PassSample, SessionRecord, SystemPart } from "./types.ts"
 import { applyRevert, noteTurn, undoLine } from "./undo.ts"
@@ -115,6 +116,8 @@ function evictTurns(options: {
    * `recall`/`expand`, rather than sitting in a queue that begs to be purged.
    */
   readonly archiveNow?: boolean
+  /** Collect originals for the shortened results; the view owns the marker. */
+  readonly rawSink?: (draft: RawDraft) => void
 }): void {
   const { record, spans, raw, currentIds, config } = options
   const bootstrap = record.seenTurns.length === 0
@@ -135,7 +138,9 @@ function evictTurns(options: {
     if (span === undefined) continue
     // The host may have trimmed the transcript already. A span that is gone is
     // not recoverable; the model had the same chance to fold it as any other.
-    const messages = erodeToolResults(turnMessages(raw, span), config.maxResultChars).messages
+    const messages = erodeToolResults(turnMessages(raw, span), config.maxResultChars, {
+      sink: options.rawSink,
+    }).messages
     const gist = mechanicalGist(span, config.charsPerToken)
     let chars = gist.length
     for (const message of messages) chars += messageChars(message)
@@ -180,9 +185,16 @@ function renderWindow(
   window: { readonly startIdx: number; readonly turns: ReadonlyArray<TurnSpan> },
   rebuilt: ReadonlySet<string>,
   config: ResolvedConfig,
+  rawSink?: (draft: RawDraft) => void,
 ): { messages: Message[]; saved: number } {
   if (rebuilt.size === 0 || window.turns.length === 0) {
-    return { messages: erodeToolResults(raw.slice(window.startIdx), config.maxResultChars).messages, saved: 0 }
+    return {
+      messages: erodeToolResults(raw.slice(window.startIdx), config.maxResultChars, {
+        protectNewest: true,
+        sink: rawSink,
+      }).messages,
+      saved: 0,
+    }
   }
   const currentId = window.turns[window.turns.length - 1].id
   const replaced = supersededReads(
@@ -200,7 +212,10 @@ function renderWindow(
       pieces.push(...turn)
     }
   }
-  return { messages: erodeToolResults(pieces, config.maxResultChars).messages, saved }
+  return {
+    messages: erodeToolResults(pieces, config.maxResultChars, { protectNewest: true, sink: rawSink }).messages,
+    saved,
+  }
 }
 
 export async function buildPayload(input: ContextInput, deps: ContextDeps): Promise<ContextPlan> {
@@ -295,6 +310,13 @@ async function buildAppendPlan(options: AppendPlanInput): Promise<ContextPlan> {
 
   migrateAppend(record)
 
+  // Originals for this pass's shortened tool results. The view computes the
+  // stable id and calls the sink; the record gets the merged store before save.
+  const rawDrafts = new Map<string, RawDraft>()
+  const rawSink = (draft: RawDraft): void => {
+    if (!rawDrafts.has(draft.id)) rawDrafts.set(draft.id, draft)
+  }
+
   // A committed host revert replaces memory; the log from the undone turn
   // cannot stay beside it. This is the one cache reset the model already paid
   // for by reverting.
@@ -334,7 +356,7 @@ async function buildAppendPlan(options: AppendPlanInput): Promise<ContextPlan> {
     record.rebuilt = record.rebuilt.filter((id) => known.has(id))
     if (record.rebuilt.length === 0) delete record.rebuilt
   }
-  let workingTurns = renderWindow(raw, window, new Set(record.rebuilt ?? []), config).messages
+  let workingTurns = renderWindow(raw, window, new Set(record.rebuilt ?? []), config, rawSink).messages
   let currentIds = window.turns.map((span) => span.id)
 
   if (undo !== undefined) {
@@ -395,7 +417,7 @@ async function buildAppendPlan(options: AppendPlanInput): Promise<ContextPlan> {
       delete record.rebuilt
       delete record.rebuildSaved
     }
-    const rendered = renderWindow(raw, window, new Set(record.rebuilt ?? []), config)
+    const rendered = renderWindow(raw, window, new Set(record.rebuilt ?? []), config, rawSink)
     workingTurns = rendered.messages
     if (config.rebuildOnCompaction) record.rebuildSaved = rendered.saved
     currentIds = window.turns.map((span) => span.id)
@@ -408,7 +430,7 @@ async function buildAppendPlan(options: AppendPlanInput): Promise<ContextPlan> {
     delete record.compact
   }
 
-  evictTurns({ record, spans, raw, currentIds, config, now, archiveNow: folds })
+  evictTurns({ record, spans, raw, currentIds, config, now, archiveNow: folds, rawSink })
 
   // What the commit window would drop: the era turns outside the retained
   // tail. The note names them so the model can write them into memory before
@@ -598,6 +620,10 @@ async function buildAppendPlan(options: AppendPlanInput): Promise<ContextPlan> {
   system.push({ type: "text", text: POLICY })
   system.push({ type: "text", text: APPEND_NOTE })
   if (noticesText !== undefined) system.push({ type: "text", text: noticesText })
+
+  if (rawDrafts.size > 0 || record.raw !== undefined) {
+    record.raw = mergeRaw(record.raw, rawDrafts.values(), now())
+  }
 
   await deps.store.save(input.sessionID, record)
 

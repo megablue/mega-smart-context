@@ -23,6 +23,7 @@ import { estimateTokens, formatTokens, memoryChars } from "./measure.ts"
 import { retirePinned } from "./notices.ts"
 import { budgetOf, noticePreview, renderMemory, renderStats } from "./prompts.ts"
 import { configForRecord } from "./profiles.ts"
+import { rawPage } from "./raw.ts"
 import { MEMORY_KEYS, applyPatch, parsePatch } from "./schema.ts"
 import { captureMemory, capturePurge, purgeWithUndo } from "./undo.ts"
 import type { SessionStore } from "./state.ts"
@@ -35,6 +36,7 @@ export interface MemoryToolInput {
   action?: unknown
   patch?: unknown
   key?: unknown
+  id?: unknown
   page?: unknown
   section?: unknown
   gist?: unknown
@@ -68,11 +70,12 @@ export interface MemoryToolOutcome {
   readonly ok: boolean
 }
 
-/** Actions that cannot take from: they write, and writes act on this session. */
-const MUTATING_ACTIONS = new Set(["read", "patch", "stats", "ref", "archive", "purge", "notice", "compact"])
+/** Actions that cannot take from: they write, or read this session's own raw store. */
+const LOCAL_ACTIONS = new Set(["read", "raw", "patch", "stats", "ref", "archive", "purge", "notice", "compact"])
 
 export const TOOL_HELP = `smart_context actions:
 - read { key? } - print one memory key, or the whole document
+- raw { id, offset?, limit? } - page an original tool result shortened in the request; the marker carries its id
 - patch { patch } - merge a patch (maps merge, lists replace, null resets)
 - stats - memory/working/archive usage
 - compact - fold the append-only update log into a new checkpoint and reset the window
@@ -182,6 +185,45 @@ function read(record: SessionRecord, request: MemoryToolRequest, config: Resolve
     return { text: `smart_context: unknown key ${JSON.stringify(key)}. Keys: ${[...MEMORY_KEYS].join(", ")}`, ok: false }
   }
   return { text: JSON.stringify(record.memory[key as keyof Memory], null, 2), ok: true }
+}
+
+/**
+ * Page one original tool result.
+ *
+ * The marker in the shortened result names the id; this action is the only
+ * reader. A miss is a normal answer, not a crash: the entry may have expired,
+ * or the marker may have come from another session.
+ */
+function raw(record: SessionRecord, request: MemoryToolRequest, config: ResolvedConfig): MemoryToolOutcome {
+  const id = str(request.id)
+  if (id === undefined) return { text: "smart_context: raw needs id", ok: false }
+  const entry = record.raw?.[id]
+  if (entry === undefined) {
+    return {
+      text:
+        `smart_context: no raw result ${JSON.stringify(id)}. The marker may belong to another session, or the original may have expired. ` +
+        "Re-run the tool if the shortened result is not enough.",
+      ok: false,
+    }
+  }
+  const offset =
+    typeof request.offset === "number" && Number.isFinite(request.offset) ? Math.trunc(request.offset) : 0
+  const requested =
+    typeof request.limit === "number" && Number.isFinite(request.limit)
+      ? Math.trunc(request.limit)
+      : config.maxResultChars
+  const limit = Math.max(200, Math.min(requested, config.maxResultChars))
+  const page = rawPage(entry, { offset, limit })
+  const end = page.next ?? entry.text.length
+  const header =
+    `raw ${entry.tool} · ${entry.chars} chars` +
+    (entry.truncated ? " (stored prefix)" : "") +
+    ` · ${page.offset}-${end}`
+  const more =
+    page.next === undefined
+      ? ""
+      : `\n(next: action:"raw" id:${JSON.stringify(id)} offset:${page.next})`
+  return { text: `${header}\n\n${page.text}${more}`, ok: true }
 }
 
 function patch(
@@ -414,7 +456,7 @@ export async function runMemoryTool(
   const sessionID = request.sessionID
   if (sessionID.length === 0) return { text: "smart_context: no session id", ok: false }
   const action = typeof request.action === "string" ? request.action : ""
-  if (MUTATING_ACTIONS.has(action) && request.from !== undefined) {
+  if (LOCAL_ACTIONS.has(action) && request.from !== undefined) {
     return {
       text: 'smart_context: from is read-only and only recall and expand take it; writes act on this session',
       ok: false,
@@ -431,6 +473,8 @@ export async function runMemoryTool(
   switch (action) {
     case "read":
       return read(caller, request, config)
+    case "raw":
+      return raw(caller, request, config)
     case "stats":
       return { text: renderStats(caller, config) + "\n" + usage(caller, config), ok: true }
     case "compact":

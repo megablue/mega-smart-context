@@ -43,6 +43,7 @@ import { runContextCommand } from "../src/core/command.ts"
 import { messageChars, messagesChars } from "../src/core/measure.ts"
 import { APPEND_NOTE, NOTICE_HEADING, POLICY, renderMemory, renderStats } from "../src/core/prompts.ts"
 import { emptyMemory } from "../src/core/schema.ts"
+import { RAW_TTL_MS, mergeRaw, rawId, rawPage } from "../src/core/raw.ts"
 import {
   PANEL_ACTION,
   PANEL_MEASURED_STALE_MS,
@@ -401,6 +402,143 @@ const eventAgain = {
 await host.hooks.context(eventAgain)
 assert.deepEqual(eventAgain.messages, event.messages, "two passes over the same conversation produce the same payload")
 passed += 1
+
+// The raw store: the second pass evicts the first turn, erodes its 5000-char
+// result, and keeps the original behind a stable marker.
+const rawOriginal = "q".repeat(5_000)
+const rawMessage = {
+  id: "rraw",
+  role: "tool",
+  content: [{ type: "tool-result", id: "craw", name: "shell", result: { type: "text", value: rawOriginal } }],
+}
+const newestMessage = {
+  id: "rnew",
+  role: "tool",
+  content: [{ type: "tool-result", id: "cnew", name: "shell", result: { type: "text", value: "z".repeat(5_000) } }],
+}
+const rawDrafts = []
+const protectedErode = erodeToolResults([rawMessage, newestMessage], 1_000, {
+  protectNewest: true,
+  sink: (draft) => rawDrafts.push(draft),
+})
+ok(protectedErode.eroded === 1, "only the older of two results erodes")
+ok(
+  protectedErode.messages[1].content[0].result.value === "z".repeat(5_000),
+  "the newest result is never eroded",
+)
+ok(rawDrafts.length === 1 && rawDrafts[0].text === rawOriginal, "the sink gets the original bytes")
+ok(
+  JSON.stringify(protectedErode.messages).includes(`raw: ${rawDrafts[0].id}`),
+  "the shortened result carries the raw marker",
+)
+const rawIdAgain = rawId("shell", rawOriginal)
+ok(
+  rawDrafts[0].id === rawIdAgain && /^r_[a-f0-9]{12}$/.test(rawIdAgain),
+  "raw ids are stable and short",
+)
+const storedRaw = mergeRaw(undefined, rawDrafts, 1_000)
+const rawEntry = storedRaw[rawDrafts[0].id]
+const rawFirst = rawPage(rawEntry, { offset: 0, limit: 500 })
+ok(rawFirst.text.length === 500 && rawFirst.next === 500, "a raw page is bounded and reports its next offset")
+const rawSecond = rawPage(rawEntry, { offset: 500, limit: 500 })
+ok(rawSecond.text.length === 500 && rawSecond.offset === 500, "the next raw page resumes at the offset")
+ok(
+  Object.keys(mergeRaw(storedRaw, [], 1_000 + RAW_TTL_MS + 1)).length === 0,
+  "expired raw entries are dropped",
+)
+
+const rawSessionStore = new SessionStore()
+const rawSessionConfig = resolveConfig({
+  options: { memoryTokens: 10_000, workingTokens: 10_000, charsPerToken: 4 },
+})
+const rawSessionID = "raw-session"
+const rawTurn = [
+  user("ru1", "read the data"),
+  assistant("ra1", "reading"),
+  call("ra1", "rc1", "read", { path: "big.txt" }),
+  result("rr1", "rc1", "read", "x".repeat(5_000)),
+  assistant("ra2", "done"),
+  call("ra2", "rc2", "read", { path: "small.txt" }),
+  result("rr2", "rc2", "read", "ok"),
+]
+const rawPlan = await buildPayload(
+  { sessionID: rawSessionID, system: [], messages: rawTurn, model: {} },
+  { store: rawSessionStore, config: rawSessionConfig },
+)
+const rawRecord = await rawSessionStore.load(rawSessionID, { fresh: true })
+const storedEntries = Object.values(rawRecord.raw ?? {})
+ok(
+  storedEntries.length === 1 && storedEntries[0].text === "x".repeat(5_000),
+  "the shortened result's original is stored in the session",
+)
+const storedId = storedEntries[0].id
+ok(
+  JSON.stringify(rawPlan.messages).includes(`raw: ${storedId}`),
+  "the request carries the marker for the stored original",
+)
+const rawReply = await runMemoryTool(
+  { sessionID: rawSessionID, action: "raw", id: storedId },
+  { store: rawSessionStore, config: rawSessionConfig },
+)
+ok(rawReply.ok && rawReply.text.includes("xxxxx"), "the raw action returns the original text")
+const missingRaw = await runMemoryTool(
+  { sessionID: rawSessionID, action: "raw", id: "r_000000000000" },
+  { store: rawSessionStore, config: rawSessionConfig },
+)
+ok(!missingRaw.ok && missingRaw.text.includes("no raw result"), "a missing raw id is a normal miss")
+
+// Content-aware erosion: a JSON array keeps its shape and gets a sentinel row;
+// a log keeps its fatal line. Both leave the original in the raw store.
+const jsonRows = Array.from({ length: 20 }, (_, index) => ({
+  id: index,
+  name: "row " + index,
+  payload: "x".repeat(120),
+}))
+const jsonText = JSON.stringify(jsonRows)
+const jsonDrafts = []
+const jsonMessage = {
+  id: "rjson",
+  role: "tool",
+  content: [{ type: "tool-result", id: "cjson", name: "shell", result: { type: "text", value: jsonText } }],
+}
+const jsonOut = erodeToolResults([jsonMessage], 1_200, { sink: (draft) => jsonDrafts.push(draft) })
+const jsonKept = jsonOut.messages[0].content[0].result.value
+ok(jsonDrafts.length === 1 && jsonDrafts[0].text === jsonText, "the JSON original is stored")
+ok(jsonKept.includes("_raw") && jsonKept.includes("_omitted"), "a JSON array keeps a sentinel row")
+ok(JSON.parse(jsonKept).length <= 9, "the JSON array is sampled to a readable size")
+
+const logText = [...Array.from({ length: 30 }, (_, index) => `INFO step ${index} ok`), "FATAL disk full"].join("\n")
+const logDrafts = []
+const logMessage = {
+  id: "rlog",
+  role: "tool",
+  content: [{ type: "tool-result", id: "clog", name: "shell", result: { type: "text", value: logText } }],
+}
+const logOut = erodeToolResults([logMessage], 300, { sink: (draft) => logDrafts.push(draft) })
+const logKept = logOut.messages[0].content[0].result.value
+ok(logDrafts.length === 1 && logDrafts[0].text === logText, "the log original is stored")
+ok(logKept.includes("FATAL disk full") && logKept.includes("raw: "), "the log keeps the fatal line and the marker")
+ok(logKept.split("\n").length < 20, "the repeated log lines are shortened")
+
+const errorDrafts = []
+const errorMessage = {
+  id: "rerror",
+  role: "tool",
+  content: [
+    {
+      type: "tool-result",
+      id: "cerror",
+      name: "shell",
+      result: { type: "text", value: "Error: " + "e".repeat(5_000) },
+    },
+  ],
+}
+const errorOut = erodeToolResults([errorMessage], 1_000, { sink: (draft) => errorDrafts.push(draft) })
+ok(
+  errorOut.eroded === 0 && errorOut.messages[0].content[0].result.value.length === 5_007,
+  "an error result is preserved whole",
+)
+ok(errorDrafts.length === 0, "an error result is not shortened into the raw store")
 
 // ---------------------------------------------------------------------------
 // Pass history: one sample per pass, the transcript baseline, bounded
@@ -1271,7 +1409,7 @@ ok(appendWindow?.turns.map((span) => span.id).join(",") === "au2", "the append w
 ok(selectAppendWindow(appendTurn2, "missing") === undefined, "a missing marker asks for a fallback")
 
 ok(
-  TOOL_DESCRIPTION.includes("only when the state note says compaction is due") &&
+  TOOL_DESCRIPTION.includes("Only when the state note says compaction is due") &&
     TOOL_DESCRIPTION.includes("does not shrink memory"),
   "the tool description reserves compact for a due pool",
 )

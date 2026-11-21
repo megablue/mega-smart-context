@@ -22,6 +22,7 @@ An OpenCode 2.0 plugin that hands context management to the model. Instead of re
 
 - The model writes a **memory document** with the `smart_context` tool — the goal, plan, facts, files, decisions and open threads — and every request starts with it.
 - The request keeps that document as a **checkpoint** and appends one accepted delta after each completed turn, so a patch does not rewrite the provider prefix; when the shared pool fills, a due note lists what will leave and the fold waits for the next prompt, keeping the newest `compactKeepTokens` (20k default) of turns and archiving the rest.
+- **Oversized tool results are shortened, not lost.** A result over `maxResultChars` keeps a content-aware summary (JSON arrays are sampled, logs keep their errors), and the original stays in the session record behind a `raw: r_…` marker; `smart_context action:"raw" id:"…"` pages it back. The newest result, errors and denials are never shortened.
 - A short **verbatim working window** keeps the newest turns exactly as they happened, so nothing in the live tool loop is paraphrased.
 - When a turn leaves the window it moves to a **gated archive**, kept for `recall` rather than replayed or dropped silently.
 - **Compaction is owned by the plugin.** When the host makes a checkpoint, the plugin answers with the memory document itself instead of a separate summarization call.

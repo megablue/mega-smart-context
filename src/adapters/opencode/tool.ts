@@ -30,9 +30,10 @@ export const TOOL_NAME = "smart_context"
 export const TOOL_DESCRIPTION = `Manage the session's memory, the document you see instead of replayed history.
 Actions:
 - read { key? } — print one key, or the whole memory document.
+- raw { id, offset?, limit? } — page an original tool result that was shortened in the request. The marker in the shortened result carries the id. A miss means the original expired or belongs to another session.
 - patch { patch: { goal?, plan?, facts?, files?, decisions?, open?, refs?, notes? } } — merge a patch. Maps merge key by key, lists replace, null resets a key (or deletes one map entry). Unknown keys are dropped; a write over the memory cap is rejected, not trimmed.
 - stats — memory, working-window and archive usage.
-- compact — fold the append-only update log into a new checkpoint and cut the window to the newest ~compactKeepTokens of turns; the rest is archived raw and stays searchable with recall/expand. Only meaningful when contextLayout is "append", and only when the state note says compaction is due — a due note lists the turns about to leave, so write what matters from them into memory first: it rewrites the checkpoint and discards the provider cache the layout exists to keep. It does not shrink memory; edit memory for that.
+- compact — fold the append-only update log into a new checkpoint and cut the window to the newest ~compactKeepTokens of turns; the rest is archived raw and stays searchable with recall/expand. Only when the state note says compaction is due — a due note lists the turns about to leave, so write what matters from them into memory first: it rewrites the checkpoint and discards the provider cache the layout exists to keep. It does not shrink memory; edit memory for that.
 - ref { page, section, gist } — store a feature-map pointer and report the gist vs section cost.
 - archive { turn, gist, keepRaw? } — move a pending turn into the cold archive. Without keepRaw:true the raw messages are discarded and expand can only return the gist.
 - purge { turn? | query? } — delete a pending or archived turn, or matching entries.
@@ -45,7 +46,7 @@ export const TOOL_INPUT = {
   properties: {
     action: {
       type: "string",
-      enum: ["read", "patch", "stats", "compact", "ref", "archive", "purge", "recall", "expand", "notice"],
+      enum: ["read", "raw", "patch", "stats", "compact", "ref", "archive", "purge", "recall", "expand", "notice"],
       description: "What to do. See the tool description for each action.",
     },
     patch: {
@@ -54,6 +55,7 @@ export const TOOL_INPUT = {
       description: "For action:patch. Keys: goal, plan, facts, files, decisions, open, refs, notes.",
     },
     key: { type: "string", description: "For action:read — one memory key." },
+    id: { type: "string", description: "For action:raw — the marker id from a shortened tool result." },
     page: { type: "string", description: "For action:ref — a feature-map page (e.g. context-handoff.md)." },
     section: { type: "string", description: "For action:ref — a heading or a fragment of one." },
     gist: { type: "string", description: "For action:ref/archive — your one-line summary." },
@@ -65,10 +67,10 @@ export const TOOL_INPUT = {
     query: { type: "string", description: "For action:recall/purge — a search string. recall matches every term; purge matches the exact phrase." },
     lost: { type: "boolean", description: "For action:recall — set true only when a needed fact is missing." },
     keepRaw: { type: "boolean", description: "For action:archive - keep the raw messages for expand; without it the raw is discarded." },
-    limit: { type: "number", description: "For action:recall — maximum matches (default 5). For action:expand — characters on this page (200..20000, default the page setting)." },
+    limit: { type: "number", description: "For action:recall — maximum matches (default 5). For action:expand/raw — characters on this page (200..maxResultChars)." },
     offset: {
       type: "number",
-      description: "For action:expand — where the page starts, in characters. Negative counts from the end. Use the offset the footer reports to continue.",
+      description: "For action:expand/raw — where the page starts, in characters. Negative counts from the end. Use the offset the footer reports to continue.",
     },
     mode: {
       type: "string",
@@ -106,6 +108,7 @@ export function createSmartContextTool(options: {
         action: raw.action,
         patch: raw.patch,
         key: raw.key,
+        id: raw.id,
         page: raw.page,
         section: raw.section,
         gist: raw.gist,
