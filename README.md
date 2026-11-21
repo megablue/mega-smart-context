@@ -21,10 +21,10 @@ An OpenCode 2.0 plugin that hands context management to the model. Instead of re
 ## What it does
 
 - The model writes a **memory document** with the `smart_context` tool — the goal, plan, facts, files, decisions and open threads — and every request starts with it.
-- The request keeps that document as a **checkpoint** and appends one accepted delta after each completed turn, so a patch does not rewrite the provider prefix; when the shared pool fills, a due note lists what will leave and the fold waits for the next prompt, keeping the newest `compactKeepTokens` (20k default) of turns and archiving the rest.
+- **The layout is append-only.** The request keeps that document as a **checkpoint** and appends one accepted delta after each completed turn, so a patch does not rewrite the provider prefix; when the shared pool fills, a due note lists what will leave and the fold waits for the next prompt, keeping the newest `compactKeepTokens` (20k default) of turns and archiving the rest. The old snapshot layout lives on the `snapshot` branch.
 - **Oversized tool results are shortened, not lost.** A result over `maxResultChars` keeps a content-aware summary (JSON arrays are sampled, logs keep their errors), and the original stays in the session record behind a `raw: r_…` marker; `smart_context action:"raw" id:"…"` pages it back. The newest result, errors and denials are never shortened.
 - A short **verbatim working window** keeps the newest turns exactly as they happened, so nothing in the live tool loop is paraphrased.
-- When a turn leaves the window it moves to a **gated archive**, kept for `recall` rather than replayed or dropped silently.
+- At a fold, the turns that no longer fit move to a **gated archive** with their raw messages, kept for `recall` rather than replayed or dropped silently.
 - **Compaction is owned by the plugin.** When the host makes a checkpoint, the plugin answers with the memory document itself instead of a separate summarization call.
 - **Subagents are managed independently**, each with its own window and memory, so a child never inherits the parent's context.
 - `/context` prints the current memory and archive; `/context now` archives pending turns; `/context resume` continues the session without adding a user message or ageing an eviction.
@@ -54,10 +54,11 @@ Check what is installed and whether it has drifted from the source tree:
 npm run plugin:status
 ```
 
-Remove the selected scope:
+Remove the selected scope (`--project` targets the project copy):
 
 ```sh
 npm run plugin:uninstall
+npm run plugin:uninstall -- --project
 ```
 
 Installing copies the shippable files and removing deletes them; editing the source tree does not change an installed copy until you reinstall. OpenCode picks up a re-synced or removed copy at its next load, so restart it only to make that immediate — and always after a *first* install, when the host has not seen the directory yet.
@@ -82,12 +83,17 @@ The settings a user normally touches:
 | Setting | Default | Meaning |
 | --- | --- | --- |
 | `enabled` | `true` | master switch |
-| `memoryTokens` | `20000` | cap on the model-authored memory, estimated |
-| `workingTokens` | `20000` | cap on the verbatim working window, estimated |
-| `autoArchive` | `true` | archive unhandled evictions instead of dropping them |
+| `memoryTokens` | `100000` | cap on the model-authored memory, estimated |
+| `workingTokens` | `200000` | cap on the verbatim working window, estimated |
+| `compactKeepTokens` | `20000` | verbatim turns a fold keeps, estimated |
+| `rebuildOnCompaction` | `false` | rebuild the retained tail's bytes at a fold |
+| `autoArchive` | `true` | archive pending turns instead of dropping them |
 | `evictionLead` | `1` | new user turns a pending turn is shown before archiving |
+| `archiveMaxTurns` | `200` | turns kept in the archive before the oldest are dropped |
+| `archiveMaxChars` | `400000` | characters kept in the archive before the oldest are dropped |
 | `parentArchive` | `true` | let a subagent search its spawning session's archive (`from:"parent"`) |
 | `expandDigestChars` | `4000` | characters per `expand` page, clamped by `maxResultChars` |
+| `maxResultChars` | `4000` | shorten a tool result larger than this; the original stays retrievable at its raw marker |
 | `subagents` | `true` | manage child sessions independently |
 | `refs` | `true` | allow feature-map references |
 | `updateCheck` | `true` | ask GitHub once a day for a newer version (one TUI toast per release) |
@@ -103,22 +109,22 @@ Profiles are named bundles of the session-level settings. A session takes, in or
 {
   "profiles": {
     "lean": { "memoryTokens": 10000, "workingTokens": 12000, "maxResultChars": 2000 },
-    "deep": { "memoryTokens": 30000, "workingTokens": 60000, "archiveMaxChars": 200000 }
+    "wide": { "memoryTokens": 30000, "workingTokens": 60000, "archiveMaxChars": 200000 }
   },
-  "modelProfiles": { "opencode/deepseek-v4.1-flash-free": "lean", "gpt-5": "deep" },
+  "modelProfiles": { "opencode/deepseek-v4.1-flash-free": "lean", "gpt-5": "wide" },
   "defaultProfile": "lean"
 }
 ```
 
-A profile may set only the session keys (`memoryTokens`, `workingTokens`, `charsPerToken`, `evictionLead`, `autoArchive`, `archiveMaxTurns`, `archiveMaxChars`, `parentArchive`, `expandDigestChars`, `refs`, `maxResultChars`); the install keys are refused. Switch from the sidebar's `[profile]`, the dialog's `Switch profile...`, or `/context profile auto|base|<name>`.
+A profile may set only the session keys (`memoryTokens`, `workingTokens`, `compactKeepTokens`, `rebuildOnCompaction`, `charsPerToken`, `evictionLead`, `autoArchive`, `archiveMaxTurns`, `archiveMaxChars`, `parentArchive`, `expandDigestChars`, `refs`, `maxResultChars`); the install keys are refused. Switch from the sidebar's `[profile]`, the dialog's `Switch profile...`, or `/context profile auto|base|<name>`.
 
-The source repository's `docs/SPEC.md` has the full table and the behavior.
+The source repository's [`docs/SPEC.html`](docs/SPEC.html) has the full table and the behavior.
 
 The update check is the only network call the plugin makes, and it runs in the TUI, not in a request: at most one `GET` of this repository's `package.json` per 24 hours, then a toast when the published version is newer than the loaded one. Nothing about it is sent to the model. `"updateCheck": false` in the user file switches it off.
 
 ## Use
 
-- The model writes memory with the `smart_context` tool: `patch`, `read`, `stats`, `compact`, `ref`, `archive`, `purge`, `recall`, `expand`.
+- The model writes memory with the `smart_context` tool: `read`, `raw`, `patch`, `stats`, `compact`, `ref`, `archive`, `purge`, `recall`, `expand`, `notice`. `raw` pages back an original shortened tool result by its marker id; `notice` lists or retires a pinned host notice.
 - A turn that left the working window is readable before it is archived: `expand` looks in the archive first and then in the pending queue, and says when a read is not durable. `archive` without `keepRaw` warns that the raw is now gone, so `expand` can only return the gist.
 - A subagent can read its spawning session's archive without importing it: `recall`/`expand` with `from:"parent"`. The field is read-only and never reaches a writing action, and the reply tells the child how many characters its caller can actually keep.
 - `/context` prints the current memory and archive, and carries the control actions a user needs; the subcommands are in [The `/context` command](#the-context-command).
@@ -181,22 +187,22 @@ The footer offers `[refresh] [resume] [dialog] [close]`. Purge and retire ask fi
 - user: `~/.config/opencode/plugins/mega-smart-context`
 - project: `<repo>/.opencode/plugin/mega-smart-context`
 
-It is idempotent by content hash: an in-sync copy is left alone; a drifted copy is resynchronized. `--status` reports missing, changed and extra files. It never copies `node_modules`.
+It is idempotent by content hash: an in-sync copy is left alone; a drifted copy is resynchronized. `--status` reports missing, changed and extra files without copying; `--help` prints the flags, and `--uninstall` is an alias for `--remove`. It never copies `node_modules`.
 
 ## Checks
 
 ```sh
 npm install
 npm run typecheck     # tsc --noEmit, strict
-npm run smoke         # the context pass: memory injection, the working window, the archive
+npm run smoke         # the context pass: memory injection, the working window, raw storage, profiles, the archive
 npm run test:install  # the installer's copy/drift/remove assertions
 npm run analyze       # read a recorded session back: enabled payload vs the disabled baseline
 ```
 
 ## Where the details live
 
-- [`docs/SPEC.md`](docs/SPEC.md) — the user-visible behavior in full.
-- [`docs/features/`](docs/features/index.html) - the feature map for this plugin itself: the handoff, the memory tool, the archive, subagents, refs, compaction, the install, the analyzer, and the terminal half (status dialog, sidebar block and update toast).
+- [`docs/SPEC.html`](docs/SPEC.html) — the user-visible behavior in full.
+- [`docs/features/`](docs/features/index.html) - the feature map for this plugin itself: the handoff and append-only layout, the memory tool and raw storage, profiles, the archive, subagents, refs, compaction, the install, the analyzer, and the terminal half (status dialog, sidebar block and update toast).
 - [`AGENTS.md`](AGENTS.md) — how to work on the plugin.
 - [`HANDOFF.md`](HANDOFF.md) — where things currently stand.
 

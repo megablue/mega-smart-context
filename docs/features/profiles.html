@@ -66,7 +66,7 @@ hr{border:0;border-top:1px solid var(--line);margin:2rem 0}
 <section id="how-why">
 <h2>How &amp; why</h2>
 <h3>What a profile may set</h3>
-<p>A profile is a partial config limited to <code>SESSION_KEYS</code>: <code>memoryTokens</code>, <code>workingTokens</code>, <code>charsPerToken</code>, <code>evictionLead</code>, <code>autoArchive</code>, <code>archiveMaxTurns</code>, <code>archiveMaxChars</code>, <code>parentArchive</code>, <code>expandDigestChars</code>, <code>refs</code>, <code>maxResultChars</code>. The process and install keys - <code>enabled</code>, <code>subagents</code>, <code>manualCommand</code>, <code>updateCheck</code>, <code>sidebar</code>, <code>debug</code> - are refused, with the same strictness as an unknown top-level key. A model picking a profile must not be able to decide whether the sidebar exists.</p>
+<p>A profile is a partial config limited to <code>SESSION_KEYS</code>: <code>memoryTokens</code>, <code>workingTokens</code>, <code>compactKeepTokens</code>, <code>rebuildOnCompaction</code>, <code>charsPerToken</code>, <code>evictionLead</code>, <code>autoArchive</code>, <code>archiveMaxTurns</code>, <code>archiveMaxChars</code>, <code>parentArchive</code>, <code>expandDigestChars</code>, <code>refs</code>, <code>maxResultChars</code>. The process and install keys - <code>enabled</code>, <code>subagents</code>, <code>manualCommand</code>, <code>updateCheck</code>, <code>sidebar</code>, <code>debug</code> - are refused, with the same strictness as an unknown top-level key. A model picking a profile must not be able to decide whether the sidebar exists.</p>
 <p>Validation reuses <code>coerceValue</code>, so a profile's numbers go through the identical clamps as the top level (<code>memoryTokens</code> floor 1000, <code>workingTokens</code> floor 500, <code>charsPerToken</code> 2-8, <code>archiveMaxChars</code> floor 10000, <code>maxResultChars</code> floor 200). Profile names are letters, digits, dot, dash or underscore; they end up in dialog rows and JSON keys.</p>
 <h3>The selection order</h3>
 <p>Exactly four steps, first match wins, in <code>chooseProfile</code>:</p>
@@ -92,7 +92,7 @@ hr{border:0;border-top:1px solid var(--line);margin:2rem 0}
 <tr><td><code>profiles</code></td><td><code>{ deep }</code></td><td>name to a body of <code>SESSION_KEYS</code>; merged across config layers by name, so a user's <code>deep</code> replaces the shipped body</td></tr>
 <tr><td><code>modelProfiles</code></td><td><code>{}</code></td><td><code>provider/model</code> (or bare id, or <code>#variant</code>) to a profile name; a mapping to a missing profile is a load error</td></tr>
 <tr><td><code>defaultProfile</code></td><td><code>&quot;deep&quot;</code></td><td>the fallback for an auto session; empty means the base config</td></tr>
-<tr><td>profile body</td><td>-</td><td>only the twelve session keys, clamped like the top level</td></tr>
+<tr><td>profile body</td><td>-</td><td>only the thirteen session keys, clamped like the top level</td></tr>
 <tr><td><code>record.profile</code></td><td>absent (auto)</td><td><code>{ mode: &quot;profile&quot;, name, at }</code> or <code>{ mode: &quot;base&quot;, at }</code>; </td></tr>
 <tr><td><code>record.lastModel</code></td><td>absent</td><td><code>{ providerID, id, variant? }</code>, stamped by the pass</td></tr>
 <tr><td><code>/context profile</code></td><td>-</td><td>list the inventory; <code>auto</code>, <code>base</code> or a name sets the pin</td></tr>
