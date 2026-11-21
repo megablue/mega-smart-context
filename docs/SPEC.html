@@ -187,7 +187,7 @@ img{max-width:100%;height:auto}
 <li>do nothing.
 </li>
 </ul>
-<p>With <code>autoArchive</code> on (the default), an unhandled pending turn is archived after <code>evictionLead</code> new user turns, under a mechanical gist (120 characters from the head of its user message, the last 40, and its tools) and with its raw messages kept. The model can purge it later. With <code>autoArchive</code> off, an unhandled turn is dropped when the lead expires.</p>
+<p>In the append-only layout a fold archives the turns it drops immediately, so a pending entry now comes only from a migrated record or an undo restore. An unhandled pending turn is archived after one new user turn, under a mechanical gist (120 characters from the head of its user message, the last 40, and its tools) and with its raw messages kept; it is never dropped. The model can purge it later.</p>
 <p>A pending turn is readable before it is archived: <code>expand</code> resolves a turn id in the archive first and then in the eviction queue, and says when the raw came from the queue. <code>archive</code> without <code>keepRaw:true</code> reports that the raw was discarded and that <code>expand</code> will now return only the gist.</p>
 
 <p>The archive is cold storage, not a second working set. <code>smart_context</code> with <code>action:&quot;recall&quot;</code> refuses unless the call includes <code>lost:true</code>; without it, the tool returns an instruction instead of results. <code>recall</code> matches every term of the query against the gist and the whole rendered turn, and each match carries short snippets with the character offset they sit at. <code>expand { turn }</code> returns the raw turn in pages of <code>expandDigestChars</code> characters (clamped by <code>maxResultChars</code>), ending with the exact range and <code>continue with offset:N</code> or <code>end of turn</code>; a negative <code>offset</code> counts from the end. <code>mode:&quot;outline&quot;</code> lists each part of the turn with its offset and size instead, which is how a reader finds the page worth opening. Without raw messages, <code>expand</code> returns the gist and says it is gist only. The archive is capped by <code>archiveMaxTurns</code> and <code>archiveMaxChars</code>, newest wins.</p>
@@ -377,18 +377,6 @@ img{max-width:100%;height:auto}
 <td>config file</td>
 </tr>
 <tr>
-<td><code>evictionLead</code></td>
-<td><code>1</code></td>
-<td>0..20 - new user turns a pending turn is shown before auto-archive/drop</td>
-<td>config file</td>
-</tr>
-<tr>
-<td><code>autoArchive</code></td>
-<td><code>true</code></td>
-<td>bool - archive unhandled evictions</td>
-<td>config file</td>
-</tr>
-<tr>
 <td><code>archiveMaxTurns</code></td>
 <td><code>200</code></td>
 <td>0..5000 - archived turns per session</td>
@@ -468,6 +456,7 @@ img{max-width:100%;height:auto}
 </tr>
 </tbody>
 </table>
+<p>The retired <code>contextLayout</code>, <code>evictionLead</code> and <code>autoArchive</code> keys are still accepted and ignored, so an older config or profile loads.</p>
 <p>The environment overrides are for tests and unusual installs: <code>MEGA_SMART_CONTEXT_CONFIG</code> points at a different user file, and <code>MEGA_SMART_CONTEXT_NO_USER_CONFIG=1</code> skips the user layer entirely.</p>
 </section>
 <section id="out-of-scope">

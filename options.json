@@ -6,8 +6,6 @@
   "rebuildOnCompaction": false,
   "charsPerToken": 4,
   "subagents": true,
-  "evictionLead": 1,
-  "autoArchive": true,
   "archiveMaxTurns": 200,
   "archiveMaxChars": 400000,
   "parentArchive": true,

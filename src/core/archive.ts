@@ -1,11 +1,12 @@
 /**
  * The cold store for turns that left the working window.
  *
- * The plugin never writes here on its own semantically. It creates a *pending*
- * entry when a turn is evicted, and the model either archives it with a gist
- * (optionally keeping the raw messages) or purges it. With `autoArchive` on, an
- * unhandled pending turn is archived under a mechanical gist so nothing is
- * irrecoverably lost; the model can still purge it afterwards.
+ * The plugin never writes here on its own semantically. An append fold archives
+ * its dropped turns immediately with the raw messages kept; a *pending* entry is
+ * now only a legacy record or a turn an undo restored. The model can archive it
+ * with its own gist (optionally keeping the raw) or purge it; one new user turn
+ * later the pass archives an unhandled entry under a mechanical gist so nothing
+ * is irrecoverably lost.
  *
  * Retrieval is deliberately gated: `recall` requires `lost: true`, because an
  * archive searched out of habit is a second working set and the whole point is
@@ -92,9 +93,9 @@ export function archivePending(
 /**
  * Archive every pending turn with its mechanical gist and its raw messages.
  *
- * This is the safety net behind `autoArchive`. The model did not get to write a
- * gist, so the gist is mechanical and the raw is kept: a mechanical gist alone
- * would make `expand` impossible and the archive useless.
+ * This is the safety net for a legacy or undo-restored pending turn. The model
+ * did not get to write a gist, so the gist is mechanical and the raw is kept: a
+ * mechanical gist alone would make `expand` impossible and the archive useless.
  */
 export function autoArchivePending(
   record: SessionRecord,

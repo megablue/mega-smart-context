@@ -43,10 +43,6 @@ export interface ResolvedConfig {
   charsPerToken: number
   /** Manage child (subagent) sessions independently. */
   subagents: boolean
-  /** How many pending turns the model may see before an unhandled one leaves. */
-  evictionLead: number
-  /** Archive unhandled evictions instead of dropping them. */
-  autoArchive: boolean
   /** Keep at most this many archived turns per session. */
   archiveMaxTurns: number
   /** Keep the archive under this many characters per session. */
@@ -92,8 +88,6 @@ export const SESSION_KEYS = [
   "compactKeepTokens",
   "rebuildOnCompaction",
   "charsPerToken",
-  "evictionLead",
-  "autoArchive",
   "archiveMaxTurns",
   "archiveMaxChars",
   "parentArchive",
@@ -115,8 +109,6 @@ export const DEFAULT_CONFIG: ResolvedConfig = {
   rebuildOnCompaction: false,
   charsPerToken: 4,
   subagents: true,
-  evictionLead: 1,
-  autoArchive: true,
   archiveMaxTurns: 200,
   archiveMaxChars: 400_000,
   parentArchive: true,
@@ -136,6 +128,16 @@ export const DEFAULT_CONFIG: ResolvedConfig = {
 
 export const CONFIG_KEYS: ReadonlySet<string> = new Set(Object.keys(DEFAULT_CONFIG))
 
+/**
+ * Keys a previous release accepted and the append-only layout retired.
+ *
+ * They are still accepted and dropped, so an old user file or profile body
+ * loads instead of failing the strict unknown-key check. `contextLayout` was
+ * never a profile key in practice, but it is in the set for symmetry with the
+ * two eviction keys.
+ */
+const LEGACY_KEYS = new Set(["contextLayout", "evictionLead", "autoArchive"])
+
 /** The same membership test for a profile body, which may set only the session keys. */
 export const SESSION_KEY_SET: ReadonlySet<string> = new Set(SESSION_KEYS)
 
@@ -149,7 +151,6 @@ export const NO_USER_CONFIG_ENV = "MEGA_SMART_CONTEXT_NO_USER_CONFIG"
 const BOOLEAN_KEYS = new Set([
   "enabled",
   "subagents",
-  "autoArchive",
   "rebuildOnCompaction",
   "parentArchive",
   "refs",
@@ -164,7 +165,6 @@ const NUMBER_KEYS = new Set([
   "workingTokens",
   "compactKeepTokens",
   "charsPerToken",
-  "evictionLead",
   "archiveMaxTurns",
   "archiveMaxChars",
   "expandDigestChars",
@@ -200,8 +200,6 @@ function coerceValue(key: string, raw: unknown, where: string): unknown {
       return Math.max(500, Math.round(raw))
     case "charsPerToken":
       return clampInteger(raw * 100, 200, 800) / 100
-    case "evictionLead":
-      return clampInteger(raw, 0, 20)
     case "archiveMaxTurns":
       return clampInteger(raw, 0, 5000)
     case "archiveMaxChars":
@@ -229,7 +227,8 @@ function profileNameOf(raw: unknown, where: string): string {
  *
  * Strict on purpose. A profile that silently ignored `sidebar:false` would be a
  * setting the user believes is in force; the whole config surface refuses that
- * trade, and a profile is no exception.
+ * trade, and a profile is no exception. The retired eviction keys are the one
+ * exception: they are dropped so an old profile still loads.
  */
 function parseProfiles(raw: unknown, source: string): Record<string, SessionOverrides> {
   if (!isPlainObject(raw)) throw new Error(`config: profiles in ${source} must be an object`)
@@ -240,9 +239,11 @@ function parseProfiles(raw: unknown, source: string): Record<string, SessionOver
     const where = `profile ${JSON.stringify(profile)} of ${source}`
     const overrides: Record<string, unknown> = {}
     for (const [key, value] of Object.entries(body)) {
-      if (key === "contextLayout") {
-        if (value === "append") continue
-        throw new Error(`config: contextLayout in ${where} is no longer supported; append is the only layout`)
+      if (LEGACY_KEYS.has(key)) {
+        if (key === "contextLayout" && value !== "append") {
+          throw new Error(`config: contextLayout in ${where} is no longer supported; append is the only layout`)
+        }
+        continue
       }
       if (!SESSION_KEY_SET.has(key)) {
         throw new Error(`config: unknown key "${key}" in ${where}`)
@@ -284,9 +285,11 @@ export function parseLayer(value: unknown, source: string): Partial<ResolvedConf
   }
   const out: Record<string, unknown> = {}
   for (const [key, raw] of Object.entries(value as Record<string, unknown>)) {
-    if (key === "contextLayout") {
-      if (raw === "append") continue
-      throw new Error(`config: contextLayout in ${source} is no longer supported; append is the only layout`)
+    if (LEGACY_KEYS.has(key)) {
+      if (key === "contextLayout" && raw !== "append") {
+        throw new Error(`config: contextLayout in ${source} is no longer supported; append is the only layout`)
+      }
+      continue
     }
     if (!CONFIG_KEYS.has(key)) {
       throw new Error(`config: unknown key "${key}" in ${source}`)

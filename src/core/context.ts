@@ -91,14 +91,17 @@ function sameTurns(previous: ReadonlyArray<string>, current: ReadonlyArray<strin
   return previous.every((id, index) => id === current[index])
 }
 
+/** The fixed grace period for a legacy or undo-restored pending turn. */
+const PENDING_LEAD = 1
+
 /**
  * Move the turns the new window no longer keeps into pending, age the queue and
- * archive what the lead has outlived.
+ * archive what the grace period has outlived.
  *
- * Shared by both layouts. In the snapshot layout the window drops turns when the
- * working budget is spent; in the append layout it drops them only when a
- * compaction resets the era. The rule is the same: a turn that is no longer in
- * the window and is not already pending or archived is new pending material.
+ * The append fold archives its dropped turns immediately, so the pending queue
+ * now holds only legacy entries and turns restored by an undo. The rule is the
+ * same: a turn that is no longer in the window and is not already pending or
+ * archived is new pending material.
  */
 function evictTurns(options: {
   readonly record: SessionRecord
@@ -156,19 +159,17 @@ function evictTurns(options: {
   record.seenTurns = [...currentIds]
 
   // Age only on a new user turn, not on a tool continuation: a ten-call turn
-  // must not consume ten eviction leads.
+  // must not consume ten leads. Append folds archive immediately, so a pending
+  // entry is now only a legacy or undo-restored turn. One new user turn is the
+  // fixed grace period, and an unhandled entry is archived rather than dropped.
   for (const pending of record.pending) pending.age += 1
-  if (config.autoArchive) {
-    for (const pending of [...record.pending]) {
-      if (pending.age <= config.evictionLead) continue
-      archivePending(record, pending.id, pending.gist, true, {
-        now: options.now(),
-        maxTurns: config.archiveMaxTurns,
-        maxChars: config.archiveMaxChars,
-      })
-    }
-  } else {
-    record.pending = record.pending.filter((pending) => pending.age <= config.evictionLead)
+  for (const pending of [...record.pending]) {
+    if (pending.age <= PENDING_LEAD) continue
+    archivePending(record, pending.id, pending.gist, true, {
+      now: options.now(),
+      maxTurns: config.archiveMaxTurns,
+      maxChars: config.archiveMaxChars,
+    })
   }
   trimArchive(record, config.archiveMaxTurns, config.archiveMaxChars)
 }

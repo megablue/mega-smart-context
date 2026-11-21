@@ -160,8 +160,6 @@ const LABELS: Record<SessionKey, string> = {
   compactKeepTokens: "compact keep",
   rebuildOnCompaction: "rebuild tail",
   charsPerToken: "chars/token",
-  evictionLead: "lead",
-  autoArchive: "auto-archive",
   archiveMaxTurns: "archive turns",
   archiveMaxChars: "archive chars",
   parentArchive: "parent reads",

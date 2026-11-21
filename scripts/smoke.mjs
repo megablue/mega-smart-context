@@ -231,7 +231,6 @@ function makeHost(options = {}) {
       workingTokens: 300,
       memoryTokens: 3000,
       charsPerToken: 2,
-      autoArchive: true,
       manualCommand: true,
       debug: false,
       // The harness pins the base config: the shipped deep profile would
@@ -688,7 +687,7 @@ ok(
 // A mode switch carries no user turn: it must not age a pending turn out.
 const ageStore = new SessionStore()
 const ageConfig = resolveConfig({
-  options: { workingTokens: 500, memoryTokens: 3000, charsPerToken: 2, autoArchive: true, evictionLead: 1, defaultProfile: "" },
+  options: { workingTokens: 500, memoryTokens: 3000, charsPerToken: 2, defaultProfile: "" },
 })
 const ageDeps = { store: ageStore, config: ageConfig }
 const agePass = (messages) =>
@@ -904,10 +903,58 @@ ok(
   parseLayer({ compactKeepTokens: 100 }, "test").compactKeepTokens === 500,
   "compactKeepTokens clamps at a 500-token floor",
 )
+ok(
+  Object.keys(parseLayer({ evictionLead: 2, autoArchive: false }, "test")).length === 0,
+  "the retired eviction keys are accepted as no-ops",
+)
+const legacyProfileConfig = resolveConfig({
+  user: { profiles: { old: { evictionLead: 3, autoArchive: false, memoryTokens: 5_000 } } },
+})
+ok(
+  legacyProfileConfig.profiles.old.memoryTokens === 5_000 &&
+    !("evictionLead" in legacyProfileConfig.profiles.old) &&
+    !("autoArchive" in legacyProfileConfig.profiles.old),
+  "a profile's retired eviction keys are dropped, not rejected",
+)
 
 const appendConfig = resolveConfig({
   options: { contextLayout: "append", workingTokens: 20_000, memoryTokens: 3000, charsPerToken: 2, defaultProfile: "" },
 })
+// Append folds archive immediately, so the pending queue only holds legacy or
+// undo-restored turns. One new user turn is the fixed grace; then it archives.
+const legacyPendingStore = new SessionStore()
+const legacyPendingDeps = {
+  store: legacyPendingStore,
+  config: resolveConfig({ options: { workingTokens: 20_000, memoryTokens: 3000, charsPerToken: 2, defaultProfile: "" } }),
+  now: () => 5,
+}
+const legacyTurn1 = [user("lp1", "one"), assistant("lpa1", "ok")]
+await buildPayload({ sessionID: "legacy-pending", system: [], messages: legacyTurn1, model: {} }, legacyPendingDeps)
+await legacyPendingStore.mutate("legacy-pending", (record) => {
+  record.pending.push({
+    id: "old",
+    gist: "legacy pending",
+    chars: 100,
+    createdAt: 0,
+    age: 0,
+    messages: [user("old", "legacy"), assistant("old-a", "ok")],
+  })
+})
+const legacyTurn2 = [...legacyTurn1, user("lp2", "two"), assistant("lpa2", "ok")]
+await buildPayload({ sessionID: "legacy-pending", system: [], messages: legacyTurn2, model: {} }, legacyPendingDeps)
+const afterGrace = await legacyPendingStore.load("legacy-pending")
+ok(
+  afterGrace.pending.length === 1 && afterGrace.pending[0].age === 1,
+  "a legacy pending turn gets one user-turn grace",
+)
+const legacyTurn3 = [...legacyTurn2, user("lp3", "three"), assistant("lpa3", "ok")]
+await buildPayload({ sessionID: "legacy-pending", system: [], messages: legacyTurn3, model: {} }, legacyPendingDeps)
+const afterGraceEnd = await legacyPendingStore.load("legacy-pending")
+ok(
+  afterGraceEnd.pending.length === 0 && afterGraceEnd.archive.some((entry) => entry.id === "old"),
+  "an unhandled legacy pending turn is archived, never dropped",
+)
+
 const appendStore = new SessionStore()
 const appendDeps = { store: appendStore, config: appendConfig }
 const appendPass = (messages, model) =>
@@ -1522,7 +1569,7 @@ const jobStore = new SessionStore()
 const jobDeps = {
   store: jobStore,
   config: resolveConfig({
-    options: { workingTokens: 500, memoryTokens: 3000, charsPerToken: 2, autoArchive: true, evictionLead: 1, defaultProfile: "" },
+    options: { workingTokens: 500, memoryTokens: 3000, charsPerToken: 2, defaultProfile: "" },
   }),
 }
 const jobPass = (messages) =>
@@ -1557,7 +1604,7 @@ const cueStore = new SessionStore()
 const cueDeps = {
   store: cueStore,
   config: resolveConfig({
-    options: { workingTokens: 500, memoryTokens: 3000, charsPerToken: 2, autoArchive: true, evictionLead: 1, defaultProfile: "" },
+    options: { workingTokens: 500, memoryTokens: 3000, charsPerToken: 2, defaultProfile: "" },
   }),
 }
 const cuePass = (messages) =>
@@ -3034,7 +3081,6 @@ const profileLayer = {
       memoryTokens: 60_000,
       workingTokens: 60_000,
       charsPerToken: 9,
-      autoArchive: false,
       refs: false,
     },
   },
@@ -3341,7 +3387,7 @@ ok(
 )
 ok(
   profilePicker.options[0].description.includes("follow the model") &&
-    profilePicker.options[2].description === "memory 60k · working 60k · chars/token 8 · auto-archive off · refs off",
+    profilePicker.options[2].description === "memory 60k · working 60k · chars/token 8 · refs off",
   "auto explains itself and a row shows the profile's own overrides",
 )
 ok(
@@ -3485,7 +3531,7 @@ ok((noticeRecord.retired ?? []).length === 0, "the retirement is cleared with it
 // End to end: a pass journals a turn, a patch fills it, a revert unwinds it.
 const undoStore = new SessionStore()
 const undoConfig = resolveConfig({
-  options: { workingTokens: 4000, memoryTokens: 3000, charsPerToken: 2, autoArchive: true, evictionLead: 2, defaultProfile: "" },
+  options: { workingTokens: 4000, memoryTokens: 3000, charsPerToken: 2, defaultProfile: "" },
 })
 const undoDeps = { store: undoStore, config: undoConfig, now: () => 1000 }
 const undoPass = (messages) =>

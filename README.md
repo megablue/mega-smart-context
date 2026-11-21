@@ -87,8 +87,6 @@ The settings a user normally touches:
 | `workingTokens` | `200000` | cap on the verbatim working window, estimated |
 | `compactKeepTokens` | `20000` | verbatim turns a fold keeps, estimated |
 | `rebuildOnCompaction` | `false` | rebuild the retained tail's bytes at a fold |
-| `autoArchive` | `true` | archive pending turns instead of dropping them |
-| `evictionLead` | `1` | new user turns a pending turn is shown before archiving |
 | `archiveMaxTurns` | `200` | turns kept in the archive before the oldest are dropped |
 | `archiveMaxChars` | `400000` | characters kept in the archive before the oldest are dropped |
 | `parentArchive` | `true` | let a subagent search its spawning session's archive (`from:"parent"`) |
@@ -103,7 +101,7 @@ The settings a user normally touches:
 | `modelProfiles` | `{}` | `provider/model` (or `#variant`, or a bare model id) to a profile name |
 | `defaultProfile` | `"deep"` | the profile an auto session falls back to; `""` runs the base config |
 
-Profiles are named bundles of the session-level settings. A session takes, in order, a manual pin, a `modelProfiles` entry for the model in use, `defaultProfile`, or the base config; a manual pin stays until you pick **auto**, whatever model is used later. The package ships `deep` (100k memory, 200k working) as the default, so an auto session reports `deep · default`; defining your own `deep` replaces that body, and `defaultProfile: ""` selects the base config.
+Profiles are named bundles of the session-level settings. A session takes, in order, a manual pin, a `modelProfiles` entry for the model in use, `defaultProfile`, or the base config; a manual pin stays until you pick **auto**, whatever model is used later. The package ships `deep` (100k memory, 200k working) as the default, so an auto session reports `deep · default`; defining your own `deep` replaces that body, and `defaultProfile: ""` selects the base config. The retired `contextLayout`, `evictionLead` and `autoArchive` keys are still accepted and ignored, so an older config loads.
 
 ```json
 {
@@ -116,7 +114,7 @@ Profiles are named bundles of the session-level settings. A session takes, in or
 }
 ```
 
-A profile may set only the session keys (`memoryTokens`, `workingTokens`, `compactKeepTokens`, `rebuildOnCompaction`, `charsPerToken`, `evictionLead`, `autoArchive`, `archiveMaxTurns`, `archiveMaxChars`, `parentArchive`, `expandDigestChars`, `refs`, `maxResultChars`); the install keys are refused. Switch from the sidebar's `[profile]`, the dialog's `Switch profile...`, or `/context profile auto|base|<name>`.
+A profile may set only the session keys (`memoryTokens`, `workingTokens`, `compactKeepTokens`, `rebuildOnCompaction`, `charsPerToken`, `archiveMaxTurns`, `archiveMaxChars`, `parentArchive`, `expandDigestChars`, `refs`, `maxResultChars`); the install keys are refused. The retired `evictionLead` and `autoArchive` keys are still accepted and ignored, so an old profile loads. Switch from the sidebar's `[profile]`, the dialog's `Switch profile...`, or `/context profile auto|base|<name>`.
 
 The source repository's [`docs/SPEC.html`](docs/SPEC.html) has the full table and the behavior.
 
