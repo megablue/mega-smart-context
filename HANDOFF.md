@@ -8,6 +8,8 @@ As of `main` (append-only) - 2026-11-22.
 
 ## State
 
+- **Installer restored to the mega-skillstate reference (11/22).** `scripts/install.ts` is the reference copy installer again: `files[]` plus `package.json`, byte-drift reporting, `--help`/`--uninstall`, detailed junction status, and a real `import.meta.url` guard so `test:install` can import it. Installer smoke 17; typecheck passes.
+
 - **Append-only is the only layout (11/22).** `contextLayout` and the snapshot pass are removed; the old layout is preserved on the `snapshot` branch at 509e218. Legacy `contextLayout:"append"` is accepted as a no-op; `"snapshot"` is rejected. Smoke 605.
 
 - **Tool-result CCR is live (11/22).** `erodeToolResults` now collects an original for every shortened result into `record.raw`, keyed by a stable `r_…` id from `src/core/raw.ts`; the marker names it and `smart_context action:"raw" id:"…" offset? limit?` pages it back. The store is bounded (64 entries, 1M chars, 24h TTL), and `mergeRaw` always keeps the newest entry. JSON arrays are sampled with a sentinel row, logs keep error/warning lines and a head/tail, ordinary text keeps a head/tail, and a result that is primarily an error/denial is preserved whole. The newest result in the request is never eroded; old turns erode at eviction and at the fold. `raw` is local-only (no `from:"parent"`). Smoke 625; `npm run typecheck` passes.

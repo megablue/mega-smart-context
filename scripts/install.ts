@@ -1,37 +1,42 @@
 /**
- * Install, inspect or remove this plugin in an OpenCode discovery directory.
+ * Install, or uninstall, this plugin into an OpenCode discovery directory.
  *
- * The host discovers a plugin by finding `<root>/server(.ts|.js)` inside its
- * plugin directories. Project scope is `<project>/.opencode/plugin/<name>`;
- * user scope is `~/.config/opencode/plugins/<name>`. Nothing else is required:
- * no config entry for an auto-discovered directory, no build step, and no
- * dependency install - the host loads the TypeScript source directly.
+ * The host discovers a plugin by looking for `<root>/server(.ts|.js)` inside its plugin
+ * directories. Project scope reads `<project>/.opencode/plugin/<name>`; user scope reads
+ * `~/.config/opencode/plugins/<name>`. Nothing else is required: no global config entry,
+ * no build step, no dependency to install — the package has no runtime dependencies, so
+ * a copy needs no `node_modules`, and the host loads the TypeScript source directly. That
+ * is the whole reason this file is a hand-written script rather than a package-manager
+ * job: the install path is a directory of files the host reads directly, and it has to be
+ * right on the three platforms the host itself runs on.
  *
- * The install is a **copy**, not a junction. The host re-reads the discovery
- * directory on each pass, so a link buys nothing, and a copy can be compared
- * against the repository: a stale install is diagnosable drift instead of a
- * plugin that quietly runs old code, and it cannot break because the working
- * tree moved. A re-synced copy at a path the host already loaded is picked up
- * at the next load; a first install may wait for a restart, because discovery
- * of a brand-new directory mid-run is not guaranteed.
+ * The install is a **copy**, not a link. The host imports the plugin's module graph once
+ * per process, so a link buys nothing — a code change needs an OpenCode restart whether
+ * the plugin is a link or a copy ("A code change needs an OpenCode restart", as the help
+ * text below has always said). What a copy does buy: the install is a real directory in
+ * the same shape a user gets (the reference plugin ships this way), it cannot break
+ * because a working tree moved, and it can be *compared* against the repository, so a
+ * stale install is diagnosable drift instead of a plugin that quietly runs old code. An
+ * earlier version linked instead; those junctions are retired — the first install after
+ * this change replaces them with a copy, leaving the target's contents alone.
  *
- * Modes:
+ * Three modes, one flag each:
  *
- * - (no flag)   install into the user scope
- * - `--project` install into this repository's project scope
- * - `--remove`  remove from the selected scope (add `--project` for project)
- * - `--status`  report both scopes and their drift; change nothing
- * - `--help`    the help text
+ * - (no flag)      install into the user's own config directory
+ * - `--project`    install into this repository's `.opencode/plugin/`
+ * - `--remove`     remove whichever of the two is present
+ * - `--status`     say where the plugin is discoverable from, and whether the copy has
+ *                  drifted from this working tree; change nothing
  *
- * The install is idempotent on bytes: an in-sync copy is left alone; a drifted
- * copy is replaced with a fresh copy of exactly the shipped set. `node_modules`
- * is never copied; `package.json` is always included because `"type": "module"`
- * is what makes the host load `.ts` as ESM.
+ * The installer is idempotent: a copy that matches the shipped set byte for byte is left
+ * alone and reported as `current` — not rewritten. A copy that has drifted is synced on
+ * the next install, because a reinstall is an upgrade. What a *user* owns lives outside
+ * the install (`~/.config/opencode/mega-smart-context.json`), so syncing the shipped set
+ * destroys nothing of theirs.
  *
  * @module mega-smart-context/install
  */
 
-import { createHash } from "node:crypto"
 import {
   cpSync,
   existsSync,
@@ -39,16 +44,42 @@ import {
   mkdirSync,
   readdirSync,
   readFileSync,
+  readlinkSync,
   rmSync,
   statSync,
 } from "node:fs"
 import { homedir } from "node:os"
 import { dirname, join, resolve } from "node:path"
-import { fileURLToPath, pathToFileURL } from "node:url"
+import { createHash } from "node:crypto"
+import { pathToFileURL } from "node:url"
 
-/** The entry the loader resolves first. */
+/** The entry the loader resolves first; a `.js` build would shadow this only if present. */
 const ENTRY = "server.ts"
 
+/**
+ * The package's own name, read from its manifest rather than written down again.
+ *
+ * The discovery directory name, the plugin's `id`, and the label its messages are
+ * attributed to are all this one string. Writing it a second time here — or a
+ * fourth, which is what it was — is how a rename ships half-applied, and a copy
+ * under the wrong name is a plugin the host never discovers. This is the single
+ * reader; a rename edits `package.json`.
+ */
+function packageName(root: string): string {
+  const manifest = JSON.parse(readFileSync(join(root, "package.json"), "utf8")) as { name?: unknown }
+  if (typeof manifest.name !== "string" || manifest.name.length === 0) {
+    throw new Error(`${root}/package.json has no name`)
+  }
+  return manifest.name
+}
+
+/**
+ * What a discovery directory has to contain to be usable at all.
+ *
+ * `action` is the mode of the change, `changed` the number of files written (0 for a
+ * no-op or a removal), and `scope` is propagated rather than hardcoded, so a project-scope
+ * result never claims to be the user's.
+ */
 export interface InstallResult {
   readonly scope: "user" | "project"
   readonly path: string
@@ -57,27 +88,63 @@ export interface InstallResult {
   readonly changed: number
 }
 
+/** The ways an installed copy can differ from the repository it was copied from. */
 export interface Drift {
   readonly missing: string[]
   readonly changed: string[]
   readonly extra: string[]
 }
 
-/** The package root: the parent of this script's directory. */
-export function packageRoot(): string {
-  return resolve(dirname(fileURLToPath(import.meta.url)), "..")
-}
-
-/** The package name, read from the manifest rather than written down again. */
-export function packageName(root: string): string {
-  const manifest = JSON.parse(readFileSync(join(root, "package.json"), "utf8")) as { name?: unknown }
-  if (typeof manifest.name !== "string" || manifest.name.length === 0) {
-    throw new Error(`${root}/package.json has no name`)
+/** Parse `--project`, `--remove`, `--status`, and reject anything unrecognised. */
+export function parseArgs(argv: readonly string[]): { project: boolean; remove: boolean; status: boolean } {
+  let project = false
+  let remove = false
+  let status = false
+  for (const arg of argv) {
+    if (arg === "--project") project = true
+    else if (arg === "--remove" || arg === "--uninstall") remove = true
+    else if (arg === "--status") status = true
+    else if (arg === "--help" || arg === "-h") {
+      printHelp()
+      process.exit(0)
+    } else {
+      throw new Error(`unknown argument: ${arg} (see --help)`)
+    }
   }
-  return manifest.name
+  return { project, remove, status }
 }
 
-/** The user-scope discovery directory this host reads on Windows. */
+function printHelp(): void {
+  process.stdout.write(
+    [
+      "Install mega-smart-context into an OpenCode plugin discovery directory.",
+      "",
+      "  (no arguments)   copy into the user scope (~/.config/opencode/plugins/)",
+      "  --project        copy into this repository (.opencode/plugin/)",
+      "  --remove         remove, whichever scope is present",
+      "  --status         report where it is discoverable from, and whether the copy",
+      "                   has drifted from the repository; change nothing",
+      "  --help           this text",
+      "",
+      "The install is a copy of the shippable set (the manifest's files[] plus package.json",
+      "itself, which the ESM load needs). No build step and no node_modules: the host",
+      "resolves <root>/server before <root>/index, .ts before .js, and loads the TypeScript",
+      "source directly. A code change needs an OpenCode restart.",
+    ].join("\n") + "\n",
+  )
+}
+
+/** The package root: the directory holding this script's parent's parent. */
+export function packageRoot(): string {
+  return resolve(dirname(new URL(import.meta.url).pathname.replace(/^\/([A-Za-z]:)/, "$1")), "..")
+}
+
+/**
+ * The user-scope discovery directory.
+ *
+ * `~/.config/opencode/plugins` (plural) is the one this host reads on Windows; the
+ * singular `plugin` variant does not exist here, so it is not consulted.
+ */
 export function userPluginDir(): string {
   return join(homedir(), ".config", "opencode", "plugins")
 }
@@ -87,7 +154,7 @@ export function projectPluginDir(root: string): string {
   return join(root, ".opencode", "plugin")
 }
 
-/** Every directory the host reads for plugins, in the order it would see them. */
+/** Every directory the host will read for plugins, in the order it would see them. */
 export function discoveryDirs(root: string): Array<{ scope: "user" | "project"; dir: string }> {
   return [
     { scope: "project", dir: projectPluginDir(root) },
@@ -95,29 +162,32 @@ export function discoveryDirs(root: string): Array<{ scope: "user" | "project"; 
   ]
 }
 
-/** Is this path a symlink or junction rather than a real directory? */
+/** Is this path a symlink or junction (rather than a real directory)? */
 export function isLink(path: string): boolean {
   try {
-    return lstatSync(path).isSymbolicLink()
+    const stat = lstatSync(path)
+    return stat.isSymbolicLink()
   } catch {
     return false
   }
 }
 
 /**
- * What a discovery directory has to contain: the manifest's `files[]` plus
- * `package.json` itself. Every entry is checked against the working tree, so a
- * manifest that lists a missing file fails here rather than producing a copy
- * that is silently incomplete.
+ * The files that ship in an install, as manifest-relative paths.
+ *
+ * The list is read from `package.json`'s `files[]` — the same field `npm pack` uses — with
+ * `package.json` itself always added, because the copy needs it: `"type": "module"` is what
+ * makes the host load `.ts` as ESM, and a copy without its manifest is a plugin that fails
+ * to load. Every entry is checked against the working tree, so a manifest that lists a
+ * missing file is an error at install time rather than a copy that is silently incomplete
+ * — the class of bug the old hand-written manifest had.
  */
 export function shippableFiles(root: string): string[] {
   const manifest = JSON.parse(readFileSync(join(root, "package.json"), "utf8")) as { files?: unknown }
   if (!Array.isArray(manifest.files) || manifest.files.length === 0) {
     throw new Error(`${root}/package.json lists no files to ship; fill in its files[] array`)
   }
-  const entries = manifest.files.filter(
-    (entry): entry is string => typeof entry === "string" && entry.length > 0,
-  )
+  const entries = manifest.files.filter((entry): entry is string => typeof entry === "string" && entry.length > 0)
   if (!entries.includes("package.json")) entries.push("package.json")
   for (const entry of entries) {
     if (!existsSync(join(root, entry))) {
@@ -127,7 +197,7 @@ export function shippableFiles(root: string): string[] {
   return entries
 }
 
-/** Every leaf file under a directory, as forward-slashed relative paths. */
+/** Every leaf file under a directory, as forward-slashed paths relative to it. */
 function fileTree(dir: string): string[] {
   const out: string[] = []
   const walk = (current: string, prefix: string): void => {
@@ -141,10 +211,12 @@ function fileTree(dir: string): string[] {
   return out
 }
 
+/** A file's content hash, so drift is measured on bytes rather than timestamps. */
 function hashFile(path: string): string {
   return createHash("sha256").update(readFileSync(path)).digest("hex")
 }
 
+/** How many files a directory holds, node_modules excluded — copied trees carry none. */
 function countFiles(dir: string): number {
   return fileTree(dir).filter((relative) => !relative.startsWith("node_modules/")).length
 }
@@ -152,10 +224,9 @@ function countFiles(dir: string): number {
 /**
  * Compare an installed copy against the repository it came from.
  *
- * Drift is three named lists: shipped files the copy is missing, files whose
- * bytes differ, and files the copy has that the repository does not ship. This
- * is the diagnostic a junction could never give: a link always agreed with the
- * live tree.
+ * Drift is three named lists: shipped files the copy is missing, files whose bytes differ,
+ * and files the copy has that the repository does not ship. This is the diagnostic a link
+ * could never give: a junction pointed at the live tree and so always agreed with itself.
  */
 export function driftReport(path: string, root: string): Drift {
   const shipped = shippableFiles(root)
@@ -183,6 +254,7 @@ export function driftReport(path: string, root: string): Drift {
   return { missing, changed, extra }
 }
 
+/** Copy the shippable set into a directory, and report how many files that was. */
 function copyManifest(path: string, root: string): number {
   mkdirSync(path, { recursive: true })
   for (const entry of shippableFiles(root)) {
@@ -195,10 +267,14 @@ function copyManifest(path: string, root: string): number {
 }
 
 /**
- * Remove a discovery entry without ever following a link into the repository:
- * `rmSync` with `recursive` on a junction would delete the target's contents.
+ * Remove a link.
+ *
+ * `rmSync` with `recursive` would follow the link and delete the *target's* contents, so a
+ * plain `rmSync` is issued without the flag. This path exists only for the junctions the
+ * installer used to create: the first install after the switch to copies clears them this
+ * way, and an uninstall of a legacy install does the same for anything still linked.
  */
-function removePath(path: string): void {
+function removeLink(path: string): void {
   if (isLink(path)) {
     rmSync(path)
     return
@@ -206,20 +282,33 @@ function removePath(path: string): void {
   rmSync(path, { recursive: true, force: true })
 }
 
+/**
+ * Copy the package into a discovery directory.
+ *
+ * Idempotent, on bytes: a copy that matches the shipped set exactly is left alone and
+ * reported as `current` — nothing is written. Anything else is replaced with a fresh copy
+ * of exactly the shipped set, because a reinstall is an upgrade. A directory that is really
+ * a link (a legacy junction) is removed without recursion first.
+ */
 export function installInto(dir: string, root: string, scope: "user" | "project"): InstallResult {
   const name = packageName(root)
   const path = join(dir, name)
+
   if (!existsSync(dir)) mkdirSync(dir, { recursive: true })
 
   let action: "installed" | "updated" | "replaced" = "installed"
   if (isLink(path)) {
-    removePath(path)
+    // A junction from before the copy switch. It is removed without recursion, which
+    // deletes the link and leaves the repository it pointed at intact.
+    removeLink(path)
     action = "replaced"
   } else if (existsSync(path)) {
     const drift = driftReport(path, root)
     if (drift.missing.length === 0 && drift.changed.length === 0 && drift.extra.length === 0) {
       return { scope, path, target: root, action: "current", changed: 0 }
     }
+    // A real directory is the plugin's own space; nothing the user owns lives in it, so a
+    // plain recursive delete is both safe and the only way the copy ends up exact.
     rmSync(path, { recursive: true, force: true })
     action = "updated"
   }
@@ -227,76 +316,45 @@ export function installInto(dir: string, root: string, scope: "user" | "project"
   if (!existsSync(join(root, ENTRY))) {
     throw new Error(`${root} has no ${ENTRY}; run from the package root`)
   }
+
   const changed = copyManifest(path, root)
   return { scope, path, target: root, action, changed }
 }
 
+/** Remove the plugin from a discovery directory, when it is there. */
 export function uninstallFrom(dir: string, root: string, scope: "user" | "project"): InstallResult {
   const path = join(dir, packageName(root))
   if (!existsSync(path) && !isLink(path)) {
     return { scope, path, target: "", action: "missing", changed: 0 }
   }
-  removePath(path)
+  // removeLink is the cautious form for the one case that can destroy work if mishandled:
+  // a link. A real directory is just deleted.
+  removeLink(path)
   return { scope, path, target: "", action: "removed", changed: 0 }
 }
 
+/** One human-readable line describing what a discovery path holds. */
 function describeInstall(path: string, root: string): string {
-  if (isLink(path)) return "a junction; install replaces it with a copy"
+  if (isLink(path)) {
+    let target = ""
+    try {
+      target = readlinkSync(path)
+    } catch {
+      target = "(unreadable)"
+    }
+    return `a junction to ${target} — from before the copy switch; install replaces it`
+  }
   if (!existsSync(path)) return "(not installed)"
-  if (!statSync(path).isDirectory()) return "not a directory; install replaces it"
+  if (!statSync(path).isDirectory()) return "not a directory — install replaces it"
   const drift = driftReport(path, root)
   if (drift.missing.length === 0 && drift.changed.length === 0 && drift.extra.length === 0) {
     return `a copy of the shipped set, ${countFiles(path)} file(s), in sync with the repository`
   }
   const parts = [`${drift.missing.length} missing`, `${drift.changed.length} changed`, `${drift.extra.length} extra`]
-  return `a copy that has drifted (${parts.join(", ")}); run install to sync`
+  return `a copy that has drifted from the repository (${parts.join(", ")}) — run install to sync`
 }
 
-/** What a status run reports, for a test to assert on without capturing stdout. */
-export function statusLines(root: string): string[] {
-  return discoveryDirs(root).map((entry) => {
-    const path = join(entry.dir, packageName(root))
-    return `${entry.scope}: ${existsSync(path) || isLink(path) ? "installed" : "absent"}`
-  })
-}
-
-function printHelp(): void {
-  process.stdout.write(
-    [
-      "Install mega-smart-context into an OpenCode plugin discovery directory.",
-      "",
-      "  (no arguments)   copy into the user scope (~/.config/opencode/plugins/)",
-      "  --project        copy into this repository (.opencode/plugin/)",
-      "  --remove         remove from the selected scope",
-      "  --status         report both scopes and drift; change nothing",
-      "  --help           this text",
-      "",
-      "The install is a copy of the shippable set (package.json files[] plus package.json).",
-      "No build step and no node_modules: the host resolves <root>/server before <root>/index,",
-      ".ts before .js, and loads the TypeScript source directly. A re-synced copy is",
-      "picked up at the next load; a first install may need a restart.",
-    ].join("\n") + "\n",
-  )
-}
-
-export function parseArgs(argv: readonly string[]): { project: boolean; remove: boolean; status: boolean } {
-  let project = false
-  let remove = false
-  let status = false
-  for (const arg of argv) {
-    if (arg === "--project") project = true
-    else if (arg === "--remove" || arg === "--uninstall") remove = true
-    else if (arg === "--status") status = true
-    else if (arg === "--help" || arg === "-h") {
-      printHelp()
-      process.exit(0)
-    } else {
-      throw new Error(`unknown argument: ${arg} (see --help)`)
-    }
-  }
-  return { project, remove, status }
-}
-
+/** Run the modes and report what happened, as the one exit code the host cares about. */
 export function run(argv: readonly string[], root: string): number {
   const { project, remove, status } = parseArgs(argv)
   const scope = project ? "project" : "user"
@@ -305,12 +363,13 @@ export function run(argv: readonly string[], root: string): number {
 
   try {
     if (status) {
-      const rows = discoveryDirs(root).map((candidate) => {
+      const rows: string[] = []
+      for (const candidate of discoveryDirs(root)) {
         const path = join(candidate.dir, packageName(root))
         const here = existsSync(path) || isLink(path)
         const pad = candidate.scope === "project" ? "project" : "user   "
-        return `  ${pad} ${candidate.dir}` + (here ? "\n    " + describeInstall(path, root) : "\n    (not installed)")
-      })
+        rows.push(`  ${pad} ${candidate.dir}` + (here ? "\n    " + describeInstall(path, root) : "\n    (not installed)"))
+      }
       process.stdout.write(`${packageName(root)} discoverable from:\n` + rows.join("\n") + "\n")
       return 0
     }
@@ -322,19 +381,15 @@ export function run(argv: readonly string[], root: string): number {
         : result.action === "updated"
           ? `updated the copy in ${label} (${result.changed} file(s) synced)`
           : result.action === "replaced"
-            ? `replaced a junction in ${label} with a copy (${result.changed} file(s))`
+            ? `replaced a legacy junction in ${label} with a copy (${result.changed} file(s))`
             : result.action === "removed"
               ? `removed from ${label}`
               : result.action === "current"
-                ? `already installed in ${label}, in sync; nothing written`
+                ? `already installed in ${label}, in sync — nothing written`
                 : `nothing to remove from ${label}`
     process.stdout.write(`${verb}\n  ${result.path}\n`)
-    if (result.action === "installed") {
+    if (result.action === "installed" || result.action === "updated" || result.action === "replaced") {
       process.stdout.write("Restart OpenCode for the host to discover it.\n")
-    } else if (result.action === "updated" || result.action === "replaced") {
-      process.stdout.write("The host picks the new code up at its next load; a restart only makes it immediate.\n")
-    } else if (result.action === "removed") {
-      process.stdout.write("The host stops loading it at its next load; a restart only makes it immediate.\n")
     }
     return 0
   } catch (error) {
@@ -343,8 +398,26 @@ export function run(argv: readonly string[], root: string): number {
   }
 }
 
+// Running as a script: the argv after the interpreter and this file. The
+// file URL must match this module exactly, so importing the installer from the
+// smoke test does not run it with the smoke script's argv.
 const main = process.argv[1]
 const isMain = main !== undefined && pathToFileURL(resolve(main)).href === import.meta.url
 if (isMain) {
   process.exitCode = run(process.argv.slice(2), packageRoot())
+}
+
+/** Directories that exist but hold nothing the loader would read. */
+export function emptyDirs(root: string): string[] {
+  return discoveryDirs(root)
+    .map((entry) => entry.dir)
+    .filter((dir) => !existsSync(dir))
+}
+
+/** What a status run reports, for the smoke test to assert on without capturing stdout. */
+export function statusLines(root: string): string[] {
+  return discoveryDirs(root).map((entry) => {
+    const path = join(entry.dir, packageName(root))
+    return existsSync(path) || isLink(path) ? entry.scope + ": installed" : entry.scope + ": absent"
+  })
 }
