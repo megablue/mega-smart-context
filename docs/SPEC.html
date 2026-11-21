@@ -173,7 +173,7 @@ img{max-width:100%;height:auto}
 <section id="profiles">
 <h2>Profiles</h2>
 <p>A profile is a named bundle of the session-level settings - the budgets above, the erosion, the archive bounds, <code>refs</code> and <code>charsPerToken</code> - defined in the same <code>~/.config/opencode/mega-smart-context.json</code>. It applies to one session at a time and never covers the install keys: <code>enabled</code>, <code>subagents</code>, <code>manualCommand</code>, <code>updateCheck</code>, <code>sidebar</code> and <code>debug</code> cannot be set by a profile.</p>
-<p>A session runs on the first of: a manual pin, a <code>modelProfiles</code> entry for the model in use (<code>provider/model#variant</code>, then <code>provider/model</code>, then a bare model id), <code>defaultProfile</code>, or the base config. A manual pin stays in force until the user picks <strong>auto</strong>; changing the model does not clear it. Choosing a profile changes the real caps from the next pass, and <code>/context</code>, the status dialog, the sidebar and the panel all report the profile in force with the caps it sets.</p>
+<p>A session runs on the first of: a manual pin, a <code>modelProfiles</code> entry for the model in use (<code>provider/model#variant</code>, then <code>provider/model</code>, then a bare model id), <code>defaultProfile</code>, or the base config. The package ships a <code>deep</code> profile (100,000 memory / 200,000 working tokens) and makes it <code>defaultProfile</code>, so an auto session that matches no mapping reports <code>deep · default</code>; <code>defaultProfile: &quot;&quot;</code> runs the base config. A manual pin stays in force until the user picks <strong>auto</strong>; changing the model does not clear it. Choosing a profile changes the real caps from the next pass, and <code>/context</code>, the status dialog, the sidebar and the panel all report the profile in force with the caps it sets.</p>
 <p>The block shows <code>profile lean · auto</code> (or <code>pinned</code>/<code>default</code>/<code>base</code>) under its header and carries a <strong>[profile]</strong> target; the dialog offers <strong>Switch profile…</strong> with <code>auto</code>, <code>base</code> and every named profile; the panel shows the profile and model read-only. <code>/context profile</code> prints the inventory and <code>/context profile auto|base|&lt;name&gt;</code> sets the pin without a TUI. A pin that names a profile the config no longer defines leaves the session on the base and says so.</p>
 </section>
 <section id="eviction-and-the-archive">
@@ -450,8 +450,8 @@ img{max-width:100%;height:auto}
 </tr>
 <tr>
 <td><code>profiles</code></td>
-<td><code>{}</code></td>
-<td>object - named bundles of the session keys (budgets, erosion, archive bounds, <code>refs</code>, <code>charsPerToken</code>); the install keys are refused</td>
+<td><code>{ deep }</code></td>
+<td>object - named bundles of the session keys (budgets, erosion, archive bounds, <code>refs</code>, <code>charsPerToken</code>); the install keys are refused; the package ships <code>deep</code> at 100k memory / 200k working</td>
 <td>config file</td>
 </tr>
 <tr>
@@ -462,7 +462,7 @@ img{max-width:100%;height:auto}
 </tr>
 <tr>
 <td><code>defaultProfile</code></td>
-<td><code>&quot;&quot;</code></td>
+<td><code>&quot;deep&quot;</code></td>
 <td>string - the profile an auto session falls back to; empty runs the base config</td>
 <td>config file</td>
 </tr>

@@ -18,7 +18,9 @@
   "updateCheck": true,
   "sidebar": true,
   "debug": false,
-  "profiles": {},
+  "profiles": {
+    "deep": { "memoryTokens": 100000, "workingTokens": 200000 }
+  },
   "modelProfiles": {},
-  "defaultProfile": ""
+  "defaultProfile": "deep"
 }

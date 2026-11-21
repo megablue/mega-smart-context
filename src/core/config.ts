@@ -127,9 +127,11 @@ export const DEFAULT_CONFIG: ResolvedConfig = {
   updateCheck: true,
   sidebar: true,
   debug: false,
-  profiles: {},
+  profiles: {
+    deep: { memoryTokens: 100_000, workingTokens: 200_000 },
+  },
   modelProfiles: {},
-  defaultProfile: "",
+  defaultProfile: "deep",
 }
 
 export const CONFIG_KEYS: ReadonlySet<string> = new Set(Object.keys(DEFAULT_CONFIG))
@@ -319,7 +321,11 @@ export function parseLayer(value: unknown, source: string): Partial<ResolvedConf
  * error - the user asked for a profile that does not exist.
  */
 export function resolveConfig(layers: { package?: unknown; options?: unknown; user?: unknown } = {}): ResolvedConfig {
-  const config: ResolvedConfig = { ...DEFAULT_CONFIG, profiles: {}, modelProfiles: {} }
+  const config: ResolvedConfig = {
+    ...DEFAULT_CONFIG,
+    profiles: { ...DEFAULT_CONFIG.profiles },
+    modelProfiles: {},
+  }
   const sources: Array<[unknown, string]> = [
     [layers.package, "package options"],
     [layers.options, "plugin options"],

@@ -40,7 +40,7 @@ hr{border:0;border-top:1px solid var(--line);margin:2rem 0}
 <h2>What it does</h2>
 <ul>
 <li>Names a partial config - a <em>profile</em> - in the same user config file, and applies it to one session's budget: memory, working window, erosion, archive bounds, refs and <code>charsPerToken</code>.</li>
-<li>Chooses it three ways: a manual pin from the sidebar or <code>/context profile</code>, a <code>modelProfiles</code> mapping for the model in use, or <code>defaultProfile</code> when nothing else matches.</li>
+<li>Chooses it three ways: a manual pin from the sidebar or <code>/context profile</code>, a <code>modelProfiles</code> mapping for the model in use, or <code>defaultProfile</code> when nothing else matches. The package ships <code>deep</code> (100k memory / 200k working) and selects it, so a fresh auto session reports <code>deep · default</code>.</li>
 <li>Keeps a manual pin until the user picks <strong>auto</strong>: changing the model never clears it, and neither does a restart.</li>
 <li>Makes the switch <em>real</em>: the effective config decides the window, the erosion, the memory cap and the archive bounds of the next pass - not just what the dialog prints.</li>
 <li>Shows the choice everywhere: a <code>profile</code> line in the sidebar block, a row in the status dialog and the panel, a line in <code>/context</code>, and the <code>profile</code> RPC method.</li>
@@ -60,7 +60,7 @@ hr{border:0;border-top:1px solid var(--line);margin:2rem 0}
 <li><code>src/core/status.ts</code> - <code>PROFILE_ACTION</code>, <code>StatusProfile</code>, <code>StatsReply.profile</code>, <code>ProfileMode</code>, <code>ProfileRequest/Reply</code>, <code>isProfileRequest</code>, <code>profileRequestSchema</code>, <code>STATUS_RPC.methods.profile</code>, the dialog row, the sidebar line and the panel row.</li>
 <li><code>src/adapters/opencode/index.ts</code> - the <code>profile</code> RPC handler on the same <code>store.mutate</code>/conflict path as purge and notice.</li>
 <li><code>tui.ts</code> - <code>profileOptions</code>, <code>openProfile</code>, the dialog's <code>PROFILE_ACTION</code> branch, the sidebar action; <code>src/tui/sidebar.tsx</code> - the <code>[profile]</code> target; <code>src/tui/context.ts</code> - <code>StatusClient.profile</code>.</li>
-<li><code>options.json</code> - <code>profiles: {}</code>, <code>modelProfiles: {}</code>, <code>defaultProfile: ""</code>.</li>
+<li><code>options.json</code> - <code>profiles: { deep: { memoryTokens: 100000, workingTokens: 200000 } }</code>, <code>modelProfiles: {}</code>, <code>defaultProfile: "deep"</code>.</li>
 </ul>
 </section>
 <section id="how-why">
@@ -89,9 +89,9 @@ hr{border:0;border-top:1px solid var(--line);margin:2rem 0}
 <section id="config-keys-ui">
 <h2>Config keys / UI</h2>
 <table><thead><tr><th>Thing</th><th>Default</th><th>Effect</th></tr></thead><tbody>
-<tr><td><code>profiles</code></td><td><code>{}</code></td><td>name to a body of <code>SESSION_KEYS</code>; merged across config layers by name</td></tr>
+<tr><td><code>profiles</code></td><td><code>{ deep }</code></td><td>name to a body of <code>SESSION_KEYS</code>; merged across config layers by name, so a user's <code>deep</code> replaces the shipped body</td></tr>
 <tr><td><code>modelProfiles</code></td><td><code>{}</code></td><td><code>provider/model</code> (or bare id, or <code>#variant</code>) to a profile name; a mapping to a missing profile is a load error</td></tr>
-<tr><td><code>defaultProfile</code></td><td><code>&quot;&quot;</code></td><td>the fallback for an auto session; empty means the base config</td></tr>
+<tr><td><code>defaultProfile</code></td><td><code>&quot;deep&quot;</code></td><td>the fallback for an auto session; empty means the base config</td></tr>
 <tr><td>profile body</td><td>-</td><td>only the twelve session keys, clamped like the top level</td></tr>
 <tr><td><code>record.profile</code></td><td>absent (auto)</td><td><code>{ mode: &quot;profile&quot;, name, at }</code> or <code>{ mode: &quot;base&quot;, at }</code>; </td></tr>
 <tr><td><code>record.lastModel</code></td><td>absent</td><td><code>{ providerID, id, variant? }</code>, stamped by the pass</td></tr>
@@ -108,7 +108,7 @@ hr{border:0;border-top:1px solid var(--line);margin:2rem 0}
 <li>&quot;profiles and model mappings merge across config layers by name&quot;, &quot;a profile may not set a process key&quot;, &quot;a profile's value has to have the right type&quot;, &quot;a profile name has to be usable as a dialog row&quot;</li>
 <li>&quot;a model mapping may not name a profile that does not exist&quot;, &quot;the default profile may not be missing either&quot;, &quot;a model mapping's value is a profile name&quot;</li>
 <li>&quot;a model stamp reads the host's model reference&quot;, &quot;a stamp without an id is no stamp&quot;, &quot;the model keys go from most to least specific&quot;, &quot;a model label is provider/id plus the variant&quot;</li>
-<li>&quot;a model mapping chooses a profile automatically&quot;, &quot;a manual pin wins over the model mapping&quot;, &quot;a base pin runs the plain config even when the model maps to a profile&quot;, &quot;the default profile answers when no model mapping matches&quot;, &quot;with no mapping and no default, the base config runs&quot;, &quot;a pin that outlived its profile falls back to base and says which name is missing&quot;</li>
+<li>&quot;a model mapping chooses a profile automatically&quot;, &quot;a manual pin wins over the model mapping&quot;, &quot;a base pin runs the plain config even when the model maps to a profile&quot;, &quot;the default profile answers when no model mapping matches&quot;, &quot;the shipped deep profile is the default&quot;, &quot;clearing defaultProfile runs the base config&quot;, &quot;a pin that outlived its profile falls back to base and says which name is missing&quot;</li>
 <li>&quot;a profile merges its session keys and leaves the install keys alone&quot;, &quot;a profile summary lists exactly the keys it sets, in a fixed order&quot;</li>
 </ul>
 <h3>The pass, the surfaces and the write path</h3>

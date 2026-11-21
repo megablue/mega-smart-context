@@ -138,13 +138,21 @@ ok(
   defaultBudgets.memoryTokens === 100_000 && defaultBudgets.workingTokens === 200_000,
   "the default budgets are 100k memory and 200k working",
 )
+ok(
+  defaultBudgets.defaultProfile === "deep" &&
+    defaultBudgets.profiles.deep?.memoryTokens === 100_000 &&
+    defaultBudgets.profiles.deep?.workingTokens === 200_000,
+  "the shipped deep profile is the default",
+)
 ok(defaultBudgets.rebuildOnCompaction === false, "the tail rebuild is off by default")
 const packageOptions = JSON.parse(readFileSync(new URL("../options.json", import.meta.url), "utf8"))
 const packageBudgets = resolveConfig({ package: packageOptions })
 ok(
   packageBudgets.memoryTokens === defaultBudgets.memoryTokens &&
-    packageBudgets.workingTokens === defaultBudgets.workingTokens,
-  "the package options layer carries the same default budgets",
+    packageBudgets.workingTokens === defaultBudgets.workingTokens &&
+    packageBudgets.defaultProfile === "deep" &&
+    packageBudgets.profiles.deep?.workingTokens === 200_000,
+  "the package options layer carries the same default budgets and profile",
 )
 
 // ---------------------------------------------------------------------------
@@ -226,6 +234,9 @@ function makeHost(options = {}) {
       autoArchive: true,
       manualCommand: true,
       debug: false,
+      // The harness pins the base config: the shipped deep profile would
+      // otherwise widen this deliberately tiny window.
+      defaultProfile: "",
       ...options,
     },
     storage: {
@@ -449,7 +460,7 @@ ok(
 
 const rawSessionStore = new SessionStore()
 const rawSessionConfig = resolveConfig({
-  options: { memoryTokens: 10_000, workingTokens: 10_000, charsPerToken: 4 },
+  options: { memoryTokens: 10_000, workingTokens: 10_000, charsPerToken: 4, defaultProfile: "" },
 })
 const rawSessionID = "raw-session"
 const rawTurn = [
@@ -545,7 +556,7 @@ ok(errorDrafts.length === 0, "an error result is not shortened into the raw stor
 // ---------------------------------------------------------------------------
 
 const histStore = new SessionStore()
-const histConfig = resolveConfig({ options: { workingTokens: 500, memoryTokens: 3000, charsPerToken: 2 } })
+const histConfig = resolveConfig({ options: { workingTokens: 500, memoryTokens: 3000, charsPerToken: 2, defaultProfile: "" } })
 const histDeps = { store: histStore, config: histConfig }
 const passOf = (sessionID, messages) =>
   buildPayload({ sessionID, system: [{ type: "text", text: "base" }], messages, model: {} }, histDeps)
@@ -616,7 +627,7 @@ ok(split.notices.length === 2 && split.notices[0].id === "n-plan", "notices come
 ok(turnSpans(split.rest).length === 2, "a mode switch is not a turn")
 
 const noticeStore = new SessionStore()
-const noticeConfig = resolveConfig({ options: { workingTokens: 500, memoryTokens: 3000, charsPerToken: 2 } })
+const noticeConfig = resolveConfig({ options: { workingTokens: 500, memoryTokens: 3000, charsPerToken: 2, defaultProfile: "" } })
 const noticeDeps = { store: noticeStore, config: noticeConfig }
 const noticePass = (sessionID, messages, system = [{ type: "text", text: "base" }]) =>
   buildPayload({ sessionID, system, messages, model: {} }, noticeDeps)
@@ -677,7 +688,7 @@ ok(
 // A mode switch carries no user turn: it must not age a pending turn out.
 const ageStore = new SessionStore()
 const ageConfig = resolveConfig({
-  options: { workingTokens: 500, memoryTokens: 3000, charsPerToken: 2, autoArchive: true, evictionLead: 1 },
+  options: { workingTokens: 500, memoryTokens: 3000, charsPerToken: 2, autoArchive: true, evictionLead: 1, defaultProfile: "" },
 })
 const ageDeps = { store: ageStore, config: ageConfig }
 const agePass = (messages) =>
@@ -856,7 +867,7 @@ function withReasoning(id, reasoning, text) {
 const cacheStore = new SessionStore()
 const cacheDeps = {
   store: cacheStore,
-  config: resolveConfig({ options: { workingTokens: 20_000, memoryTokens: 3000, charsPerToken: 2 } }),
+  config: resolveConfig({ options: { workingTokens: 20_000, memoryTokens: 3000, charsPerToken: 2, defaultProfile: "" } }),
 }
 const cachePass = (messages) =>
   buildPayload({ sessionID: "cache", system: [{ type: "text", text: "base" }], messages, model: {} }, cacheDeps)
@@ -895,7 +906,7 @@ ok(
 )
 
 const appendConfig = resolveConfig({
-  options: { contextLayout: "append", workingTokens: 20_000, memoryTokens: 3000, charsPerToken: 2 },
+  options: { contextLayout: "append", workingTokens: 20_000, memoryTokens: 3000, charsPerToken: 2, defaultProfile: "" },
 })
 const appendStore = new SessionStore()
 const appendDeps = { store: appendStore, config: appendConfig }
@@ -1021,6 +1032,7 @@ const narrowConfig = resolveConfig({
     memoryTokens: 1000,
     charsPerToken: 2,
     compactKeepTokens: 500,
+    defaultProfile: "",
   },
 })
 const narrowStore = new SessionStore()
@@ -1065,6 +1077,7 @@ const dueConfig = resolveConfig({
     memoryTokens: 2000,
     charsPerToken: 1,
     compactKeepTokens: 500,
+    defaultProfile: "",
   },
 })
 const dueStore = new SessionStore()
@@ -1300,6 +1313,7 @@ const rebuildConfig = resolveConfig({
     charsPerToken: 2,
     rebuildOnCompaction: true,
     compactKeepTokens: 5000,
+    defaultProfile: "",
   },
 })
 const rebuildStore = new SessionStore()
@@ -1508,7 +1522,7 @@ const jobStore = new SessionStore()
 const jobDeps = {
   store: jobStore,
   config: resolveConfig({
-    options: { workingTokens: 500, memoryTokens: 3000, charsPerToken: 2, autoArchive: true, evictionLead: 1 },
+    options: { workingTokens: 500, memoryTokens: 3000, charsPerToken: 2, autoArchive: true, evictionLead: 1, defaultProfile: "" },
   }),
 }
 const jobPass = (messages) =>
@@ -1543,7 +1557,7 @@ const cueStore = new SessionStore()
 const cueDeps = {
   store: cueStore,
   config: resolveConfig({
-    options: { workingTokens: 500, memoryTokens: 3000, charsPerToken: 2, autoArchive: true, evictionLead: 1 },
+    options: { workingTokens: 500, memoryTokens: 3000, charsPerToken: 2, autoArchive: true, evictionLead: 1, defaultProfile: "" },
   }),
 }
 const cuePass = (messages) =>
@@ -2456,7 +2470,7 @@ ok(tuiFour.toasts.length === 0, "updateCheck:false says nothing")
 // The status bridge and the TUI dialog it feeds
 // ---------------------------------------------------------------------------
 
-const statusConfig = resolveConfig({ options: { memoryTokens: 20_000, workingTokens: 20_000 } })
+const statusConfig = resolveConfig({ options: { memoryTokens: 20_000, workingTokens: 20_000, defaultProfile: "" } })
 const statusRecord = blankRecord()
 statusRecord.memory.goal = "ship the status dialog"
 statusRecord.pending = [
@@ -3132,8 +3146,12 @@ ok(
   "the default profile answers when no model mapping matches",
 )
 ok(
-  choiceLabel(chooseProfile(resolveConfig({}), undefined, undefined)) === "base",
-  "with no mapping and no default, the base config runs",
+  choiceLabel(chooseProfile(resolveConfig({}), undefined, undefined)) === "deep · default",
+  "the shipped deep profile answers when no model mapping matches",
+)
+ok(
+  choiceLabel(chooseProfile(resolveConfig({ user: { defaultProfile: "" } }), undefined, undefined)) === "base",
+  "clearing defaultProfile runs the base config",
 )
 const orphanPin = chooseProfile(
   resolveConfig({ user: { profiles: { deep: {} } } }),
@@ -3467,7 +3485,7 @@ ok((noticeRecord.retired ?? []).length === 0, "the retirement is cleared with it
 // End to end: a pass journals a turn, a patch fills it, a revert unwinds it.
 const undoStore = new SessionStore()
 const undoConfig = resolveConfig({
-  options: { workingTokens: 4000, memoryTokens: 3000, charsPerToken: 2, autoArchive: true, evictionLead: 2 },
+  options: { workingTokens: 4000, memoryTokens: 3000, charsPerToken: 2, autoArchive: true, evictionLead: 2, defaultProfile: "" },
 })
 const undoDeps = { store: undoStore, config: undoConfig, now: () => 1000 }
 const undoPass = (messages) =>

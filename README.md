@@ -93,11 +93,11 @@ The settings a user normally touches:
 | `updateCheck` | `true` | ask GitHub once a day for a newer version (one TUI toast per release) |
 | `sidebar` | `true` | draw the block in the TUI sidebar (`sidebar:false` removes it, keeps the dialog) |
 | `debug` | `false` | log pass decisions to stderr |
-| `profiles` | `{}` | named bundles of the session-level settings (see below) |
+| `profiles` | `{ deep }` | named bundles of the session-level settings (see below); the package ships `deep` at 100k memory / 200k working |
 | `modelProfiles` | `{}` | `provider/model` (or `#variant`, or a bare model id) to a profile name |
-| `defaultProfile` | `""` | the profile an auto session falls back to |
+| `defaultProfile` | `"deep"` | the profile an auto session falls back to; `""` runs the base config |
 
-Profiles are named bundles of the session-level settings. A session takes, in order, a manual pin, a `modelProfiles` entry for the model in use, `defaultProfile`, or the base config; a manual pin stays until you pick **auto**, whatever model is used later.
+Profiles are named bundles of the session-level settings. A session takes, in order, a manual pin, a `modelProfiles` entry for the model in use, `defaultProfile`, or the base config; a manual pin stays until you pick **auto**, whatever model is used later. The package ships `deep` (100k memory, 200k working) as the default, so an auto session reports `deep · default`; defining your own `deep` replaces that body, and `defaultProfile: ""` selects the base config.
 
 ```json
 {
