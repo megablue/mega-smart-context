@@ -18,14 +18,6 @@ import { isPlainObject } from "./types.ts"
 export interface ResolvedConfig {
   /** Master switch. `false` registers nothing. */
   enabled: boolean
-  /**
-   * How the request lays out memory.
-   *
-   * `snapshot` is the original contract: one rendered memory block, rewritten
-   * when it changes. `append` keeps that block as a checkpoint and appends one
-   * delta block after each turn, so a patch does not move the provider prefix.
-   */
-  contextLayout: "snapshot" | "append"
   /** Cap on the model-authored memory document, in estimated tokens. */
   memoryTokens: number
   /** Cap on the verbatim working window, in estimated tokens. */
@@ -95,7 +87,6 @@ export interface ResolvedConfig {
  * budget and windows, and nothing that describes the install or the process.
  */
 export const SESSION_KEYS = [
-  "contextLayout",
   "memoryTokens",
   "workingTokens",
   "compactKeepTokens",
@@ -118,7 +109,6 @@ export type SessionOverrides = Partial<Pick<ResolvedConfig, SessionKey>>
 
 export const DEFAULT_CONFIG: ResolvedConfig = {
   enabled: true,
-  contextLayout: "snapshot",
   memoryTokens: 100_000,
   workingTokens: 200_000,
   compactKeepTokens: 20_000,
@@ -191,12 +181,6 @@ function clampInteger(value: number, min: number, max: number): number {
  * @throws when the value has the wrong type.
  */
 function coerceValue(key: string, raw: unknown, where: string): unknown {
-  if (key === "contextLayout") {
-    if (raw !== "snapshot" && raw !== "append") {
-      throw new Error(`config: contextLayout in ${where} must be "snapshot" or "append"`)
-    }
-    return raw
-  }
   if (BOOLEAN_KEYS.has(key)) {
     if (typeof raw !== "boolean") throw new Error(`config: ${key} in ${where} must be true or false`)
     return raw
@@ -254,6 +238,10 @@ function parseProfiles(raw: unknown, source: string): Record<string, SessionOver
     const where = `profile ${JSON.stringify(profile)} of ${source}`
     const overrides: Record<string, unknown> = {}
     for (const [key, value] of Object.entries(body)) {
+      if (key === "contextLayout") {
+        if (value === "append") continue
+        throw new Error(`config: contextLayout in ${where} is no longer supported; append is the only layout`)
+      }
       if (!SESSION_KEY_SET.has(key)) {
         throw new Error(`config: unknown key "${key}" in ${where}`)
       }
@@ -294,6 +282,10 @@ export function parseLayer(value: unknown, source: string): Partial<ResolvedConf
   }
   const out: Record<string, unknown> = {}
   for (const [key, raw] of Object.entries(value as Record<string, unknown>)) {
+    if (key === "contextLayout") {
+      if (raw === "append") continue
+      throw new Error(`config: contextLayout in ${source} is no longer supported; append is the only layout`)
+    }
     if (!CONFIG_KEYS.has(key)) {
       throw new Error(`config: unknown key "${key}" in ${source}`)
     }

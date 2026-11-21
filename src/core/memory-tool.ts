@@ -17,7 +17,7 @@
  */
 
 import { archivePending, findArchived, findPending, purgeQuery, recall } from "./archive.ts"
-import { acceptedPatch, appendUpdate, checkpointAppend, currentTurnOf, invalidateAppend, migrateAppend } from "./append.ts"
+import { acceptedPatch, appendUpdate, checkpointAppend, currentTurnOf, migrateAppend } from "./append.ts"
 import type { ResolvedConfig } from "./config.ts"
 import { estimateTokens, formatTokens, memoryChars } from "./measure.ts"
 import { retirePinned } from "./notices.ts"
@@ -165,11 +165,13 @@ function usage(record: SessionRecord, config: ResolvedConfig): string {
     `memory ${formatTokens(report.memoryTokens)}/${formatTokens(report.memoryCap)} est`,
     `working ${formatTokens(report.workingTokens)}/${formatTokens(report.workingCap)} est`,
   ]
-  if (report.layout === "append") parts.push(`updates ${report.updateCount}`)
-  parts.push(`refs ${report.refs}`, `pending ${report.pending}`, `archive ${report.archive}`)
-  if (report.layout === "append") {
-    parts.push(`pool ${formatTokens(report.poolTokens)}/${formatTokens(report.poolCap)}`)
-  }
+  parts.push(
+    `updates ${report.updateCount}`,
+    `refs ${report.refs}`,
+    `pending ${report.pending}`,
+    `archive ${report.archive}`,
+    `pool ${formatTokens(report.poolTokens)}/${formatTokens(report.poolCap)}`,
+  )
   return parts.join(" · ")
 }
 
@@ -208,16 +210,11 @@ function patch(
 
   // Capture before the assignment: an undo restores the turn's starting document.
   captureMemory(record, before, result.changed, now)
-  if (config.contextLayout === "append") {
-    // The checkpoint must be the document as it stood before this patch; only
-    // then is the accepted delta a true append.
-    migrateAppend(record)
-    record.memory = result.memory
-    appendUpdate(record, acceptedPatch(before, result.memory, result.changed), currentTurnOf(record), now)
-  } else {
-    record.memory = result.memory
-    invalidateAppend(record)
-  }
+  // The checkpoint must be the document as it stood before this patch; only
+  // then is the accepted delta a true append.
+  migrateAppend(record)
+  record.memory = result.memory
+  appendUpdate(record, acceptedPatch(before, result.memory, result.changed), currentTurnOf(record), now)
   const lines = [`smart_context: stored${result.changed.length > 0 ? " " + result.changed.join(", ") : ""}`]
   if (result.dropped.length > 0) lines.push(`dropped unknown key(s): ${result.dropped.join(", ")}`)
   if (result.errors.length > 0) lines.push(`errors: ${result.errors.join("; ")}`)
@@ -242,7 +239,7 @@ async function addRef(
   const verdict = refVerdict(gist, sectionText, config.charsPerToken)
   const entry = { page, section, gist, tokens: verdict.gistTokens }
 
-  if (config.contextLayout === "append") migrateAppend(record)
+  migrateAppend(record)
   const before = record.memory.refs.map((ref) => ({ ...ref }))
   const index = record.memory.refs.findIndex((ref) => ref.page === page && ref.section === section)
   if (index >= 0) record.memory.refs[index] = entry
@@ -258,16 +255,12 @@ async function addRef(
   }
   // Capture only an accepted write: the over-cap refusal above left no trace.
   captureMemory(record, { ...record.memory, refs: before }, ["refs"], nowOf(deps))
-  if (config.contextLayout === "append") {
-    appendUpdate(
-      record,
-      { refs: record.memory.refs.map((ref) => ({ ...ref })) },
-      currentTurnOf(record),
-      nowOf(deps),
-    )
-  } else {
-    invalidateAppend(record)
-  }
+  appendUpdate(
+    record,
+    { refs: record.memory.refs.map((ref) => ({ ...ref })) },
+    currentTurnOf(record),
+    nowOf(deps),
+  )
 
   const lines: string[] = []
   if (verdict.found) {
@@ -342,14 +335,6 @@ function purge(
 }
 
 function compact(record: SessionRecord, config: ResolvedConfig, now: number): MemoryToolOutcome {
-  if (config.contextLayout !== "append") {
-    return {
-      text:
-        'smart_context: compact is only available with contextLayout:"append"; ' +
-        "the snapshot layout has no update log to fold",
-      ok: false,
-    }
-  }
   migrateAppend(record)
   checkpointAppend(record)
   record.compact = { mode: "requested", at: now }

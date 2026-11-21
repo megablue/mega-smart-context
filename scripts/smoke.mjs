@@ -485,16 +485,16 @@ const noticePass = (sessionID, messages, system = [{ type: "text", text: "base" 
 
 const p1 = await noticePass("n", withNotices)
 ok(p1.messages.every((message) => !JSON.stringify(message).includes("system-reminder")), "the notice is not in the payload")
-const pinned = p1.system.find((part) => part.text.startsWith(NOTICE_HEADING))
-ok(pinned !== undefined, "the notices are pinned into a system part")
-ok(pinned.text.includes("n-build"), "the live mode reminder is pinned")
-ok(!pinned.text.includes("n-plan"), "the superseded mode reminder is not pinned beside it")
-ok((pinned.text.match(/^### /gmu) ?? []).length === 1, "the mode pair leaves exactly one heading")
-ok(p1.system[p1.system.length - 1].text.startsWith(NOTICE_HEADING), "the pinned notices are the last system part")
+const p1Tail = p1.messages[p1.messages.length - 1]
+const p1TailText = p1Tail.content.filter((part) => part.type === "text").map((part) => part.text).join("\n")
+ok(p1TailText.startsWith("<smart-context-state>"), "the state note is the last message")
+ok(p1TailText.includes("mode: build"), "the live mode is in the tail state note")
+ok(!p1TailText.includes("mode: plan"), "the superseded mode is not repeated")
 ok(
-  p1.system.findIndex((part) => part.text === POLICY) < p1.system.length - 1,
-  "the policy sits before the pinned notices",
+  p1.system.every((part) => !part.text.startsWith(NOTICE_HEADING)),
+  "mode notices are not pinned into a system part",
 )
+ok(p1.system.some((part) => part.text === POLICY), "the policy is still in the system")
 ok(
   POLICY.includes("`smart_context` is a direct tool") &&
     POLICY.includes("tools.smart_context") &&
@@ -503,12 +503,12 @@ ok(
 )
 const p2 = await noticePass("n", withNotices, p1.system)
 ok(
-  p2.system.filter((part) => part.text.startsWith(NOTICE_HEADING)).length === 1,
-  "a re-pass that carries the previous block adds no second copy",
+  p2.system.filter((part) => part.text.startsWith(NOTICE_HEADING)).length === 0,
+  "a re-pass adds no pinned mode notice",
 )
 ok(
-  p2.system[p2.system.length - 1].text.startsWith(NOTICE_HEADING),
-  "the notices stay last on a re-pass over the previous system parts",
+  p2.system.filter((part) => part.text === POLICY).length === 1,
+  "a re-pass keeps one policy part",
 )
 const nrec = await noticeStore.load("n")
 ok(
@@ -549,11 +549,11 @@ const secondTurn = [user("u2", "Second. ".repeat(100)), assistant("a2", "Again. 
 await agePass(firstTurn)
 const bReport = await agePass([...firstTurn, ...secondTurn])
 const afterB = await ageStore.load("age")
-ok(afterB.pending.some((pending) => pending.id === "u1"), "a turn that leaves the window becomes pending")
+ok(afterB.pending.length === 0, "append keeps turns until a fold instead of evicting on the working budget")
 const cReport = await agePass([...firstTurn, ...secondTurn, noticeMsg("n-mode", BUILD_NOTICE)])
 const afterC = await ageStore.load("age")
 ok(cReport.report.workingTurns === bReport.report.workingTurns, "a mode switch adds no working turn")
-ok(afterC.pending.some((pending) => pending.id === "u1"), "a mode switch does not age a pending turn")
+ok(afterC.pending.length === 0, "a mode switch creates no pending turn")
 ok(afterC.archive.length === 0, "a mode switch does not archive a pending turn")
 
 // action:notice — list, refuse the newest, retire an older one.
@@ -748,8 +748,8 @@ ok(
 // Append-only layout: the checkpoint stays put, a patch lands after its turn
 // ---------------------------------------------------------------------------
 
-ok(parseLayer({ contextLayout: "append" }, "test").contextLayout === "append", "contextLayout accepts append")
-assert.throws(() => parseLayer({ contextLayout: "bogus" }, "test"), /contextLayout/, "an unknown layout is rejected")
+ok(parseLayer({ contextLayout: "append" }, "test").contextLayout === undefined, "contextLayout is accepted as a legacy append value")
+assert.throws(() => parseLayer({ contextLayout: "snapshot" }, "test"), /no longer supported/, "snapshot is rejected")
 passed += 1
 ok(
   parseLayer({ compactKeepTokens: 100 }, "test").compactKeepTokens === 500,
@@ -1265,60 +1265,11 @@ ok(
   "an old record migrates its memory to the checkpoint",
 )
 
-// A snapshot-mode write drops a stale log, so a switch back migrates safely.
-const switchStore = new SessionStore()
-const switchAppend = { store: switchStore, config: appendConfig }
-const switchSnapshot = {
-  store: switchStore,
-  config: resolveConfig({
-    options: { contextLayout: "snapshot", workingTokens: 20_000, memoryTokens: 3000, charsPerToken: 2 },
-  }),
-}
-const switchPass = (messages, deps) =>
-  buildPayload({ sessionID: "append-switch", system: [], messages, model: {} }, deps)
-const switchTurn1 = [user("su1", "Switch one."), assistant("sa1", "ok")]
-await switchPass(switchTurn1, switchAppend)
-await runMemoryTool(
-  { sessionID: "append-switch", action: "patch", patch: { goal: "append era" } },
-  switchAppend,
-)
-await switchPass(switchTurn1, switchSnapshot)
-await runMemoryTool(
-  { sessionID: "append-switch", action: "patch", patch: { goal: "snapshot era" } },
-  switchSnapshot,
-)
-let switchRecord = await switchStore.load("append-switch")
-ok(
-  switchRecord.base === undefined && switchRecord.updates === undefined && switchRecord.windowStart === undefined,
-  "a snapshot-mode write drops the append fields",
-)
-const switchedBack = await switchPass(
-  [...switchTurn1, user("su2", "Switch two."), assistant("sa2", "ok")],
-  switchAppend,
-)
-switchRecord = await switchStore.load("append-switch")
-ok(
-  switchRecord.base?.goal === "snapshot era" && (switchRecord.updates ?? []).length === 0,
-  "switching back migrates the snapshot-era memory",
-)
-ok(
-  switchedBack.messages[0].content[0].text.includes("snapshot era"),
-  "the migrated checkpoint carries the snapshot-era patch",
-)
-
 // The append window starts at the marker and asks for a fallback when it is gone.
 const appendWindow = selectAppendWindow(appendTurn2, "au2")
 ok(appendWindow?.turns.map((span) => span.id).join(",") === "au2", "the append window keeps from the marker")
 ok(selectAppendWindow(appendTurn2, "missing") === undefined, "a missing marker asks for a fallback")
 
-const snapshotCompact = await runMemoryTool(
-  { sessionID: "snapshot-compact", action: "compact" },
-  { store: new SessionStore(), config: resolveConfig({}) },
-)
-ok(
-  !snapshotCompact.ok && /contextLayout/.test(snapshotCompact.text),
-  "compact is refused in the snapshot layout",
-)
 ok(
   TOOL_DESCRIPTION.includes("only when the state note says compaction is due") &&
     TOOL_DESCRIPTION.includes("does not shrink memory"),
@@ -1426,7 +1377,7 @@ const jobPass = (messages) =>
   buildPayload({ sessionID: "job", system: [{ type: "text", text: "base" }], messages, model: {} }, jobDeps)
 await jobPass(firstTurn)
 const jobBefore = await jobPass([...firstTurn, ...secondTurn])
-ok((await jobStore.load("job")).pending.some((pending) => pending.id === "u1"), "the job baseline has a pending turn")
+ok((await jobStore.load("job")).pending.length === 0, "append has no pending baseline")
 const jobAfter = await jobPass([...firstTurn, ...secondTurn, noticeMsg("j-late", SHELL_JOB)])
 const jobRecord = await jobStore.load("job")
 ok(jobAfter.report.workingTurns === jobBefore.report.workingTurns, "a job completion adds no working turn")
@@ -1434,7 +1385,7 @@ ok(
   jobAfter.report.workingTokens > jobBefore.report.workingTokens,
   "the job's bytes are still counted in the working window",
 )
-ok(jobRecord.pending.some((pending) => pending.id === "u1"), "a job completion does not age a pending turn")
+ok(jobRecord.pending.length === 0, "a job completion creates no pending turn")
 ok(jobRecord.archive.length === 0, "a job completion does not archive a pending turn")
 
 const withCue = [
@@ -1468,7 +1419,7 @@ ok(
   cueAfter.report.workingTokens > cueBefore.report.workingTokens,
   "the cue's bytes are still counted in the working window",
 )
-ok(cueRecord.pending.some((pending) => pending.id === "u1"), "a resume cue does not age a pending turn")
+ok(cueRecord.pending.length === 0, "a resume cue creates no pending turn")
 ok(cueRecord.archive.length === 0, "a resume cue does not archive a pending turn")
 ok(
   cueAfter.system.every((part) => !part.text.includes("previous response was interrupted")),
@@ -1484,10 +1435,7 @@ ok(
 const cueAfterResume = await cuePass([...firstTurn, ...secondTurn, noticeMsg("r-late", RESUMED_TEXT)])
 const cueResumeRecord = await cueStore.load("cue")
 ok(cueAfterResume.report.workingTurns === cueBefore.report.workingTurns, "the resume sentence adds no working turn")
-ok(
-  cueResumeRecord.pending.some((pending) => pending.id === "u1"),
-  "the resume sentence does not age a pending turn",
-)
+ok(cueResumeRecord.pending.length === 0, "the resume sentence creates no pending turn")
 ok(cueResumeRecord.archive.length === 0, "the resume sentence does not archive a pending turn")
 ok(
   cueAfterResume.messages.some((message) => message.id === "r-late"),
@@ -1821,41 +1769,6 @@ ok(!outcome.content[0].text.includes("section not found"), "a ref to a real page
 // Eviction: pending, then auto-archive after the lead
 // ---------------------------------------------------------------------------
 
-const transcript2 = [
-  ...transcript,
-  user("u4", "New turn. ".repeat(20)),
-  assistant("a5", "Done. ".repeat(20)),
-  user("u5", "One more. ".repeat(20)),
-  assistant("a6", "More. ".repeat(20)),
-]
-const event3 = {
-  sessionID: "s1",
-  system: [{ type: "text", text: "base" }],
-  messages: [...transcript2],
-  tools: {},
-  model: {},
-}
-await host.hooks.context(event3)
-const pendingText = event3.messages[0].content[0].text
-ok(pendingText.includes("Pending eviction"), "an evicted turn is shown as pending")
-
-const transcript3 = [...transcript2, user("u6", "Another turn. ".repeat(20)), assistant("a7", "Ok. ".repeat(20))]
-const event4 = {
-  sessionID: "s1",
-  system: [{ type: "text", text: "base" }],
-  messages: [...transcript3],
-  tools: {},
-  model: {},
-}
-await host.hooks.context(event4)
-const stats = await tool.execute({ action: "stats" }, callContext)
-ok(/archive [1-9]/.test(stats.content[0].text), "the pending turn auto-archived after the lead")
-
-outcome = await tool.execute({ action: "recall", query: "archive" }, callContext)
-ok(outcome.content[0].text.includes("lost:true"), "recall refuses without lost:true")
-outcome = await tool.execute({ action: "recall", query: "archive", lost: true }, callContext)
-ok(outcome.content[0].text.includes("archive matches"), "recall returns matches when lost:true")
-
 // ---------------------------------------------------------------------------
 // Subagents: independent memory
 // ---------------------------------------------------------------------------
@@ -2065,6 +1978,24 @@ ok(mechanicalGist(gistSpan, 4).includes('"overlay"'), "the eviction gist carries
 // bootstrap the seen turns, one to evict them into pending, one to age them past
 // the lead, one to confirm the archive the delegate will read.
 const parentEvent = () => ({ sessionID: "parent-1", system: [{ type: "text", text: "base" }], messages: [], tools: {}, model: {} })
+const transcript2 = [
+  ...transcript,
+  user("u4", "New turn. ".repeat(20)),
+  assistant("a5", "Done. ".repeat(20)),
+  user("u5", "One more. ".repeat(20)),
+  assistant("a6", "More. ".repeat(20)),
+]
+
+const transcript3 = [
+  ...transcript,
+  user("u4", "New turn. ".repeat(20)),
+  assistant("a5", "Done. ".repeat(20)),
+  user("u5", "One more. ".repeat(20)),
+  assistant("a6", "More. ".repeat(20)),
+  user("u6", "Another turn. ".repeat(20)),
+  assistant("a7", "Ok. ".repeat(20)),
+]
+
 const parentGrow = [
   ...transcript3,
   user("u7", "One more. ".repeat(20)),
@@ -2075,9 +2006,21 @@ const parentGrow2 = [
   user("u8", "Again. ".repeat(20)),
   assistant("a9", "Ok. ".repeat(20)),
 ]
-for (const messages of [[...transcript2], [...transcript3], parentGrow, parentGrow2]) {
-  await host.hooks.context({ ...parentEvent(), messages })
-}
+// Append archives at a fold, not on a working-budget eviction. Seed the
+// parent's archive directly so the delegated recall/expand path has one turn.
+const hostParentStore = new SessionStore(host.ctx.storage)
+const parentRecord = await hostParentStore.load("parent-1")
+parentRecord.archive.push({
+  id: "u4",
+  gist: "New turn: the parent fixture's archived turn",
+  chars: 2_000,
+  createdAt: 0,
+  messages: [
+    user("u4", "New turn. ".repeat(20)),
+    assistant("a5", "Done. ".repeat(20)),
+  ],
+})
+await hostParentStore.save("parent-1", parentRecord)
 const parentStats = (await tool.execute({ action: "stats" }, { ...callContext, sessionID: "parent-1" })).content[0].text
 ok(/archive [1-9]/.test(parentStats), "the parent fixture owns archived turns")
 
@@ -2383,7 +2326,7 @@ statusRecord.pending = [
 ]
 statusRecord.archive = [{ id: "msg_a", gist: "the archived turn", chars: 20, createdAt: 1 }]
 statusRecord.lastReport = {
-  workingTokens: 21_000,
+  workingTokens: 45_000,
   workingTurns: 3,
   droppedTurns: 41,
   hostSystemTokens: 4_200,
@@ -2399,8 +2342,8 @@ ok(
   "statsOf reports the record and whether each turn keeps its raw messages",
 )
 ok(
-  statusReply.workingTokens === 21_000 && statusReply.overBudget === true,
-  "statsOf carries the last pass's working numbers and the over-cap flag",
+  statusReply.workingTokens === 45_000 && statusReply.overBudget === true,
+  "statsOf carries the working share and the shared-pool over-cap flag",
 )
 ok(
   statusReply.memoryCap === statusConfig.memoryTokens && statusReply.workingCap === statusConfig.workingTokens,
@@ -2498,7 +2441,7 @@ ok(
   "the sidebar draws the memory budget",
 )
 ok(
-  sidebarBody.includes("win ") && sidebarBody.includes("*21k / 20k") && statusReply.overBudget,
+  sidebarBody.includes("win ") && sidebarBody.includes("*45k / 20k") && statusReply.overBudget,
   "the sidebar marks a working window that is over cap with a star in the gutter",
 )
 ok(
@@ -2549,7 +2492,7 @@ ok(
     alertLines[0].spans
       .map((span) => span.text)
       .join("")
-      .includes("*21k / 20k"),
+      .includes("*45k / 20k"),
   "only the over-cap working line carries the alert tone",
 )
 const sidebarMeters = sidebarBody
@@ -2649,7 +2592,7 @@ const panelBudget = panelSections(panelReply)[0].rows
   .map((row) => row.spans.map((span) => span.text).join(""))
 ok(
   panelBudget[0].indexOf("/") === panelBudget[1].indexOf("/") &&
-    panelBudget[1].includes("*21k / 20k") &&
+    panelBudget[1].includes("*45k / 20k") &&
     panelBudget[0].startsWith("mem "),
   "the panel's budget rows share the sidebar's alignment and over-cap star",
 )
@@ -3115,8 +3058,8 @@ const pinnedPlan = await buildPayload(
 )
 const pinnedRecord = await profileStore.load("prof")
 ok(
-  pinnedPlan.report.workingTurns === 3 && pinnedRecord.profile?.name === "deep",
-  "a pin survives a model change and keeps running the pinned profile",
+  pinnedPlan.report.workingTurns === profilePlan.report.workingTurns && pinnedRecord.profile?.name === "deep",
+  "a pin survives a model change and keeps the append era stable",
 )
 const autoChoiceRecord = { ...blankRecord(), lastModel: { providerID: "opencode", id: "deepseek" } }
 ok(
@@ -3417,9 +3360,10 @@ ok(undoRecord.revert === undefined, "the revert marker is cleared in the same pa
 ok(undoRecord.lastUndo.turn === "u3" && undoRecord.lastUndo.memory === 1, "lastUndo records what was restored")
 const undoText = renderMemory(undoRecord)
 ok(undoText.includes("## Undo") && undoText.includes("u3"), "the memory block tells the model about the undo")
+const undoTail = undoPayload.messages[undoPayload.messages.length - 1].content[0].text
 ok(
-  undoPayload.messages[0].content[0].text.includes("## Undo"),
-  "the pass that applies the undo renders it immediately",
+  undoTail.includes("undo: the host reverted"),
+  "the pass that applies the undo renders it immediately in the tail state note",
 )
 ok(renderStats(undoRecord, undoConfig).includes("last undo"), "/context reports the last undo")
 

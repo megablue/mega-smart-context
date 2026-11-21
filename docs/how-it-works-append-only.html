@@ -97,7 +97,7 @@ svg .headDanger{fill:var(--danger-line)}
 <h1>Append-only memory</h1>
 <p class="lede">Today the memory block is rewritten every time the model saves a patch. This design keeps a big snapshot still and appends small updates after it. The provider can keep the old prefix cached; only the new tail is read.</p>
 
-<div class="note"><strong>Shipped behind a flag.</strong> This layout is enabled with <code>contextLayout:&quot;append&quot;</code>; the built-in default stays the snapshot layout, which <a href="how-it-works.html">the current visual tour</a> describes. The request shape, the update blocks, the commit window and the compaction tail are live; the code is in <code>src/core/append.ts</code> and <code>buildAppendPlan</code>.</div>
+<div class="note"><strong>The only layout.</strong> The append checkpoint is unconditional; the old snapshot layout is preserved on the <code>snapshot</code> branch. The request shape, the update blocks, the commit window and the compaction tail are live; the code is in <code>src/core/append.ts</code> and <code>buildAppendPlan</code>.</div>
 
 <div class="idea">
 <p><strong>The one idea:</strong> do not edit page 1. Add a sticky note at the end.</p>
@@ -455,7 +455,7 @@ undo: the previous turn was rolled back
 <h2>9. Rollout</h2>
 <ol>
 <li>Branch from a clean <code>main</code>: <code>feat/append-only-memory</code> — done; it was merged into <code>main</code> and ships behind the flag.</li>
-<li>Add <code>contextLayout: "snapshot" | "append"</code>, defaulting to the shipped layout.</li>
+<li>Append is the only layout; snapshot is preserved on the <code>snapshot</code> branch.</li>
 <li>Build the record split first: <code>base</code>, <code>updates</code>, merged <code>memory</code>. Old records load as <code>base = memory</code>, <code>updates = []</code>.</li>
 <li>Add the renderer and the byte-stability tests before touching compaction.</li>
 <li>Then the shared pool, the compaction protocol, and the tail state note.</li>
@@ -463,7 +463,7 @@ undo: the previous turn was rolled back
 </ol>
 
 <footer>
-<p>Design tour for the shipped append layout (<code>contextLayout:&quot;append&quot;</code>). The built-in default is still the snapshot layout, described in <a href="how-it-works.html">the current visual tour</a>. The mechanism lives in <a href="features/context-handoff.html">context-handoff</a>, <a href="features/memory-tool.html">memory-tool</a>, <a href="features/compaction.html">compaction</a>, <a href="features/archive.html">archive</a> and <a href="features/tui.html">tui</a>.</p>
+<p>Design tour for the only context layout. The old snapshot layout is preserved on the <code>snapshot</code> branch. The mechanism lives in <a href="features/context-handoff.html">context-handoff</a>, <a href="features/memory-tool.html">memory-tool</a>, <a href="features/compaction.html">compaction</a>, <a href="features/archive.html">archive</a> and <a href="features/tui.html">tui</a>.</p>
 </footer>
 </main>
 </body>

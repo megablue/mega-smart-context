@@ -1,6 +1,5 @@
 {
   "enabled": true,
-  "contextLayout": "snapshot",
   "memoryTokens": 100000,
   "workingTokens": 200000,
   "compactKeepTokens": 20000,

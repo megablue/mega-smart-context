@@ -39,7 +39,7 @@ hr{border:0;border-top:1px solid var(--line);margin:2rem 0}
 <section id="what-it-does">
 <h2>What it does</h2>
 <ul>
-<li>Names a partial config - a <em>profile</em> - in the same user config file, and applies it to one session's budget and layout: memory, working window, erosion, archive bounds, <code>contextLayout</code>, refs and <code>charsPerToken</code>.</li>
+<li>Names a partial config - a <em>profile</em> - in the same user config file, and applies it to one session's budget: memory, working window, erosion, archive bounds, refs and <code>charsPerToken</code>.</li>
 <li>Chooses it three ways: a manual pin from the sidebar or <code>/context profile</code>, a <code>modelProfiles</code> mapping for the model in use, or <code>defaultProfile</code> when nothing else matches.</li>
 <li>Keeps a manual pin until the user picks <strong>auto</strong>: changing the model never clears it, and neither does a restart.</li>
 <li>Makes the switch <em>real</em>: the effective config decides the window, the erosion, the memory cap and the archive bounds of the next pass - not just what the dialog prints.</li>
@@ -66,7 +66,7 @@ hr{border:0;border-top:1px solid var(--line);margin:2rem 0}
 <section id="how-why">
 <h2>How &amp; why</h2>
 <h3>What a profile may set</h3>
-<p>A profile is a partial config limited to <code>SESSION_KEYS</code>: <code>contextLayout</code>, <code>memoryTokens</code>, <code>workingTokens</code>, <code>charsPerToken</code>, <code>evictionLead</code>, <code>autoArchive</code>, <code>archiveMaxTurns</code>, <code>archiveMaxChars</code>, <code>parentArchive</code>, <code>expandDigestChars</code>, <code>refs</code>, <code>maxResultChars</code>. The process and install keys - <code>enabled</code>, <code>subagents</code>, <code>manualCommand</code>, <code>updateCheck</code>, <code>sidebar</code>, <code>debug</code> - are refused, with the same strictness as an unknown top-level key. A model picking a profile must not be able to decide whether the sidebar exists.</p>
+<p>A profile is a partial config limited to <code>SESSION_KEYS</code>: <code>memoryTokens</code>, <code>workingTokens</code>, <code>charsPerToken</code>, <code>evictionLead</code>, <code>autoArchive</code>, <code>archiveMaxTurns</code>, <code>archiveMaxChars</code>, <code>parentArchive</code>, <code>expandDigestChars</code>, <code>refs</code>, <code>maxResultChars</code>. The process and install keys - <code>enabled</code>, <code>subagents</code>, <code>manualCommand</code>, <code>updateCheck</code>, <code>sidebar</code>, <code>debug</code> - are refused, with the same strictness as an unknown top-level key. A model picking a profile must not be able to decide whether the sidebar exists.</p>
 <p>Validation reuses <code>coerceValue</code>, so a profile's numbers go through the identical clamps as the top level (<code>memoryTokens</code> floor 1000, <code>workingTokens</code> floor 500, <code>charsPerToken</code> 2-8, <code>archiveMaxChars</code> floor 10000, <code>maxResultChars</code> floor 200). Profile names are letters, digits, dot, dash or underscore; they end up in dialog rows and JSON keys.</p>
 <h3>The selection order</h3>
 <p>Exactly four steps, first match wins, in <code>chooseProfile</code>:</p>

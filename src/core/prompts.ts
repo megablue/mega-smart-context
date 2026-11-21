@@ -90,7 +90,6 @@ and pending evictions are in \`<smart-context-state>\`, the last block after the
 current turn, not in the header.`
 
 export interface BudgetReport {
-  readonly layout: "snapshot" | "append"
   readonly memoryTokens: number
   readonly workingTokens: number
   readonly totalTokens: number
@@ -125,20 +124,14 @@ export function budgetOf(record: SessionRecord, config: ResolvedConfig): BudgetR
   const updateText = (record.updates ?? []).map(renderUpdate).join("\n")
   const snapshotTokens = estimateTokens(snapshotText.length, effective.charsPerToken)
   const updateTokens = estimateTokens(updateText.length, effective.charsPerToken)
-  const memoryTokens =
-    effective.contextLayout === "append"
-      ? snapshotTokens + updateTokens
-      : estimateTokens(memoryChars(record.memory), effective.charsPerToken)
+  const memoryTokens = snapshotTokens + updateTokens
   const workingTokens = record.lastReport?.workingTokens ?? 0
   const totalTokens = memoryTokens + workingTokens
   const poolCap = effective.memoryTokens + effective.workingTokens
   const modelContext = record.lastReport?.modelContext
   const overBudget =
-    effective.contextLayout === "append"
-      ? totalTokens > poolCap || (modelContext !== undefined && totalTokens > Math.floor(modelContext * 0.9))
-      : memoryTokens > effective.memoryTokens || workingTokens > effective.workingTokens
+    totalTokens > poolCap || (modelContext !== undefined && totalTokens > Math.floor(modelContext * 0.9))
   return {
-    layout: effective.contextLayout,
     memoryTokens,
     workingTokens,
     totalTokens,
@@ -462,12 +455,10 @@ export function renderStats(record: SessionRecord, config: ResolvedConfig, versi
     `profile: ${choiceLabel(profile)}${record.lastModel === undefined ? "" : ` · ${modelLabel(record.lastModel)}`}`,
     `window: ${report.workingTurns} turns kept, ${report.droppedTurns} dropped · over budget: ${report.overBudget ? "yes" : "no"}`,
   ]
-  if (report.layout === "append") {
-    lines.push(
-      `layout: append · pool ${formatTokens(report.poolTokens)}/${formatTokens(report.poolCap)}` +
-        ` (snapshot ${formatTokens(report.snapshotTokens)} · updates ${formatTokens(report.updateTokens)} · turns ${formatTokens(report.workingTokens)})`,
-    )
-  }
+  lines.push(
+    `pool ${formatTokens(report.poolTokens)}/${formatTokens(report.poolCap)}` +
+      ` (snapshot ${formatTokens(report.snapshotTokens)} · updates ${formatTokens(report.updateTokens)} · turns ${formatTokens(report.workingTokens)})`,
+  )
   if (record.lastUndo !== undefined) {
     lines.push(
       `last undo: before ${record.lastUndo.turn} · ${record.lastUndo.memory} memory key(s) restored, ` +

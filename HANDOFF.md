@@ -4,9 +4,11 @@ Next: `docs/features/index.html` - the feature map. Read only the page for your 
 
 **A snapshot, not a source of truth.** This file goes stale by design. If it disagrees with the code, the code is right. The process doc is `AGENTS.html`, the feature map is `docs/features/` and the behavior spec is `docs/SPEC.html`. This file is the volatile one - it exists so a new session knows *where things stand*, not *how they work*.
 
-As of `main` (the append layout ships behind `contextLayout`) - 2026-11-14.
+As of `main` (append-only) - 2026-11-22.
 
 ## State
+
+- **Append-only is the only layout (11/22).** `contextLayout` and the snapshot pass are removed; the old layout is preserved on the `snapshot` branch at 509e218. Legacy `contextLayout:"append"` is accepted as a no-op; `"snapshot"` is rejected. Smoke 605.
 
 - **The retained tail can be rebuilt at a fold (11/19).** `rebuildOnCompaction` (new session key, off by default) makes the append fold rewrite the completed tail turns: completed-turn reasoning is dropped, a successful write/edit text result becomes `<path> ok` and its call keeps only the path, a long successful bash/shell output keeps its last 20 lines, a grep result keeps the files and matched line numbers, a read a later read of the same path repeats becomes a one-line marker, and error results, content/json shapes, user text and the current turn are untouched. Only the turn ids are stored (`record.rebuilt`), so every pass re-derives the same bytes; `record.rebuildSaved` records the characters removed for the comparison. Smoke 614.
 

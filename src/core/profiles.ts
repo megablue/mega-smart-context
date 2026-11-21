@@ -155,7 +155,6 @@ export function profileNames(config: ResolvedConfig): string[] {
 }
 
 const LABELS: Record<SessionKey, string> = {
-  contextLayout: "layout",
   memoryTokens: "memory",
   workingTokens: "working",
   compactKeepTokens: "compact keep",

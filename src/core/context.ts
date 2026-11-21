@@ -253,8 +253,7 @@ export async function buildPayload(input: ContextInput, deps: ContextDeps): Prom
   const split = splitNotices(clean)
   const raw = split.rest
   const spans = turnSpans(raw)
-  if (config.contextLayout === "append") {
-    return buildAppendPlan({
+  return buildAppendPlan({
       input,
       deps,
       record,
@@ -266,127 +265,6 @@ export async function buildPayload(input: ContextInput, deps: ContextDeps): Prom
       notices: split.notices,
       now,
     })
-  }
-  // A committed host revert lands here, before the window and the change
-  // detection run: the record must speak about the transcript the host kept,
-  // and the same pass must already see the corrected pending/archive lists.
-  // Only the dedicated event sets the marker, so a host compaction (which also
-  // shortens the transcript) can never roll the memory back.
-  const undo = record.revert === undefined ? undefined : applyRevert(record, record.revert, now())
-  if (undo !== undefined) invalidateAppend(record)
-  const window = selectWorkingWindow(raw, {
-    workingTokens: config.workingTokens,
-    charsPerToken: config.charsPerToken,
-  })
-
-  const workingRaw = raw.slice(window.startIdx)
-  // Exactly one rewrite touches a window message: `erodeToolResults`, which is a
-  // pure function of that message's own bytes, so the message is identical on
-  // every later pass and the prefix above it stays cached. Reasoning is left
-  // alone: dropping it from a completed turn would change bytes already sent.
-  const working = erodeToolResults(workingRaw, config.maxResultChars).messages
-
-  const currentIds = window.turns.map((span) => span.id)
-  if (undo !== undefined) {
-    // The undo line is rendered for the turn the rollback landed in; noteTurn
-    // clears it once a newer user turn arrives.
-    record.lastUndo = { ...undo, seen: currentIds[currentIds.length - 1] }
-    if (config.debug) deps.warn?.(`context ${input.sessionID}: ${undoLine(undo)}`)
-  }
-  // Snapshot pending before this pass can evict, age or auto-archive anything.
-  noteTurn(record, currentIds[currentIds.length - 1], now())
-
-  evictTurns({ record, spans, raw, currentIds, config, now })
-
-  // A mode notice is a standing instruction, not a turn: keep every distinct text
-  // on the record so it survives the window it was stripped from. A text the model
-  // retired is skipped while it is still in the window, so a removal sticks.
-  if (split.notices.length > 0) {
-    const folded = upsertNotices(record.notices ?? [], split.notices, now(), record.retired ?? [])
-    record.notices = folded.notices
-    if (folded.retired.length > 0) record.retired = folded.retired
-    else delete record.retired
-  }
-
-  const memoryTokens = estimateTokens(memoryChars(record.memory), config.charsPerToken)
-  const workingTokens = estimateTokens(messagesChars(working), config.charsPerToken)
-  const modelContext = modelContextOf(input.model)
-  const overBudget =
-    memoryTokens > config.memoryTokens ||
-    workingTokens > config.workingTokens ||
-    (modelContext !== undefined && memoryTokens + workingTokens > Math.floor(modelContext * 0.9))
-
-  record.lastReport = {
-    memoryTokens,
-    workingTokens,
-    totalTokens: memoryTokens + workingTokens,
-    workingTurns: window.turns.length,
-    droppedTurns: window.dropped.length,
-    overBudget,
-    modelContext,
-    hostSystemTokens,
-    hostSystemParts: hostSystem.length,
-  }
-
-  // The counterfactual, recorded at the only moment both sides are exact: the
-  // input we were handed is what a disabled plugin would send. `history` is not
-  // part of the payload, so this appends on every pass without changing bytes.
-  const policyTokens = estimateTokens(POLICY.length, config.charsPerToken)
-  const noticeChars = (record.notices ?? []).reduce((sum, notice) => sum + notice.text.length, 0)
-  const sample: PassSample = {
-    at: now(),
-    turn: currentIds.length > 0 ? currentIds[currentIds.length - 1] : undefined,
-    transcriptTokens: messagesChars(input.messages),
-    policyTokens,
-    noticeTokens: estimateTokens(noticeChars, config.charsPerToken),
-    hostSystemTokens,
-    hostSystemParts: hostSystem.length,
-    memoryTokens,
-    workingTokens,
-    totalTokens: memoryTokens + workingTokens + policyTokens,
-    workingTurns: window.turns.length,
-    droppedTurns: window.dropped.length,
-    overBudget,
-    modelContext,
-  }
-  record.history = trimHistory([...(record.history ?? []), sample])
-
-  const report: ContextReport = {
-    ...record.lastReport,
-    archived: record.archive.length,
-    pending: record.pending.length,
-    goalEmpty: record.memory.goal.trim().length === 0,
-  }
-
-  const memoryText = renderMemory(record)
-  const memoryMessage: Message = {
-    id: MEMORY_MESSAGE_ID,
-    role: "user",
-    content: [{ type: "text", text: memoryText }],
-  }
-  const messages: Message[] = [memoryMessage, ...working]
-
-  // Drop a stale pinned-notices part the host may be carrying, then append the
-  // current one: the block changes when the mode does, unlike the static policy.
-  // A stale append note is dropped too, for a session that switched layouts.
-  const system = input.system.filter(
-    (part) => part.text !== APPEND_NOTE && !part.text.startsWith(NOTICE_HEADING),
-  )
-  if (!system.some((part) => part.text === POLICY)) system.push({ type: "text", text: POLICY })
-  const noticesText = renderNotices(record)
-  if (noticesText !== undefined) system.push({ type: "text", text: noticesText })
-
-  await deps.store.save(input.sessionID, record)
-
-  if (config.debug) {
-    deps.warn?.(
-      `context ${input.sessionID}: memory ${report.memoryTokens}/${config.memoryTokens}, working ${report.workingTokens}/${config.workingTokens}, ` +
-        `${report.workingTurns} kept, ${report.droppedTurns} dropped, ${report.pending} pending, ${report.archived} archived, ` +
-        `profile ${choiceLabel(profile)}`,
-    )
-  }
-
-  return { system, messages, report }
 }
 
 interface AppendPlanInput {
