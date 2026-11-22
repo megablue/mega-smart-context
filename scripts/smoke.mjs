@@ -26,7 +26,15 @@ import { TextAttributes } from "@opentui/core"
 import { mechanicalGist } from "../src/core/archive.ts"
 import { SESSION_KEYS, parseLayer, resolveConfig } from "../src/core/config.ts"
 import { effectiveTokens, parseWeights, rawTokens, usageFromHostTokens, weightsFor } from "../src/core/pricing.ts"
+import {
+  MAX_LOOP_GUARD_REDIRECT,
+  MAX_LOOP_GUARD_SAMPLES,
+  MAX_LOOP_GUARD_SIGNATURES,
+  loopGuardGreen,
+} from "../src/core/loopguard.ts"
 import { buildPayload } from "../src/core/context.ts"
+import { applyEvidence, factId } from "../src/core/facts.ts"
+import { ProjectStore, projectKeyFor } from "../src/core/project.ts"
 import { runMemoryTool } from "../src/core/memory-tool.ts"
 import { retirePinned } from "../src/core/notices.ts"
 import {
@@ -452,6 +460,113 @@ const eventAgain = {
 await host.hooks.context(eventAgain)
 assert.deepEqual(eventAgain.messages, event.messages, "two passes over the same conversation produce the same payload")
 passed += 1
+
+// ---------------------------------------------------------------------------
+// Project facts: the session seam (snapshot, fold, /context facts)
+// ---------------------------------------------------------------------------
+
+const pfKey = projectKeyFor({ directory: root })
+const pfDraft = { family: "absent_tool", params: { tool: "seed-tool" }, high: true }
+const pfFactId = factId("absent_tool", { tool: "seed-tool" })
+const pfProject = new ProjectStore()
+await pfProject.mutate(pfKey, (record) => {
+  for (let index = 0; index < 4; index += 1) {
+    applyEvidence(
+      record,
+      pfDraft,
+      { kind: "confirm", session: "pf-seed-" + index, step: index + 1, exercised: true, fired: true, files: [] },
+      { now: 1_000 + index },
+    )
+  }
+})
+const pfConfig = resolveConfig({ options: { projectFacts: true, defaultProfile: "" } })
+const pfSession = new SessionStore()
+const pfMessages = [user("pf-u1", "hello")]
+const pfEvent = { sessionID: "pf-stable", system: [{ type: "text", text: "base" }], messages: pfMessages, model: {} }
+const pfPlan = await buildPayload(pfEvent, {
+  store: pfSession,
+  config: pfConfig,
+  project: { store: pfProject, key: pfKey },
+})
+const pfBlock = pfPlan.system.find((part) => part.text.includes("# Learned project facts"))
+ok(pfBlock !== undefined && pfBlock.text.includes(pfFactId), "project facts inject one stable block")
+const pfRecord = await pfSession.load("pf-stable", { fresh: true })
+ok(pfRecord.projectFacts?.rendered === pfBlock.text, "the session snapshots the exact rendered block")
+const pfAgain = await buildPayload(pfEvent, {
+  store: pfSession,
+  config: pfConfig,
+  project: { store: pfProject, key: pfKey },
+})
+assert.deepEqual(pfAgain.system, pfPlan.system, "the project block is byte-identical on the second pass")
+passed += 1
+
+const pfNoDep = await buildPayload(
+  { sessionID: "pf-no-dep", system: [{ type: "text", text: "base" }], messages: pfMessages, model: {} },
+  { store: new SessionStore(), config: pfConfig },
+)
+ok(
+  !pfNoDep.system.some((part) => part.text.includes("# Learned project facts")),
+  "no project dependency adds no project block",
+)
+const pfOffProject = new ProjectStore()
+const pfOff = await buildPayload(
+  { sessionID: "pf-off", system: [{ type: "text", text: "base" }], messages: pfMessages, model: {} },
+  {
+    store: new SessionStore(),
+    config: resolveConfig({ options: { projectFacts: false, defaultProfile: "" } }),
+    project: { store: pfOffProject, key: pfKey },
+  },
+)
+ok(
+  !pfOff.system.some((part) => part.text.includes("# Learned project facts")) &&
+    (await pfOffProject.load(pfKey, { fresh: true })).envelope.sessions === 0,
+  "projectFacts:false adds no block and learns nothing",
+)
+
+const pfFoldProject = new ProjectStore()
+const pfFoldSession = new SessionStore()
+const pfFoldMessages = [
+  user("pf-fold-1", "first"),
+  call("pf-call-1", "pf-call-id", "bash", { command: "npm test" }),
+  result("pf-res-1", "pf-call-id", "bash", "Error: expected 2, got 3"),
+  user("pf-fold-2", "second"),
+]
+const pfFoldDeps = {
+  store: pfFoldSession,
+  config: pfConfig,
+  project: { store: pfFoldProject, key: pfKey },
+}
+await buildPayload(
+  { sessionID: "pf-fold", system: [{ type: "text", text: "base" }], messages: pfFoldMessages, model: {} },
+  pfFoldDeps,
+)
+const pfFoldedRecord = await pfFoldSession.load("pf-fold", { fresh: true })
+const pfFoldedProject = await pfFoldProject.load(pfKey, { fresh: true })
+ok(pfFoldedRecord.factsFolded === "pf-fold-1", "a completed previous turn folds into the project")
+ok(pfFoldedProject.envelope.sessions === 1, "the fold advances the project envelope once")
+await buildPayload(
+  { sessionID: "pf-fold", system: [{ type: "text", text: "base" }], messages: pfFoldMessages, model: {} },
+  pfFoldDeps,
+)
+const pfRepeatProject = await pfFoldProject.load(pfKey, { fresh: true })
+ok(pfRepeatProject.envelope.sessions === 1, "a repeat pass does not double-count the folded turn")
+
+const pfReplies = []
+const pfCommandDeps = {
+  store: pfSession,
+  config: pfConfig,
+  reply: async (_sessionID, text) => {
+    pfReplies.push(text)
+  },
+  projectFor: async () => ({ store: pfProject, key: pfKey }),
+}
+await runContextCommand("pf-stable", "facts", pfCommandDeps)
+ok(pfReplies.at(-1).includes(pfFactId) && pfReplies.at(-1).includes("1 active"), "/context facts prints the fact")
+await runContextCommand("pf-stable", "facts forget " + pfFactId, pfCommandDeps)
+const pfForgotten = await pfProject.load(pfKey, { fresh: true })
+const pfAfterForget = await pfSession.load("pf-stable", { fresh: true })
+ok(pfForgotten.facts[pfFactId] === undefined, "/context facts forget removes the fact")
+ok(pfAfterForget.projectFacts === undefined, "/context facts forget clears the session snapshot")
 
 // The raw store: the second pass evicts the first turn, erodes its 5000-char
 // result, and keeps the original behind a stable marker.
@@ -3697,6 +3812,216 @@ ok(afterCommand.archive.length === 0, "/context purge removes the turn")
 ok(
   (afterCommand.undo ?? []).some((entry) => (entry.purged ?? []).some((item) => item.entry.id === "msg_c")),
   "/context purge is journaled, so a later undo can restore it",
+)
+
+// ---------------------------------------------------------------------------
+// Unit: the loop guard's config surface, state bounds and payload seam
+// ---------------------------------------------------------------------------
+
+const guardDefaults = resolveConfig({})
+ok(
+  guardDefaults.loopGuard === true &&
+    guardDefaults.loopGuardMode === "default" &&
+    guardDefaults.loopGuardNudges === 1 &&
+    guardDefaults.loopGuardMinCalls === 20 &&
+    guardDefaults.loopGuardEnvelope === true,
+  "the loop guard defaults are on with one redirect and a 20-call envelope",
+)
+assert.throws(() => parseLayer({ loopGuardMode: "wild" }, "test"), /loopGuardMode/, "an unknown loop guard mode is refused")
+passed += 1
+ok(parseLayer({ loopGuardNudges: 9 }, "test").loopGuardNudges === 1, "the redirect budget clamps to one")
+ok(parseLayer({ loopGuardMinCalls: 1 }, "test").loopGuardMinCalls === 4, "the loop guard envelope has a floor")
+
+function repeatedGuardFailure(callPrefix, resultPrefix, command, count) {
+  const messages = []
+  for (let index = 0; index < count; index += 1) {
+    messages.push(call(callPrefix + index, resultPrefix + index + "-call", "bash", { command }))
+    messages.push(result(resultPrefix + index, resultPrefix + index + "-call", "bash", "Error: expected 2, got 3"))
+  }
+  return messages
+}
+
+const guardMessages = [user("gu1", "fix the failing test"), ...repeatedGuardFailure("ga", "gr", "npm test", 3)]
+const guardSnapshot = JSON.stringify(guardMessages)
+const guardStore = new SessionStore()
+const guardDeps = { store: guardStore, config: resolveConfig({}) }
+const guardPlan = await buildPayload(
+  { sessionID: "loop-guard", system: [{ type: "text", text: "base" }], messages: guardMessages, model: {} },
+  guardDeps,
+)
+const guardTail = guardPlan.messages[guardPlan.messages.length - 1].content[0].text
+ok(guardTail.includes("process check:"), "a repeated call and error appends one redirect")
+ok(guardTail.endsWith("</smart-context-state>"), "the redirect stays inside the trailing state note")
+ok((guardTail.match(/process check:/g) ?? []).length === 1, "exactly one redirect line is rendered")
+ok(JSON.stringify(guardMessages) === guardSnapshot, "the loop guard does not mutate the transcript")
+const guardRecord = await guardStore.load("loop-guard")
+ok(
+  guardRecord.guard?.redirected === true && guardRecord.guard?.redirectReason === "repeat",
+  "the redirect and its reason are stored on the session record",
+)
+
+const guardLonger = [
+  ...guardMessages,
+  call("ga3", "gr3-call", "bash", { command: "npm test" }),
+  result("gr3", "gr3-call", "bash", "Error: expected 2, got 3"),
+]
+const guardPlanAgain = await buildPayload(
+  { sessionID: "loop-guard", system: [{ type: "text", text: "base" }], messages: guardLonger, model: {} },
+  guardDeps,
+)
+const guardTailAgain = guardPlanAgain.messages[guardPlanAgain.messages.length - 1].content[0].text
+const guardLine = guardTailAgain.split("\n").find((line) => line.startsWith("process check:"))
+ok(
+  guardLine !== undefined && (guardTailAgain.match(/process check:/g) ?? []).length === 1,
+  "a later call keeps exactly the one redirect",
+)
+ok(
+  guardLine === guardTail.split("\n").find((line) => line.startsWith("process check:")),
+  "the redirect text is stable across passes",
+)
+
+const guardOffPlan = await buildPayload(
+  { sessionID: "loop-guard-off", system: [{ type: "text", text: "base" }], messages: guardMessages, model: {} },
+  { store: new SessionStore(), config: resolveConfig({ options: { loopGuard: false } }) },
+)
+ok(
+  JSON.stringify(guardPlan.system) === JSON.stringify(guardOffPlan.system) &&
+    JSON.stringify(guardPlan.messages.slice(0, -1)) === JSON.stringify(guardOffPlan.messages.slice(0, -1)),
+  "a redirect changes no byte before the trailing state note",
+)
+const guardOffTail = guardOffPlan.messages[guardOffPlan.messages.length - 1].content[0].text
+const guardLineText = guardLine ?? ""
+const maskedGuard = (guardLineText.length === 0 ? guardTail : guardTail.replace(guardLineText + "\n", "")).replace(/^pool:.*$/m, "pool: …")
+const maskedOff = guardOffTail.replace(/^pool:.*$/m, "pool: …")
+ok(maskedGuard === maskedOff, "the redirect is the only line the trailing note adds")
+
+const greenMessages = [
+  user("gg1", "fix the failing test"),
+  ...repeatedGuardFailure("gga", "ggr", "npm test", 3),
+  call("ggt", "ggt-call", "bash", { command: "npm test" }),
+  result("ggtr", "ggt-call", "bash", "ok 12 tests passed"),
+]
+const greenStore = new SessionStore()
+const greenPlan = await buildPayload(
+  { sessionID: "loop-guard-green", system: [{ type: "text", text: "base" }], messages: greenMessages, model: {} },
+  { store: greenStore, config: resolveConfig({}) },
+)
+const greenTail = greenPlan.messages[greenPlan.messages.length - 1].content[0].text
+const greenRecord = await greenStore.load("loop-guard-green")
+ok(!greenTail.includes("process check:"), "a green turn never redirects")
+ok(
+  greenRecord.guard !== undefined && loopGuardGreen(greenRecord.guard) && greenRecord.guard.redirected === false,
+  "a green turn is recorded as green and unredirected",
+)
+
+const nextTurnMessages = [
+  ...guardLonger,
+  user("gu2", "a fresh request"),
+  call("gn1", "gn1-call", "read", { path: "README.md" }),
+  result("gnr1", "gn1-call", "read", "text"),
+]
+const nextTurnPlan = await buildPayload(
+  { sessionID: "loop-guard", system: [{ type: "text", text: "base" }], messages: nextTurnMessages, model: {} },
+  guardDeps,
+)
+const nextTurnTail = nextTurnPlan.messages[nextTurnPlan.messages.length - 1].content[0].text
+const nextTurnRecord = await guardStore.load("loop-guard")
+ok(!nextTurnTail.includes("process check:"), "a new user turn drops the old redirect")
+ok(
+  nextTurnRecord.guard?.turn === "gu2" &&
+    nextTurnRecord.guard?.calls === 1 &&
+    nextTurnRecord.guard?.failures === 0 &&
+    nextTurnRecord.guard?.redirected === false,
+  "a new user turn resets the guard's per-turn counters",
+)
+
+const oldTurnStore = new SessionStore()
+const oldTurnPlan = await buildPayload(
+  { sessionID: "loop-guard-old", system: [{ type: "text", text: "base" }], messages: nextTurnMessages, model: {} },
+  { store: oldTurnStore, config: resolveConfig({}) },
+)
+const oldTurnTail = oldTurnPlan.messages[oldTurnPlan.messages.length - 1].content[0].text
+ok(!oldTurnTail.includes("process check:"), "failures in an old completed turn never redirect a new turn")
+
+const editMessages = [user("ge1", "change files")]
+for (let index = 0; index < 8; index += 1) {
+  editMessages.push(
+    call("gea" + index, "gea" + index + "-call", "edit", {
+      path: "src/file-" + index + ".ts",
+      oldString: "a",
+      newString: "b",
+    }),
+  )
+  editMessages.push(result("ger" + index, "gea" + index + "-call", "edit", "Applied 1 edit"))
+}
+const editStore = new SessionStore()
+const editPlan = await buildPayload(
+  { sessionID: "loop-guard-edits", system: [{ type: "text", text: "base" }], messages: editMessages, model: {} },
+  { store: editStore, config: resolveConfig({}) },
+)
+const editTail = editPlan.messages[editPlan.messages.length - 1].content[0].text
+const editRecord = await editStore.load("loop-guard-edits")
+ok(
+  editTail.includes("process check:") && editRecord.guard?.redirectReason === "edits",
+  "eight edits without a verification redirect",
+)
+
+const envelopeMessages = [user("gv1", "debug the failure")]
+for (let index = 0; index < 20; index += 1) {
+  envelopeMessages.push(
+    call("gva" + index, "gva" + index + "-call", "bash", { command: "npm test -- --shard=" + index }),
+  )
+  envelopeMessages.push(result("gvr" + index, "gva" + index + "-call", "bash", "Error: boom"))
+}
+const envelopeStore = new SessionStore()
+const envelopePlan = await buildPayload(
+  { sessionID: "loop-guard-envelope", system: [{ type: "text", text: "base" }], messages: envelopeMessages, model: {} },
+  { store: envelopeStore, config: resolveConfig({}) },
+)
+const envelopeTail = envelopePlan.messages[envelopePlan.messages.length - 1].content[0].text
+const envelopeRecord = await envelopeStore.load("loop-guard-envelope")
+ok(
+  envelopeTail.includes("process check:") &&
+    envelopeRecord.guard?.redirectReason === "envelope" &&
+    envelopeRecord.guard?.calls === 20,
+  "a turn past the envelope with a repeating failure redirects on the envelope",
+)
+
+const guardNormStore = new SessionStore(memoryStorage(new Map()))
+const guardNormRecord = await guardNormStore.load("loop-guard-norm")
+const manySigs = {}
+const manyRepeats = {}
+for (let index = 0; index < MAX_LOOP_GUARD_SIGNATURES + 5; index += 1) {
+  manySigs["sig-" + index] = index + 1
+  manyRepeats["key-" + index] = { count: 1, signature: "sig-" + index, label: "label-" + index }
+}
+guardNormRecord.guard = {
+  turn: "u".repeat(500),
+  calls: -1,
+  failures: Number.NaN,
+  edits: 2.8,
+  verifications: 1,
+  lastVerifyOk: true,
+  errorSigs: manySigs,
+  repeatKeys: manyRepeats,
+  samples: Array.from({ length: 100 }, (_, index) => index + 1),
+  redirected: true,
+  redirectReason: "bogus",
+  redirectText: "x".repeat(MAX_LOOP_GUARD_REDIRECT + 100),
+}
+await guardNormStore.save("loop-guard-norm", guardNormRecord)
+const guardNorm = await guardNormStore.load("loop-guard-norm", { fresh: true })
+ok(
+  guardNorm.guard?.turn.length === 200 &&
+    guardNorm.guard?.calls === 0 &&
+    guardNorm.guard?.failures === 0 &&
+    guardNorm.guard?.edits === 3 &&
+    guardNorm.guard?.samples.length === MAX_LOOP_GUARD_SAMPLES &&
+    Object.keys(guardNorm.guard?.errorSigs ?? {}).length === MAX_LOOP_GUARD_SIGNATURES &&
+    Object.keys(guardNorm.guard?.repeatKeys ?? {}).length === MAX_LOOP_GUARD_SIGNATURES &&
+    guardNorm.guard?.redirectReason === undefined &&
+    guardNorm.guard?.redirectText?.length === MAX_LOOP_GUARD_REDIRECT,
+  "a stored guard state is normalized and bounded on load",
 )
 
 await dispose()

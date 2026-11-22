@@ -1,0 +1,127 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="generator" content="opencode-feature-map">
+<title>Tool usage - the read-only evidence report - feature map</title>
+<style>
+:root{color-scheme:light dark;--fg:#1d2433;--muted:#5b6475;--bg:#fff;--line:#d8dee9;--accent:#0b6e99;--warn:#8a5a00;--code:#f4f6fa}
+@media (prefers-color-scheme:dark){:root{--fg:#e6eaf2;--muted:#9aa4b8;--bg:#11151c;--line:#2b3342;--accent:#6cc4e8;--warn:#e0b25c;--code:#1a202a}}
+*{box-sizing:border-box}
+body{margin:0 auto;max-width:60rem;padding:2rem 1.25rem 4rem;background:var(--bg);color:var(--fg);font:16px/1.6 system-ui,-apple-system,Segoe UI,sans-serif}
+h1,h2,h3{line-height:1.25;margin:2rem 0 .75rem}
+h1{font-size:1.9rem;border-bottom:2px solid var(--line);padding-bottom:.4rem}
+h2{font-size:1.35rem}
+h3{font-size:1.08rem;color:var(--muted)}
+p,ul,ol,table,pre,blockquote{margin:.75rem 0}
+a{color:var(--accent)}
+code{background:var(--code);padding:.1em .3em;border-radius:.25rem;font-size:.92em}
+pre{background:var(--code);border:1px solid var(--line);border-radius:.4rem;padding:.8rem 1rem;overflow:auto}
+pre code{background:none;padding:0}
+pre.verbatim{border-left:4px solid var(--warn)}
+pre.verbatim::before{content:"verbatim — " attr(data-why);display:block;color:var(--warn);font:600 .78rem/1.4 ui-monospace,monospace;margin-bottom:.5rem;white-space:pre-wrap}
+pre.pseudo{border-left:4px solid var(--accent)}
+p.status{color:var(--muted);font-size:.92rem}
+table{border-collapse:collapse;width:100%}
+th,td{border:1px solid var(--line);padding:.4rem .6rem;text-align:left;vertical-align:top}
+th{background:var(--code)}
+blockquote{margin-left:0;padding-left:1rem;border-left:3px solid var(--line);color:var(--muted)}
+hr{border:0;border-top:1px solid var(--line);margin:2rem 0}
+.lede{color:var(--muted)}
+</style>
+</head>
+<body>
+<article class="map">
+<h1>Tool usage - the read-only evidence report</h1>
+<p class="status">Status: implemented (0.2 line) - Read when: <code>tool-usage.ts</code>, <code>tool-calls.ts</code>, <code>ProjectToolUsage</code>, <code>toolsFolded</code>, <code>unusedPrompts</code>, the tool-usage section of <code>/context</code> or the status dialog, "a tool was counted twice", "which tool is never used".</p>
+
+<section id="what-it-does">
+<h2>What it does</h2>
+<ul>
+<li>Counts completed tool calls per project: calls, successes, failures, the prompt-turns that called each tool, and the distinct sessions.</li>
+<li>Tracks how long a recorded tool has gone uncalled (<code>unusedPrompts</code>) and which offered tools have never completed a call.</li>
+<li>Renders a bounded report with the evidence needed to remove a tool. It is report-only: no tool is hidden, denied or removed, because changing the tool schema mid-session invalidates the provider cache and can break Code Mode.</li>
+<li>Stores tool names and counters only. Arguments, output, paths, commands and user text never enter the project record.</li>
+<li>The modules are wired into the pass, <code>/context tools</code> and the status sidebar. Reads are fresh and report-only.</li>
+</ul>
+</section>
+
+<section id="map">
+<h2>Map</h2>
+<table>
+<thead><tr><th>File / symbol</th><th>Surface</th></tr></thead>
+<tbody>
+<tr><td><code>src/core/tool-calls.ts</code></td><td><code>ToolCallPair</code>, <code>PairToolCallsOptions</code>, <code>pairToolCalls</code>, <code>isFailedToolResult</code>. Pairs a <code>tool-call</code> with its <code>tool-result</code> by id in result order.</td></tr>
+<tr><td><code>src/core/tool-usage.ts</code></td><td><code>TOOL_USAGE_BACKFILL</code>, <code>TOOL_USAGE_REPORT_LIMIT</code>, <code>TOOL_USAGE_UNUSED_PROMPTS</code>, <code>TOOL_USAGE_UNUSED_SESSIONS</code>, <code>HIGH_RISK_TOOLS</code>, <code>ToolUsageSession</code>, <code>ToolUsageTurnCount</code>, <code>ToolUsageTurn</code>, <code>ToolUsageProjectStore</code>, <code>FoldToolUsageOptions</code>, <code>applyToolUsage</code>, <code>foldToolUsage</code>, <code>toolUsageCounts</code>, <code>toolUsageTurns</code>, <code>sessionMark</code>, <code>noteOfferedTools</code>, <code>toolAgeLabel</code>, <code>toolUsageReport</code>, <code>toolSummaryOf</code>, <code>ToolUsageSummary</code>.</td></tr>
+<tr><td><code>src/core/project.ts</code></td><td><code>ProjectToolUsage</code> (<code>calls</code>, <code>ok</code>, <code>failed</code>, <code>prompts</code>, <code>unusedPrompts</code>, <code>lastAt</code>, <code>sessions</code>, <code>sessionMarks</code>), <code>ProjectEnvelope</code> (<code>promptTurns</code>, <code>usageSeen</code>, <code>sessionsSeen</code>), <code>emptyToolUsage</code>, <code>normalizeProjectRecord</code>, the caps.</td></tr>
+<tr><td><code>src/core/state.ts</code></td><td><code>SessionStore.mutate</code>; <code>normalizeRecord</code> preserves <code>toolsFolded</code> and <code>offeredTools</code>.</td></tr>
+<tr><td><code>scripts/tool-usage.test.mjs</code></td><td>The pinning test; run <code>node scripts/tool-usage.test.mjs</code>.</td></tr>
+</tbody>
+</table>
+</section>
+
+<section id="how-why">
+<h2>How &amp; why</h2>
+<h3>Pairing</h3>
+<p><code>pairToolCalls</code> walks messages once, remembers each call by id, and emits a pair when the result arrives. A call with no result is ignored (the turn is unfinished or the host dropped it), a duplicate result is ignored (the first consumed the call), and an orphan result is ignored. <code>order</code> is the result order, not the call order. <code>isFailedToolResult</code> is explicit: <code>isError</code>/<code>error</code>, <code>result.type === "error"</code>, <code>success === false</code>, a non-zero <code>exitCode</code>/<code>exit_code</code>/<code>code</code>, or <code>status</code> of <code>error</code>/<code>failed</code>/<code>failure</code>. A result with no status is a success.</p>
+
+<h3>Turn boundary and cursor</h3>
+<p><code>foldToolUsage</code> uses <code>turnSpans</code>: every real user message opens a turn. All but the newest user turn are complete; the current turn is never folded. The cursor is <code>session.toolsFolded = { turn, at }</code>, the newest completed turn already counted. With no cursor the first fold backfills the newest <code>TOOL_USAGE_BACKFILL = 20</code> completed turns. A cursor whose turn is absent from the transcript is lost: the fold re-anchors on the newest completed turn and counts nothing, so a trimmed transcript cannot replay old history.</p>
+
+<h3>Idempotency</h3>
+<p>Each completed turn gets a usage key <code>sessionMark(sessionID) + "|" + turn.id</code>. <code>applyToolUsage</code> skips a key already in <code>envelope.usageSeen</code>, so a retried request, a second plugin instance, or a project write followed by a failed cursor write cannot count the same turn twice. <code>sessionMark</code> is the first 16 hex characters of SHA-256; the full session id never enters the project record, and the marks saturate at <code>TOOL_SESSIONS_MAX = 12</code>.</p>
+
+<h3>Counts</h3>
+<p>For each completed pair: <code>calls</code> and <code>ok</code>/<code>failed</code>. Each called tool gains <code>prompts += 1</code> once per turn even when it was called several times, and its <code>unusedPrompts</code> resets to 0. Every existing row the turn did <em>not</em> call gains one unused prompt. The turn always increments <code>envelope.promptTurns</code> and, once per session, <code>envelope.sessionsSeen</code>. A called row gets <code>lastAt = fold now</code> and the session mark. <code>(other)</code> is excluded from the unused sweep because it is an aggregate, not a tool.</p>
+
+<h3>Write order and conflicts</h3>
+<p><code>FoldToolUsageOptions</code> is <code>{ store, key, sessionID, now?, warn? }</code>: <code>store</code> is a <code>ProjectStore</code> and <code>key</code> is its <code>ProjectKey</code>, so one <code>store.mutate(key, ...)</code> writes every selected turn while the project lock is held. <code>sessionID</code> is separate because a <code>ProjectKey</code> cannot identify a session, and the usage key needs the session hash. The project store is written first; the session cursor is set only after it succeeds. The cursor is written in place on the session record the caller already holds, because a context pass loads and saves that record under its own lock; a second <code>SessionStore.mutate</code> here would deadlock or race the caller's save. A project conflict (or any project-store error) is warned, leaves the cursor unchanged, and returns false, so the next pass retries; the usage keys make the retry a no-op for turns that did land.</p>
+
+<h3>Integration</h3>
+<p>Implemented in <code>src/core/context.ts</code> after <code>foldProjectFacts</code>: when <code>deps.project</code> is defined, <code>foldToolUsage(record, raw, { ...deps.project, sessionID: input.sessionID })</code> folds completed turns before the session save. <code>SessionRecord.toolsFolded</code>/<code>offeredTools</code> are normalized in <code>state.ts</code>. The adapter passes <code>Object.keys(event.tools)</code> (minus the plugin's own <code>smart_context</code>) before the payload is built; <code>noteOfferedTools</code> stores the bounded list. <code>/context tools [all]</code> loads the project fresh and renders <code>toolUsageReport</code>; the status RPC attaches <code>toolSummaryOf</code> to <code>StatsReply</code> and the sidebar draws one line.</p>
+
+<h3>Report threshold</h3>
+<p>The header is <code>tool usage · root · N prompts · S sessions · measured age</code>. Used rows are sorted by <code>lastAt</code> descending, then name; 10 are shown, or up to <code>TOOL_USAGE_MAX = 64</code> with <code>all</code>, with a footer naming the hidden count and <code>/context tools all</code>. A recorded tool is "unused" at <code>10</code> unused prompts or <code>5</code> distinct sessions; a tool in <code>HIGH_RISK_TOOLS</code> needs twice that (<code>20</code> or <code>10</code>). "Never used" is the offered list minus the recorded names. Empty states are explicit: <code>no tool calls recorded yet</code>, <code>no unused tools</code>, <code>every offered tool has been used</code>. <code>toolSummaryOf</code> returns <code>used</code>, <code>offered</code>, <code>prompts</code>, <code>sessions</code>, and <code>unused</code> only when something was offered.</p>
+
+<h3>Privacy</h3>
+<p>The pair type has no input or result field. <code>applyToolUsage</code> writes only normalized tool names, counters, the fold time and a short session mark. A shell command, a path, a result body or a user message cannot reach the project record, and the test serializes both records to prove it.</p>
+</section>
+
+<section id="config-ui">
+<h2>Config keys / UI</h2>
+<table>
+<thead><tr><th>Key / surface</th><th>Default / behavior</th></tr></thead>
+<tbody>
+<tr><td>Config key</td><td>None yet. The module is report-first; no automatic tool removal and no schema change exist.</td></tr>
+<tr><td><code>TOOL_USAGE_BACKFILL</code></td><td><code>20</code> completed turns on the first fold.</td></tr>
+<tr><td><code>TOOL_USAGE_REPORT_LIMIT</code></td><td><code>10</code> used rows; <code>all</code> raises the limit to <code>TOOL_USAGE_MAX</code> (<code>64</code>).</td></tr>
+<tr><td><code>TOOL_USAGE_UNUSED_PROMPTS</code>, <code>TOOL_USAGE_UNUSED_SESSIONS</code></td><td><code>10</code> and <code>5</code>; doubled for <code>HIGH_RISK_TOOLS</code>.</td></tr>
+<tr><td>Implemented UI</td><td><code>/context tools [all]</code> renders <code>toolUsageReport</code>; the status reply carries <code>toolSummaryOf</code> and the sidebar draws <code>tools N used · M unused</code>.</td></tr>
+</tbody>
+</table>
+</section>
+
+<section id="tests">
+<h2>Tests that pin it</h2>
+<ul>
+<li>Pairing and failure: <em>a completed call is paired with its result in result order</em>, <em>a call without a result is ignored, and a duplicate result is ignored</em>, <em>failure detection reads explicit errors, result type, success and exit fields</em>.</li>
+<li>Turn and cursor: <em>the newest user turn is current and never folded</em>, <em>one user turn means no completed turn and folds nothing</em>, <em>the first fold backfills only the newest 20 completed turns</em>, <em>a second fold is a no-op and a lost session cursor re-anchors without replay</em>.</li>
+<li>Counts: <em>usageSeen makes replayed turns a no-op even when the cursor is behind</em>, <em>ok and failed counts are per completed pair</em>, <em>prompts count once per tool per turn, however many calls it made</em>, <em>unusedPrompts increments for an existing tool that was not called and resets when called</em>, <em>sessions and sessionMarks saturate at TOOL_SESSIONS_MAX</em>.</li>
+<li>Write order and bounds: <em>a project conflict leaves the session cursor unchanged</em>, <em>the project write runs before the session cursor is set</em>, <em>a real ProjectStore accepts the fold and normalizes it on load</em>, <em>the fold writes through the project key it was given</em>, <em>the normalizer folds the overflow into (other)</em>.</li>
+<li>Privacy and report: <em>nothing but a tool name and its counters reaches the project or session record</em>, <em>the report shows the header, ten used rows, and the all footer</em>, <em>an empty record says so, and an offered-but-never-called tool is named</em>, <em>the report marks stale rows and counts a used offered tool as used</em>, <em>unused tools need ten prompts, and a high-risk tool needs twenty</em>, <em>no unused tools is its own line once something has been called</em>, <em>toolSummaryOf counts used, offered and never-used</em>, <em>offered tool names are normalized, deduped and bounded</em>, <em>toolAgeLabel is compact and deterministic</em>, <em>toolUsageTurns groups each turn without raw content</em>, <em>sessionMark is short, stable and never the session id</em>.</li>
+</ul>
+</section>
+
+<section id="related">
+<h2>Related</h2>
+<ul>
+<li><a href="project-facts.html">Project facts</a> - the other per-project learner; it deliberately leaves tool usage to this module.</li>
+<li><a href="loop-guard.html">Loop guard</a> - pairs the same call/result shape for a different purpose (repeat detection), with its own private pairing.</li>
+<li><a href="context-handoff.html">Context handoff</a> - the pass that owns the session record and saves the cursor.</li>
+<li><a href="tui.html">The TUI half</a> - where the summary is planned to appear.</li>
+</ul>
+</section>
+</article>
+</body>
+</html>

@@ -53,6 +53,24 @@ export interface ResolvedConfig {
   expandDigestChars: number
   /** Offer the feature-map `ref` action. */
   refs: boolean
+  /** Detect a repeating failed turn and append one redirect to the trailing state note. */
+  loopGuard: boolean
+  /** The shipped loop-guard threshold profile. */
+  loopGuardMode: "default" | "aggressive"
+  /** Redirects one prompt-turn may receive; the state machine allows one. */
+  loopGuardNudges: number
+  /** The call-count floor for the over-envelope rule. */
+  loopGuardMinCalls: number
+  /** Use the learned/history envelope rule in addition to the fixed triggers. */
+  loopGuardEnvelope: boolean
+  /** Inject learned project facts into the system prefix. */
+  projectFacts: boolean
+  /** Most facts one rendered block may carry; the renderer clamps to 0..4. */
+  projectFactsMaxFacts: number
+  /** Estimated-token cap for one rendered block, header included; 0..150. */
+  projectFactsMaxTokens: number
+  /** Reserved for a paid proposer; not read by the facts modules. */
+  projectFactsPropose: boolean
   /** Erode one tool result larger than this many characters. */
   maxResultChars: number
   /** Register the `/context` command. */
@@ -114,6 +132,15 @@ export const DEFAULT_CONFIG: ResolvedConfig = {
   parentArchive: true,
   expandDigestChars: 4_000,
   refs: true,
+  loopGuard: true,
+  loopGuardMode: "default",
+  loopGuardNudges: 1,
+  loopGuardMinCalls: 20,
+  loopGuardEnvelope: true,
+  projectFacts: false,
+  projectFactsMaxFacts: 4,
+  projectFactsMaxTokens: 150,
+  projectFactsPropose: false,
   maxResultChars: 4_000,
   manualCommand: true,
   updateCheck: true,
@@ -154,6 +181,10 @@ const BOOLEAN_KEYS = new Set([
   "rebuildOnCompaction",
   "parentArchive",
   "refs",
+  "loopGuard",
+  "loopGuardEnvelope",
+  "projectFacts",
+  "projectFactsPropose",
   "manualCommand",
   "updateCheck",
   "sidebar",
@@ -169,6 +200,10 @@ const NUMBER_KEYS = new Set([
   "archiveMaxChars",
   "expandDigestChars",
   "maxResultChars",
+  "loopGuardNudges",
+  "loopGuardMinCalls",
+  "projectFactsMaxFacts",
+  "projectFactsMaxTokens",
 ])
 
 function clampInteger(value: number, min: number, max: number): number {
@@ -208,6 +243,14 @@ function coerceValue(key: string, raw: unknown, where: string): unknown {
       return Math.max(500, Math.round(raw))
     case "maxResultChars":
       return Math.max(200, Math.round(raw))
+    case "loopGuardNudges":
+      return clampInteger(raw, 0, 1)
+    case "loopGuardMinCalls":
+      return clampInteger(raw, 4, 200)
+    case "projectFactsMaxFacts":
+      return clampInteger(raw, 0, 4)
+    case "projectFactsMaxTokens":
+      return clampInteger(raw, 0, 150)
     default:
       return raw
   }
@@ -305,6 +348,13 @@ export function parseLayer(value: unknown, source: string): Partial<ResolvedConf
     if (key === "defaultProfile") {
       if (typeof raw !== "string") throw new Error(`config: defaultProfile in ${source} must be a string`)
       out.defaultProfile = raw.trim().length === 0 ? "" : profileNameOf(raw, source)
+      continue
+    }
+    if (key === "loopGuardMode") {
+      if (raw !== "default" && raw !== "aggressive") {
+        throw new Error(`config: loopGuardMode in ${source} must be "default" or "aggressive"`)
+      }
+      out.loopGuardMode = raw
       continue
     }
     const coerced = coerceValue(key, raw, source)

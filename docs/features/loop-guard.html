@@ -1,0 +1,123 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="generator" content="opencode-feature-map">
+<title>Loop guard - one redirect for a turn that repeats failed work — feature map</title>
+<style>
+:root{color-scheme:light dark;--fg:#1d2433;--muted:#5b6475;--bg:#fff;--line:#d8dee9;--accent:#0b6e99;--warn:#8a5a00;--code:#f4f6fa}
+@media (prefers-color-scheme:dark){:root{--fg:#e6eaf2;--muted:#9aa4b8;--bg:#11151c;--line:#2b3342;--accent:#6cc4e8;--warn:#e0b25c;--code:#1a202a}}
+*{box-sizing:border-box}
+body{margin:0 auto;max-width:60rem;padding:2rem 1.25rem 4rem;background:var(--bg);color:var(--fg);font:16px/1.6 system-ui,-apple-system,Segoe UI,sans-serif}
+h1,h2,h3{line-height:1.25;margin:2rem 0 .75rem}
+h1{font-size:1.9rem;border-bottom:2px solid var(--line);padding-bottom:.4rem}
+h2{font-size:1.35rem}
+h3{font-size:1.08rem;color:var(--muted)}
+p,ul,ol,table,pre,blockquote{margin:.75rem 0}
+a{color:var(--accent)}
+code{background:var(--code);padding:.1em .3rem;border-radius:.25rem;font-size:.92em}
+pre{background:var(--code);border:1px solid var(--line);border-radius:.4rem;padding:.8rem 1rem;overflow:auto}
+pre code{background:none;padding:0}
+p.status{color:var(--muted);font-size:.92rem}
+table{border-collapse:collapse;width:100%}
+th,td{border:1px solid var(--line);padding:.4rem .6rem;text-align:left;vertical-align:top}
+th{background:var(--code)}
+blockquote{margin-left:0;padding-left:1rem;border-left:3px solid var(--line);color:var(--muted)}
+</style>
+</head>
+<body>
+<article class="map">
+<h1>Loop guard - one redirect for a turn that repeats failed work</h1>
+<p class="status">Status: shipped (0.2.0) - Read when: a turn repeats the same failing call, a <code>process check</code> line appears in the trailing state note, <code>loopGuard</code> / <code>loopGuardMode</code> / <code>loopGuardMinCalls</code> / <code>loopGuardEnvelope</code>, the envelope learning, <code>record.guard</code>, or "the guard fired twice".</p>
+
+<section id="what-it-does">
+<h2>What it does</h2>
+<ul>
+<li>Folds the newest prompt-turn's completed tool calls into a compact digest: tool name, normalized argument fingerprint, success/failure, error signature, edit and verification counts, new-file and read activity.</li>
+<li>Returns at most one short <code>process check</code> redirect per turn when the turn repeats a failed call and error three times, has five failures with no verification after eight calls, makes eight edits since the last test/build/typecheck, or runs past its envelope with the same failure still repeating.</li>
+<li>Appends that line inside the existing trailing <code>&lt;smart-context-state&gt;</code> note. Every earlier payload byte stays identical, and the current turn is never rewritten.</li>
+<li>Never redirects a turn whose latest verification succeeded after its latest edit. A new user turn resets every per-turn counter; a completed older turn is never re-judged.</li>
+<li>Makes no model call, aborts nothing and mutates no tool result. The redirect mirrors the agent's own actions back at it and tells it to change the hypothesis or the input.</li>
+</ul>
+<p>This page is the mechanism. The guard's place in the request layout is in <code>context-handoff.html</code>; the user-visible contract belongs in <code>docs/SPEC.md</code>.</p>
+</section>
+
+<section id="map">
+<h2>Map</h2>
+<ul>
+<li><code>src/core/loopguard.ts</code> - <code>updateLoopGuard</code>, <code>normalizeLoopGuard</code>, <code>loopGuardGreen</code>, <code>loopGuardEnvelope</code>, <code>emptyLoopGuard</code>, <code>LoopGuardOptions</code>, <code>LoopGuardDecision</code>, <code>LoopGuardMode</code>, <code>LoopGuardReason</code>, and the <code>DEFAULT_LOOP_GUARD_ENVELOPE</code> / <code>AGGRESSIVE_LOOP_GUARD_ENVELOPE</code> / <code>MAX_LOOP_GUARD_*</code> bounds.</li>
+<li><code>src/core/types.ts</code> - <code>LoopGuardState</code>, <code>LoopGuardRepeat</code>, <code>SessionRecord.guard</code>.</li>
+<li><code>src/core/state.ts</code> - <code>normalizeRecord</code> calls <code>normalizeLoopGuard</code>; a missing or malformed guard is simply absent.</li>
+<li><code>src/core/context.ts</code> - <code>buildAppendPlan</code> calls <code>updateLoopGuard</code> over <code>raw</code>; <code>withGuardLine</code> inserts the redirect before the state note's closing tag; <code>ContextDeps.loopGuardEnvelope</code> is the project/history seam.</li>
+<li><code>src/core/config.ts</code> - the five install-level keys, their defaults and their clamps.</li>
+<li><code>scripts/loopguard.test.mjs</code> - the pure state-machine tests.</li>
+<li><code>scripts/smoke.mjs</code> - the config, payload-cache, reset, edit, envelope and normalization assertions.</li>
+</ul>
+</section>
+
+<section id="how-and-why">
+<h2>How &amp; why</h2>
+<h3>The unit is one prompt-turn</h3>
+<p><code>updateLoopGuard(state, messages, options)</code> finds the newest real user message with <code>isRealUser</code> from <code>view.ts</code> and folds only that slice. A job completion or a resume cue is not a turn start, so it cannot reset the guard or hide the turn that is looping. Older completed turns are never looked at: a fresh pass over a transcript whose last turn is new reports the new turn, even when the previous turn repeated a failure ten times.</p>
+<h3>The digest is a cursor, not a replay</h3>
+<p><code>state.calls</code> is the number of completed call/result pairs already folded. On every pass the guard pairs the current turn's calls with their results and folds only <code>[state.calls, length)</code>, so a turn that grows one tool call per request costs one fold, not a re-scan. Two passes over the same messages fold nothing new and return the same decision. If the host trimmed the current turn and <code>state.calls</code> is now larger than the completed pairs, the counters restart from the raw transcript while the delivered redirect is kept: one redirect per turn is the invariant, not one per fold.</p>
+<h3>What counts as a repeat</h3>
+<p>A call's key is its canonical tool name, a stable FNV fingerprint of its arguments and the normalized error signature. The fingerprint sorts object keys and bounds depth and string length, so key order or a changed number in a message does not create a new call. The signature is the first line that matches <code>ERROR_SIGNAL</code>, with ANSI codes, hex addresses, paths and numbers removed, so the same failure at a different line or path still matches. Three calls with the same key is the repeat rule; three different calls that happen to fail with the same error is not. Content tools (<code>read</code>, <code>view</code>, <code>grep</code>, <code>glob</code>) only fail when the result itself says so: a test file full of <code>assert</code> is not a failing call.</p>
+<h3>The other three rules</h3>
+<ul>
+<li><b>Failures without verification.</b> Eight or more completed calls, five or more failures, and no verification call in the turn. This catches a turn that keeps trying variations and never runs the project's checks.</li>
+<li><b>Edits without a check.</b> Eight edits since the last verification. The count is <code>edits - editsAtVerify</code>, so a successful check early in the turn does not license unlimited edits afterwards; a later check resets the count. An edit includes the edit/write tools and a shell command that changes a source file: <code>sed -i</code>, <code>perl -pi</code>, <code>patch</code>/<code>git apply</code>, or a <code>tee</code>/redirection into a source extension.</li>
+<li><b>Over the envelope.</b> The completed calls reach <code>max(minCalls, envelope)</code>, at least one failure has repeated and the turn is not green. This is the long-grind rule. An envelope supplied by the caller wins; otherwise the p90 of this session's green-turn lengths is used once there are at least <code>LOOP_GUARD_MIN_SAMPLES</code> (5); otherwise the mode's fallback is 20 calls (14 aggressive). Every envelope is clamped to 4..200.</li>
+</ul>
+<h3>Green suppresses, and one line is stored</h3>
+<p><code>loopGuardGreen</code> is true when a verification succeeded, no edit happened after it and its call index is at least the last edit's. A green turn is never redirected, even if it repeated a failure before recovering. The first non-green match stores <code>redirectText</code> on the state; every later pass of that turn re-renders the same text rather than rebuilding it from counters that have moved, so the redirect does not drift and the tail stays deterministic. The line names the repeated call and signature, says the turn is at N calls against the envelope, and asks for a different hypothesis or input. It never says stop.</p>
+<h3>The payload seam</h3>
+<p>The tail note is the only message allowed to churn and is already last. <code>withGuardLine</code> inserts the redirect before <code>&lt;/smart-context-state&gt;</code>; it does not touch the memory block, the working turns or the current turn. The smoke test builds the same conversation with the guard off and on and asserts that <code>event.system</code> and every message before the last are byte-identical, then masks the live pool line in the two notes and asserts the only remaining difference is the redirect. A provider prefix cache therefore sees the same prefix, and a retry over the same conversation produces the same bytes.</p>
+<h3>State, bounds and the disabled switch</h3>
+<p>The state is counters plus two maps (<code>errorSigs</code>, <code>repeatKeys</code>), each capped at 64 entries by dropping the oldest; at most 32 green-turn samples; a 200-character turn id; 120-character signatures; 80-character labels; and a 600-character stored redirect. <code>normalizeLoopGuard</code> clamps every count, rejects non-object state and drops an unknown redirect reason, so a record written by an older build or a corrupt store cannot make the guard fire on nonsense. With <code>loopGuard:false</code> the pass neither folds nor renders; re-enabling it folds the current turn from the raw transcript. The guard is install-level on purpose: a profile changes budgets, not process policy.</p>
+<h3>What is deliberately absent</h3>
+<p>No paid judge, no Python dispatcher, no abort/stop verdict, and no tool-result rewrite. The upstream TokenEconomizer revision (<code>1bfeccd</code>) used a judge behind a gate and an abort on a second stuck segment; this port keeps the free heuristic and turns the delivery into advice in the trailing note.</p>
+</section>
+
+<section id="config-keys">
+<h2>Config keys / UI</h2>
+<table>
+<thead><tr><th>Key</th><th>Default</th><th>Range or clamp</th><th>Control</th></tr></thead>
+<tbody>
+<tr><td><code>loopGuard</code></td><td><code>true</code></td><td>boolean</td><td>User config or host options; not a profile key.</td></tr>
+<tr><td><code>loopGuardMode</code></td><td><code>"default"</code></td><td><code>"default"</code> or <code>"aggressive"</code>; anything else is refused</td><td>Chooses the 20- or 14-call fallback envelope and pulls the minimum in for aggressive.</td></tr>
+<tr><td><code>loopGuardNudges</code></td><td><code>1</code></td><td>0..1</td><td>The state machine still stores one redirect; 0 disables delivery.</td></tr>
+<tr><td><code>loopGuardMinCalls</code></td><td><code>20</code></td><td>4..200</td><td>A floor for the over-envelope rule; the aggressive mode uses at most 14.</td></tr>
+<tr><td><code>loopGuardEnvelope</code></td><td><code>true</code></td><td>boolean</td><td>Set false to keep the three fixed triggers and disable the over-length rule.</td></tr>
+</tbody>
+</table>
+<p>There is no TUI control and no command: the guard is a process policy, and its one visible effect is the <code>process check</code> line in the state note. <code>ContextDeps.loopGuardEnvelope</code> is the read-only seam a future project-facts layer can use to supply a learned envelope without adding a config key.</p>
+</section>
+
+<section id="tests">
+<h2>Tests that pin it</h2>
+<p>Run <code>node scripts/loopguard.test.mjs</code> for the pure machine and <code>npm run smoke</code> for the payload.</p>
+<h3>Pure state machine</h3>
+<ul>
+<li><b>Pure:</b> "the same call and error three times redirects once and names the signature"; "a green turn never redirects, even after a repeated failure"; "a normal ten-call turn produces no redirect"; "a new user turn resets the counters and drops the old redirect"; "repeated failures in an old completed turn never redirect the new turn"; "five failures without a verification redirect after eight calls"; "eight edits without a check redirect, and a check resets the edit count"; "a shell edit counts toward the edit rule"; "a turn past the envelope with a repeating failure redirects on the envelope"; "an external envelope wins and is clamped, and aggressive pulls it in"; "the envelope learns from green-turn samples and clamps"; "normalization bounds strings, counters, maps and samples"; "the digest records reads, new files and verification, and never mutates a message"; "the decision is deterministic and nudges can be disabled"; "a shrunken transcript keeps the one delivered redirect".</li>
+</ul>
+<h3>Payload seam</h3>
+<ul>
+<li><b>Smoke:</b> "the loop guard defaults are on with one redirect and a 20-call envelope"; "an unknown loop guard mode is refused"; "the redirect budget clamps to one"; "the loop guard envelope has a floor"; "a repeated call and error appends one redirect"; "the redirect stays inside the trailing state note"; "exactly one redirect line is rendered"; "the loop guard does not mutate the transcript"; "the redirect and its reason are stored on the session record"; "a later call keeps exactly the one redirect"; "the redirect text is stable across passes"; "a redirect changes no byte before the trailing state note"; "the redirect is the only line the trailing note adds"; "a green turn never redirects"; "a green turn is recorded as green and unredirected"; "a new user turn drops the old redirect"; "a new user turn resets the guard's per-turn counters"; "failures in an old completed turn never redirect a new turn"; "eight edits without a verification redirect"; "a turn past the envelope with a repeating failure redirects on the envelope"; "a stored guard state is normalized and bounded on load".</li>
+</ul>
+</section>
+
+<section id="related">
+<h2>Related</h2>
+<ul>
+<li><code>context-handoff.html</code> - the payload layout and the trailing state note the redirect rides.</li>
+<li><code>memory-tool.html</code> - the model's own writes, which the guard never replaces.</li>
+<li><code>archive.html</code> - completed turns leave the window; the guard never re-judges them.</li>
+<li><code>feature-refs.html</code> - the feature-map pointer a profile or fact block can use for a cheaper reference.</li>
+</ul>
+</section>
+</article>
+
+</body>
+</html>

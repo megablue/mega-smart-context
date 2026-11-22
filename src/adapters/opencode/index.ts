@@ -25,8 +25,10 @@ import { messageOf } from "../../core/types.ts"
 import { createContextCommand } from "./command.ts"
 import { resolveHostConfig } from "./config.ts"
 import { createFsFeatureMap, runContextTransform } from "./context.ts"
+import { createProjectResolver } from "./project.ts"
 import { SessionStore, sameDirectory, StoreConflictError } from "../../core/state.ts"
 import { STATUS_RPC, statsOf, type NoticeRequest, type ProfileRequest, type PurgeRequest, type StatsRequest } from "../../core/status.ts"
+import { toolSummaryOf } from "../../core/tool-usage.ts"
 import { retirePinned } from "../../core/notices.ts"
 import { choiceLabel, chooseProfile, profileNames } from "../../core/profiles.ts"
 import { purgeWithUndo, queueRevert, revertTarget } from "../../core/undo.ts"
@@ -54,6 +56,9 @@ export async function setup(ctx: PluginContext): Promise<() => Promise<void>> {
   const store = new SessionStore(ctx.storage, { warn, directory: ctx.location.directory })
   const featureMap = createFsFeatureMap()
   const childCache = new Map<string, boolean>()
+  // One project store per setup: it owns the in-memory copy, the per-project
+  // lock and the git-root cache behind the whole plugin surface.
+  const project = createProjectResolver(ctx, warn)
   const registrations: Registration[] = []
   // The build's own version, so `/context status` shows what is loaded.
   const version = readPluginVersion()
@@ -61,7 +66,7 @@ export async function setup(ctx: PluginContext): Promise<() => Promise<void>> {
   registrations.push(
     await ctx.session.hook("context", async (event) => {
       try {
-        return await runContextTransform(ctx, event, { store, config, featureMap, childCache, warn })
+        return await runContextTransform(ctx, event, { store, config, featureMap, childCache, warn, project })
       } catch (error) {
         // A turn must never break because a pass failed.
         warn("the context pass failed and the request continues: " + messageOf(error))
@@ -123,6 +128,19 @@ export async function setup(ctx: PluginContext): Promise<() => Promise<void>> {
               resume: async (sessionID, text) => {
                 await ctx.session.synthetic({ sessionID, text, resume: true })
               },
+              projectFor: async (sessionID) => {
+                try {
+                  return { store: project.store, key: await project.keyFor(sessionID) }
+                } catch (error) {
+                  warn(
+                    "project key resolution failed for " +
+                      sessionID +
+                      ": " +
+                      (error instanceof Error ? error.message : String(error)),
+                  )
+                  return undefined
+                }
+              },
             }),
           )
         }),
@@ -147,7 +165,15 @@ export async function setup(ctx: PluginContext): Promise<() => Promise<void>> {
             // cached copy from another instance made the block paint a number that
             // stopped being true hours earlier. One KV read per pull is cheap.
             const record = await store.load(input.sessionID, { fresh: true })
-            return statsOf(record, config, version, Date.now())
+            const reply = statsOf(record, config, version, Date.now())
+            try {
+              const key = await project.keyFor(input.sessionID)
+              const projectRecord = await project.store.load(key, { fresh: true })
+              return { ...reply, toolUsage: toolSummaryOf(projectRecord, record.offeredTools ?? [], Date.now()) }
+            } catch (error) {
+              warn("tool usage summary failed: " + messageOf(error))
+              return reply
+            }
           },
           purge: async (input: PurgeRequest) => {
             try {

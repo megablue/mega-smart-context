@@ -446,6 +446,97 @@ export interface ProfilePin {
   readonly at: number
 }
 
+/** One normalized call+error pair the loop guard has seen repeat in a turn. */
+export interface LoopGuardRepeat {
+  /** How many completed calls carried this exact call fingerprint and error signature. */
+  count: number
+  /** The normalized error signature, bounded and human-readable. */
+  signature: string
+  /** The call in one short label, e.g. `bash npm test` or `edit src/a.ts`. */
+  label: string
+}
+
+/**
+ * The loop guard's compact state for the newest prompt-turn.
+ *
+ * It is a fold of completed tool calls, not a transcript: counters, two bounded
+ * maps and one stored redirect. On a new user turn the counters reset and a
+ * green turn's call count is folded into `samples`, the session-local envelope
+ * history. `normalizeLoopGuard` in `loopguard.ts` clamps everything read back
+ * from storage.
+ */
+export interface LoopGuardState {
+  version: 1
+  /** The id of the newest user turn this state belongs to. */
+  turn: string
+  /** Completed tool calls folded in this turn. */
+  calls: number
+  /** Completed calls whose result was a failure. */
+  failures: number
+  /** Edit-like calls (edit/write/create/apply_patch/...) plus shell edits into source files. */
+  edits: number
+  /** Verification calls (test/build/typecheck/lint/check) in this turn. */
+  verifications: number
+  /** 1-based call index of the latest edit and the latest verification. */
+  lastEditCall: number
+  lastVerifyCall: number
+  /** The edit count in place when the latest verification ran. */
+  editsAtVerify: number
+  /** Whether the latest verification call succeeded. */
+  lastVerifyOk: boolean
+  /** Failures whose normalized error signature had been seen before in this turn. */
+  repeated: number
+  /** The latest repeated signature and call label, for the redirect's wording. */
+  repeatedSignature?: string
+  repeatedLabel?: string
+  /** Read-like calls (read/view/grep/glob/...). */
+  reads: number
+  /** New-file writes (write/create), whether or not the target existed. */
+  newFiles: number
+  /** Error signature -> occurrence count, bounded by MAX_LOOP_GUARD_SIGNATURES. */
+  errorSigs: Record<string, number>
+  /** Call fingerprint + signature -> repeat entry, bounded by MAX_LOOP_GUARD_SIGNATURES. */
+  repeatKeys: Record<string, LoopGuardRepeat>
+  /** Whether this turn already received its one redirect. */
+  redirected: boolean
+  /** Why the redirect fired, when it did. */
+  redirectReason?: "repeat" | "failures" | "edits" | "envelope"
+  /** The call count when the redirect fired. */
+  redirectAt?: number
+  /** The rendered redirect, kept so two passes over the same turn are byte-identical. */
+  redirectText?: string
+  /** Completed call counts of earlier green turns, oldest first, bounded. */
+  samples: number[]
+}
+
+/**
+ * The project-facts block snapshotted for one session.
+ *
+ * The first pass renders the project record once and keeps these bytes; every
+ * later pass reuses `rendered`, so a fact learned mid-session reaches the next
+ * session rather than changing a prefix the provider has already cached.
+ */
+export interface ProjectFactsSnapshot {
+  version: 1
+  /** The normalized project root the snapshot was rendered for. */
+  key: string
+  /** The fact ids included in `rendered`, for injection accounting. */
+  ids: string[]
+  /** The exact system block, empty when no fact was injectable. */
+  rendered: string
+  /** Estimated tokens of `rendered`, header included. */
+  tokens: number
+  /** Render time, ms since epoch. */
+  at: number
+}
+
+export interface ToolUsageCursor {
+  /** The completed turn whose calls were folded into project tool usage. */
+  turn: string
+  /** Fold time, ms since epoch. */
+  at: number
+}
+
 export interface SessionRecord {
   version: 1
   memory: Memory
@@ -475,6 +566,14 @@ export interface SessionRecord {
    * mid-session does not replay a history the plugin never managed.
    */
   windowStart?: string
+  /** The project-facts block rendered on the first pass of this session. */
+  projectFacts?: ProjectFactsSnapshot
+  /** The newest completed turn whose observations were folded into the project. */
+  factsFolded?: string
+  /** The newest completed turn folded into project tool usage. */
+  toolsFolded?: ToolUsageCursor
+  /** Tool names offered at the last pass, sorted and bounded; status/usage only. */
+  offeredTools?: string[]
   /** A compaction the next pass must perform, or a `due` note waiting for that pass. */
   compact?: CompactMark
   /**
@@ -547,6 +646,15 @@ export interface SessionRecord {
    * leaves the previous stamp alone rather than guessing.
    */
   lastModel?: ModelStamp
+  /**
+   * The loop guard's compact state for the newest prompt-turn.
+   *
+   * Absent until the first pass with a completed tool call, and left in place
+   * when the guard is disabled so re-enabling it folds the turn from the raw
+   * transcript rather than starting a second nudge. Bounded and normalized by
+   * `normalizeLoopGuard`.
+   */
+  guard?: LoopGuardState
   /**
    * The plugin instance's directory when this record was last written.
    *

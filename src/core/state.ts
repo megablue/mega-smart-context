@@ -18,6 +18,7 @@
 import { emptyMemory, normalizeMemory } from "./schema.ts"
 import { normalizeUpdate } from "./append.ts"
 import { normalizeRaw } from "./raw.ts"
+import { normalizeLoopGuard } from "./loopguard.ts"
 import type {
   ArchivedTurn,
   CompactMark,
@@ -27,7 +28,9 @@ import type {
   PassSample,
   PendingTurn,
   ProfilePin,
+  ProjectFactsSnapshot,
   RetiredNotice,
+  ToolUsageCursor,
   SessionRecord,
   StoragePort,
 } from "./types.ts"
@@ -69,6 +72,14 @@ export const MAX_NOTICE_CHARS = 4000
 export const MAX_RETIRED = 32
 
 const NOTICE_TRUNCATION_MARKER = "\n… [truncated] …"
+
+/** Bounds for the project-facts snapshot: a session keeps one rendered block. */
+const MAX_PROJECT_FACTS_IDS = 4
+const MAX_PROJECT_FACTS_CHARS = 4_000
+const MAX_PROJECT_FACTS_TOKENS = 150
+const MAX_PROJECT_FACTS_KEY = 512
+const MAX_PROJECT_FACT_ID = 128
+const MAX_FACTS_FOLDED = 512
 
 const KEY_PREFIX = "session/"
 
@@ -172,6 +183,61 @@ export function trimHistory(history: PassSample[]): PassSample[] {
 function headKeepNotice(text: string): string {
   if (text.length <= MAX_NOTICE_CHARS) return text
   return text.slice(0, MAX_NOTICE_CHARS) + NOTICE_TRUNCATION_MARKER
+}
+
+/**
+ * Coerce the per-session project-facts snapshot.
+ *
+ * The block is reused byte-for-byte, so a malformed or oversized snapshot is
+ * either bounded to the same caps the renderer uses or dropped: rendering it
+ * again is cheap, trusting a bad cached block is not.
+ */
+const MAX_TOOL_USAGE_TURN = 128
+const MAX_OFFERED_TOOLS = 64
+const MAX_TOOL_NAME = 64
+
+function normalizeToolsFolded(value: unknown): ToolUsageCursor | undefined {
+  if (!isPlainObject(value)) return undefined
+  if (typeof value.turn !== "string" || value.turn.length === 0) return undefined
+  if (typeof value.at !== "number" || !Number.isFinite(value.at)) return undefined
+  return { turn: value.turn.slice(0, MAX_TOOL_USAGE_TURN), at: value.at }
+}
+
+function normalizeOfferedTools(value: unknown): string[] | undefined {
+  if (!Array.isArray(value)) return undefined
+  const names = new Set<string>()
+  for (const item of value) {
+    if (typeof item !== "string") continue
+    const name = item.trim().slice(0, MAX_TOOL_NAME)
+    if (name.length > 0) names.add(name)
+  }
+  return [...names].slice(0, MAX_OFFERED_TOOLS)
+}
+
+function normalizeProjectFacts(value: unknown): ProjectFactsSnapshot | undefined {
+  if (!isPlainObject(value) || value.version !== 1) return undefined
+  if (typeof value.key !== "string" || value.key.length === 0) return undefined
+  if (typeof value.rendered !== "string") return undefined
+  if (typeof value.tokens !== "number" || !Number.isFinite(value.tokens)) return undefined
+  if (typeof value.at !== "number" || !Number.isFinite(value.at)) return undefined
+  const ids = Array.isArray(value.ids)
+    ? value.ids
+        .filter((id): id is string => typeof id === "string" && id.length > 0 && id.length <= MAX_PROJECT_FACT_ID)
+        .slice(0, MAX_PROJECT_FACTS_IDS)
+    : []
+  return {
+    version: 1,
+    key: value.key.slice(0, MAX_PROJECT_FACTS_KEY),
+    ids,
+    rendered: value.rendered.slice(0, MAX_PROJECT_FACTS_CHARS),
+    tokens: clampCount(value.tokens, MAX_PROJECT_FACTS_TOKENS),
+    at: value.at,
+  }
+}
+
+/** A finite non-negative count, clamped to the given cap. */
+function clampCount(value: number, max: number): number {
+  return Math.min(max, Math.max(0, Math.round(value)))
 }
 
 /** Coerce a stored notice, dropping anything without an id and usable text. */
@@ -500,6 +566,15 @@ export function normalizeRecord(value: unknown, now: number): SessionRecord {
   const updates = normalizeUpdates(value.updates)
   if (updates !== undefined) record.updates = updates
   if (typeof value.windowStart === "string" && value.windowStart.length > 0) record.windowStart = value.windowStart
+  const projectFacts = normalizeProjectFacts(value.projectFacts)
+  if (projectFacts !== undefined) record.projectFacts = projectFacts
+  if (typeof value.factsFolded === "string" && value.factsFolded.length > 0) {
+    record.factsFolded = value.factsFolded.slice(0, MAX_FACTS_FOLDED)
+  }
+  const toolsFolded = normalizeToolsFolded(value.toolsFolded)
+  if (toolsFolded !== undefined) record.toolsFolded = toolsFolded
+  const offeredTools = normalizeOfferedTools(value.offeredTools)
+  if (offeredTools !== undefined) record.offeredTools = offeredTools
   const compact = normalizeCompact(value.compact)
   if (compact !== undefined) record.compact = compact
   if (Array.isArray(value.rebuilt)) record.rebuilt = value.rebuilt.filter((id): id is string => typeof id === "string")
@@ -533,6 +608,8 @@ export function normalizeRecord(value: unknown, now: number): SessionRecord {
   if (profile !== undefined) record.profile = profile
   const lastModel = normalizeModelStamp(value.lastModel)
   if (lastModel !== undefined) record.lastModel = lastModel
+  const guard = normalizeLoopGuard(value.guard)
+  if (guard !== undefined) record.guard = guard
   return record
 }
 

@@ -21,11 +21,13 @@ import { resolve, sep } from "node:path"
 
 import type { ResolvedConfig } from "../../core/config.ts"
 import { buildPayload, type ContextReport } from "../../core/context.ts"
+import type { ProjectSessionDeps } from "../../core/project-session.ts"
 import { extractHtmlSection, extractSection, pageCandidates } from "../../core/refs.ts"
 import type { SessionStore } from "../../core/state.ts"
 import type { FeatureMapPort } from "../../core/types.ts"
 import type { PluginContext, SessionContextEvent } from "./types.ts"
 import { TOOL_DESCRIPTION, TOOL_INPUT, TOOL_NAME } from "./tool.ts"
+import type { ProjectResolver } from "./project.ts"
 
 export interface TransformDeps {
   readonly store: SessionStore
@@ -33,6 +35,13 @@ export interface TransformDeps {
   readonly featureMap: FeatureMapPort
   readonly childCache: Map<string, boolean>
   readonly warn: (line: string) => void
+  /**
+   * The project-facts resolver, when the host can supply one.
+   *
+   * A resolver failure is a warning, not a failed turn: the pass continues with
+   * no project block and learns nothing this time.
+   */
+  readonly project?: ProjectResolver
 }
 
 /**
@@ -112,14 +121,34 @@ export async function runContextTransform(
   if (sessionID.length === 0) return undefined
   if (!deps.config.subagents && (await isChildSession(ctx, sessionID, deps.childCache))) return undefined
 
+  // Resolve the project key once per pass. The store and the key are shared by
+  // the render and the fold, so a single lookup is also a single source of
+  // truth for "which project is this session editing".
+  let project: ProjectSessionDeps | undefined
+  if (deps.project !== undefined) {
+    try {
+      project = { store: deps.project.store, key: await deps.project.keyFor(sessionID), warn: deps.warn }
+    } catch (error) {
+      deps.warn(
+        "project key resolution failed for " + sessionID + ": " + (error instanceof Error ? error.message : String(error)),
+      )
+    }
+  }
+
   const plan = await buildPayload(
     {
       sessionID,
       system: event.system,
       messages: event.messages,
       model: event.model,
+      tools:
+        event.tools === undefined || event.tools === null
+          ? undefined
+          : Object.keys(event.tools)
+              .filter((name) => name !== TOOL_NAME)
+              .sort(),
     },
-    { store: deps.store, config: deps.config, warn: deps.warn },
+    { store: deps.store, config: deps.config, warn: deps.warn, project },
   )
 
   event.system.splice(0, event.system.length, ...plan.system)

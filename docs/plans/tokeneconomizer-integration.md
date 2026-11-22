@@ -1,6 +1,6 @@
 # TokenEconomizer integration plan
 
-Status: started on `feat/tokeneconomizer-integration` (0.2.0 line); pricing slice implemented
+Status: started on `feat/tokeneconomizer-integration` (0.2.0 line); pricing, loop guard, project facts and tool usage implemented
 Work branch: `feat/tokeneconomizer-integration`
 Scope: ideas from [microsoft/TokenEconomizer](https://github.com/microsoft/TokenEconomizer) that fit mega-smart-context
 Baseline: mega-smart-context `a956106` (0.1.61), main == origin/main
@@ -107,7 +107,7 @@ both use the same OpenCode hooks. Port the ideas.
 
 ## 5. Phase 1 - high value, low risk
 
-### 5.1 Project-level learned facts
+### 5.1 Project-level learned facts (in progress in 0.2.0)
 
 Goal: a project-scoped store of short, evidence-backed environment facts, injected at
 session start as a small stable system block and removable by the user.
@@ -187,7 +187,7 @@ Design:
   - `/context facts forget` changes the next session only;
   - no model calls and no new network activity.
 
-### 5.2 Loop guard
+### 5.2 Loop guard (implemented in 0.2.0)
 
 Goal: detect a turn that is repeating failed work and redirect it once, without stopping the
 turn or rewriting earlier messages.
@@ -266,7 +266,7 @@ Design:
 
 ## 6. Phase 2 - report first, apply later
 
-### 6.1 Tool usage report
+### 6.1 Tool usage report (in progress in 0.2.0)
 
 TokenEconomizer requires 10 unused prompts across at least 2 sessions, or 5 sessions,
 before proposing a tool removal; high-risk tools need a multiple. For smart-context:
@@ -332,3 +332,8 @@ OpenCode's session DB. The live free-facts layer should prove itself first.
 - 2026-11-22: 0.2.0 pricing slice implemented: `src/core/pricing.ts`, the analyzer's
   host usage/effective-token report, `--model`/`--weights`, smoke tests, and the
   analysis page.
+- 2026-11-22: loop guard implemented: `src/core/loopguard.ts`, session guard state,
+  install-level config, one trailing-note redirect, and smoke coverage.
+- 2026-11-22: project facts integrated through `project-session.ts`, the adapter resolver,
+  the stable system block and `/context facts`; the read-only tool-usage report is wired
+  through the pass, `/context tools` and the status sidebar.

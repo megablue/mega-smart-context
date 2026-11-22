@@ -1,0 +1,125 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="generator" content="opencode-feature-map">
+<title>Project facts - learned microskills from observed outcomes — feature map</title>
+<style>
+:root{color-scheme:light dark;--fg:#1d2433;--muted:#5b6475;--bg:#fff;--line:#d8dee9;--accent:#0b6e99;--warn:#8a5a00;--code:#f4f6fa}
+@media (prefers-color-scheme:dark){:root{--fg:#e6eaf2;--muted:#9aa4b8;--bg:#11151c;--line:#2b3342;--accent:#6cc4e8;--warn:#e0b25c;--code:#1a202a}}
+*{box-sizing:border-box}
+body{margin:0 auto;max-width:60rem;padding:2rem 1.25rem 4rem;background:var(--bg);color:var(--fg);font:16px/1.6 system-ui,-apple-system,Segoe UI,sans-serif}
+h1,h2,h3{line-height:1.25;margin:2rem 0 .75rem}
+h1{font-size:1.9rem;border-bottom:2px solid var(--line);padding-bottom:.4rem}
+h2{font-size:1.35rem}
+h3{font-size:1.08rem;color:var(--muted)}
+p,ul,ol,table,pre,blockquote{margin:.75rem 0}
+a{color:var(--accent)}
+code{background:var(--code);padding:.1em .3em;border-radius:.25rem;font-size:.92em}
+pre{background:var(--code);border:1px solid var(--line);border-radius:.4rem;padding:.8rem 1rem;overflow:auto}
+pre code{background:none;padding:0}
+pre.verbatim{border-left:4px solid var(--warn)}
+pre.verbatim::before{content:"verbatim — " attr(data-why);display:block;color:var(--warn);font:600 .78rem/1.4 ui-monospace,monospace;margin-bottom:.5rem;white-space:pre-wrap}
+pre.pseudo{border-left:4px solid var(--accent)}
+p.status{color:var(--muted);font-size:.92rem}
+table{border-collapse:collapse;width:100%}
+th,td{border:1px solid var(--line);padding:.4rem .6rem;text-align:left;vertical-align:top}
+th{background:var(--code)}
+blockquote{margin-left:0;padding-left:1rem;border-left:3px solid var(--line);color:var(--muted)}
+hr{border:0;border-top:1px solid var(--line);margin:2rem 0}
+.lede{color:var(--muted)}
+</style>
+</head>
+<body>
+<article class="map">
+<h1>Project facts - learned microskills from observed outcomes</h1>
+<p class="status">Status: implemented (0.2 line) - Read when: <code>project.ts</code>, <code>facts.ts</code>, <code>facts-learn.ts</code>, <code>project-session.ts</code>, a project key or worktree key, <code>ProjectStore</code>, the fact lifecycle, <code>renderFacts</code>, <code>/context facts</code>, redaction, or &quot;a fact was learned that should not be&quot;.</p>
+<section id="what-it-does">
+<h2>What it does</h2>
+<ul>
+<li>Stores short, evidence-backed environment facts per repository, shared by every worktree of one git root.</li>
+<li>Learns only from a tool call paired with its observed result: command, exit code and a canonical error signature. Assistant prose and raw output are never inputs.</li>
+<li>Promotes a candidate after <code>K_PROMOTE = 3</code> confirmations from separate sessions, then injects it only after it clears the firing gate.</li>
+<li>Renders a deterministic block capped at 4 facts and 150 estimated tokens, with the fact id beside each claim so it can be forgotten by hand.</li>
+<li>Keeps facts inspectable and forgettable. A forgotten or retired id is never learned again; unforget restores a forgotten record.</li>
+</ul>
+<p>The pure modules are wired through <code>src/core/project-session.ts</code> and the <code>session.context</code> seam. The first pass renders the block once and stores a per-session snapshot; later passes reuse it byte-for-byte. The OpenCode adapter resolves the git root, keeps one <code>ProjectStore</code> per setup, and <code>/context facts</code> lists, forgets and unforgets facts.</p>
+</section>
+<section id="map">
+<h2>Map</h2>
+<table>
+<thead><tr><th>File</th><th>Surface</th></tr></thead>
+<tbody>
+<tr><td><code>src/core/project.ts</code></td><td><code>ProjectKey</code>, <code>normalizeProjectRoot</code>, <code>projectHash</code>, <code>projectKeyFor</code>, <code>ProjectRecord</code>, <code>ProjectEnvelope</code>, <code>ProjectToolUsage</code>, <code>emptyProjectRecord</code>, <code>normalizeProjectRecord</code>, <code>ProjectStore</code>, <code>ProjectStoreConflictError</code>, <code>ProjectStoragePort</code></td></tr>
+<tr><td><code>src/core/facts.ts</code></td><td><code>K_PROMOTE</code>, <code>GAMMA</code>, <code>LAMBDA</code>, <code>FIRE_GATE</code>, <code>FIRE_MIN_N</code>, <code>MAX_FACTS</code>, <code>MAX_TOKENS</code>, <code>FactLifecycle</code>, <code>ProjectFact</code>, <code>RetiredFact</code>, <code>factId</code>, <code>claimFor</code>, <code>factLint</code>, <code>recordEvidence</code>, <code>lifecycleScore</code>, <code>isInjectable</code>, <code>applyEvidence</code>, <code>renderFacts</code>, <code>forgetFact</code>, <code>unforgetFact</code>, <code>retireFact</code>, <code>pruneFacts</code>, <code>describeFacts</code></td></tr>
+<tr><td><code>src/core/facts-learn.ts</code></td><td><code>SHELL_TOOLS</code>, <code>ToolObservation</code>, <code>extractObservations</code>, <code>foldObservations</code>, <code>redactText</code>, <code>signatureOf</code>, <code>signatureLabel</code>, <code>missingToolOf</code>, <code>commandForm</code>, <code>toolOf</code>, <code>hostOf</code>, <code>envVarOf</code>, <code>isProbeCommand</code></td></tr>
+<tr><td><code>src/core/project-session.ts</code></td><td><code>ProjectSessionDeps</code>, <code>ensureProjectFacts</code>, <code>foldProjectFacts</code>; the per-session snapshot and the completed-turn fold.</td></tr>
+<tr><td><code>src/adapters/opencode/project.ts</code></td><td><code>createProjectResolver</code>, <code>ProjectResolver</code>; one <code>ProjectStore</code> per setup, cached session keys and git roots.</td></tr>
+<tr><td><code>src/core/context.ts</code>, <code>types.ts</code>, <code>state.ts</code>, <code>config.ts</code></td><td><code>ProjectFactsSnapshot</code>, <code>SessionRecord.projectFacts</code>/<code>factsFolded</code>, the <code>projectFacts</code> keys, the stable system part and the fold at the pass.</td></tr>
+<tr><td><code>src/core/command.ts</code></td><td><code>/context facts</code>, <code>facts forget &lt;id&gt;</code>, <code>facts unforget &lt;id&gt;</code>.</td></tr>
+<tr><td><code>scripts/project-facts.test.mjs</code></td><td>The pinning test; run <code>node scripts/project-facts.test.mjs</code>.</td></tr>
+</tbody>
+</table>
+</section>
+<section id="how-why">
+<h2>How &amp; why</h2>
+<h3>Key</h3>
+<p><code>projectKeyFor({ directory, gitRoot })</code> picks the git root when present, otherwise the canonical directory. Both are normalized: backslashes become <code>/</code>, duplicate and dot segments collapse, a trailing slash goes, and an absolute Windows path is lower-cased. The key is hashed with SHA-256 and stored under <code>project/&lt;hash&gt;</code>. Worktrees therefore share facts; a different drive or POSIX path does not.</p>
+<h3>Lifecycle</h3>
+<p><code>applyEvidence</code> creates a CANDIDATE on first sight. A confirmation from the same session is counted once, so two turns in one session cannot promote a fact. At <code>K_PROMOTE</code> distinct-session confirmations it moves to <code>facts</code> and becomes ACTIVE. The recency score is <code>sum(0.8^age)</code> over confirmations minus <code>5.0</code> times the same sum over contradictions; an ACTIVE fact below <code>SCORE_FLOOR</code> retires. A high-stakes family (<code>absent_tool</code>, <code>boundary</code>) retires on one clean contradiction under <code>HARD_KILL</code>.</p>
+<h3>Firing gate and render</h3>
+<p>An ACTIVE fact is injected only when <code>fireDen &gt;= 4</code> and <code>fireNum / fireDen &gt;= 0.40</code>. A session is counted once for exercise and once for firing. <code>renderFacts</code> sorts by id (never by score or insertion order), includes whole bullets only, drops the header when no fact fits, and clamps caller overrides to 4 facts and 150 estimated tokens. Two passes over the same record are byte-identical, which is what keeps the provider prefix stable.</p>
+<h3>Learning</h3>
+<p><code>extractObservations</code> pairs <code>tool-call</code> with <code>tool-result</code> by id and ignores a call with no result. Shell tools yield a redacted command, an exit code and a signature such as <code>command not found</code>, <code>module missing</code>, <code>connection refused</code>, <code>dns failure</code>, <code>usage error</code> or <code>env:NAME</code>. <code>foldObservations</code> dedupes by session+turn fingerprint and derives only these families: absent tool, form repair (failed form then a later working form with the same command form), boundary, env value (failure plus a later working form) and empty git discovery probe. <code>arg_repair</code> has the lifecycle and render support but no automatic extractor yet.</p>
+<h3>Privacy and forgetting</h3>
+<p><code>redactText</code> removes home paths, URL userinfo, query-string secrets, key/value secrets, bearer tokens and common token shapes. An observation stores no output field at all; only a signature, a host name and an environment variable name can survive. <code>forgetFact</code> moves the record to <code>retired</code> with reason <code>forgotten</code>; <code>applyEvidence</code> refuses that id forever; <code>unforgetFact</code> restores it. Candidates and retired facts expire after 90 days and are bounded by <code>MAX_CANDIDATES</code> and <code>MAX_RETIRED</code>.</p>
+<h3>Store</h3>
+<p><code>ProjectStore</code> mirrors <code>SessionStore</code>: per-project cache, per-project <code>mutate</code> lock, and an optimistic <code>updatedAt</code> guard. A stale <code>save</code> returns false and adopts the stored copy; <code>mutate</code> reruns its callback once on that copy and then throws <code>ProjectStoreConflictError</code>. A storage failure is logged and the in-memory copy remains.</p>
+</section>
+<section id="config">
+<h2>Config keys / UI</h2>
+<table>
+<thead><tr><th>Key</th><th>Default</th><th>Meaning / status</th></tr></thead>
+<tbody>
+<tr><td><code>projectFacts</code></td><td><code>false</code></td><td>Install-level flag. Off by default for the first release; <code>/context facts</code> shows what would be injected.</td></tr>
+<tr><td><code>projectFactsMaxFacts</code></td><td><code>4</code></td><td>Clamped to 0..4 by <code>renderFacts</code>.</td></tr>
+<tr><td><code>projectFactsMaxTokens</code></td><td><code>150</code></td><td>Clamped to 0..150 estimated tokens, header included.</td></tr>
+<tr><td><code>projectFactsPropose</code></td><td><code>false</code></td><td>Reserved for a paid proposer; no request-path call is made.</td></tr>
+</tbody>
+</table>
+<p>Implemented command surface: <code>/context facts</code> lists rows from <code>describeFacts</code> and the block <code>renderFacts</code> would inject; <code>/context facts forget &lt;id&gt;</code> calls <code>forgetFact</code>; <code>/context facts unforget &lt;id&gt;</code> calls <code>unforgetFact</code>. A status row can later show <code>facts N (M injected)</code> and <code>renderFacts(...).tokens</code>.</p>
+<p>The session snapshot is <code>projectFacts?: { version, key, ids, rendered, tokens, at }</code> on <code>SessionRecord</code>. The plan's shorthand <code>record.facts</code> is ambiguous because <code>record.memory.facts</code> already exists; the distinct field name is used. The first pass of a session loads the project record and stores this snapshot; every later pass reuses <code>rendered</code> byte-for-byte, so a fact learned mid-session reaches the next session, not the current one. <code>factsFolded</code> records the newest completed turn whose observations were folded; the live turn is never folded.</p>
+</section>
+<section id="tests">
+<h2>Tests that pin it</h2>
+<p>All in <code>scripts/project-facts.test.mjs</code>; run <code>node scripts/project-facts.test.mjs</code>. No network and no model calls.</p>
+<ul>
+<li><code>project key normalizes drive case and separators</code></li>
+<li><code>a worktree shares the git root key</code></li>
+<li><code>the project record carries the documented JSON shape</code></li>
+<li><code>the store merges independent mutations</code> / <code>a stale save is refused and the stored record wins</code> / <code>mutate retries once on a concurrent write</code></li>
+<li><code>K=3 confirmations across separate sessions promote a candidate</code></li>
+<li><code>the fire gate holds an ACTIVE fact back until four exercises</code></li>
+<li><code>recency decay lowers the score and a later contradiction retires a non-high fact</code></li>
+<li><code>a high-stakes contradiction retires at once</code></li>
+<li><code>forget hides a fact, blocks re-learning and unforget restores it</code></li>
+<li><code>the render cap is four facts and 150 estimated tokens, hard</code> / <code>render is stable across passes and insertion order</code></li>
+<li><code>redaction removes secrets, credentials and home paths</code> / <code>extraction parses a signature but never stores raw output</code></li>
+<li><code>a shell failure becomes a candidate and three sessions promote it</code> / <code>a working tool contradicts an absent-tool fact and retires it</code></li>
+<li><code>a later working form repairs the failed form</code> / <code>facts folding leaves tool usage to the usage fold</code></li>
+<li>Smoke: first-pass injection and second-pass byte stability; no block without the project layer or with <code>projectFacts:false</code>; fold-once across repeated passes; <code>/context facts</code> and forget clearing the snapshot</li>
+</ul>
+</section>
+<section id="related">
+<h2>Related</h2>
+<ul>
+<li><a href="context-handoff.html">Context handoff</a> - where the rendered block is finally inserted as a system part.</li>
+<li><a href="memory-tool.html">Memory tool</a> - the per-session document; project facts are deliberately outside it.</li>
+<li><a href="archive.html">Archive</a> - per-session recall; project facts are cross-session and read-only.</li>
+<li><a href="subagents.html">Subagents</a> - the block is identical for parent and child; memory stays independent.</li>
+</ul>
+</section>
+</article>
+</body>
+</html>

@@ -12,6 +12,7 @@
 
 import { runContextCommand } from "../../core/command.ts"
 import type { ResolvedConfig } from "../../core/config.ts"
+import type { ProjectKey, ProjectStore } from "../../core/project.ts"
 import type { SessionStore } from "../../core/state.ts"
 import type { CommandDefinition, CommandInvocation } from "./types.ts"
 
@@ -21,6 +22,8 @@ export function createContextCommand(options: {
   readonly reply: (sessionID: string, text: string) => Promise<void>
   readonly resume?: (sessionID: string, text: string) => Promise<void>
   readonly version?: string
+  /** The project store and key behind `/context facts`, when one is available. */
+  readonly projectFor?: (sessionID: string) => Promise<{ store: ProjectStore; key: ProjectKey } | undefined>
 }): CommandDefinition {
   return {
     name: "context",

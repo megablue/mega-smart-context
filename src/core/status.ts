@@ -21,6 +21,7 @@ import { formatTokens } from "./measure.ts"
 import { PRODUCT_NAME, budgetOf, noticePreview } from "./prompts.ts"
 import { choiceLabel, chooseProfile, modelLabel, type ProfileSource } from "./profiles.ts"
 import type { SessionRecord } from "./types.ts"
+import type { ToolUsageSummary } from "./tool-usage.ts"
 
 /**
  * The name a person reads, spelled once in `prompts.ts` because the `/context`
@@ -163,6 +164,8 @@ export interface StatsReply {
    * this build always fills it.
    */
   readonly profile?: StatusProfile
+  /** Read-only tool usage summary; omitted by older builds and empty projects. */
+  readonly toolUsage?: ToolUsageSummary
 }
 
 export interface PurgeRequest {
@@ -310,6 +313,14 @@ export function isStatsReply(value: unknown): value is StatsReply {
   if (value.lastUndo !== undefined && !isUndo(value.lastUndo)) return false
   if (!isCount(value.undoTurns)) return false
   if (value.profile !== undefined && !isProfile(value.profile)) return false
+  if (value.toolUsage !== undefined) {
+    const tools = value.toolUsage
+    if (!isRecord(tools)) return false
+    if (!isCount(tools.used) || !isCount(tools.offered) || !isCount(tools.prompts) || !isCount(tools.sessions)) {
+      return false
+    }
+    if (tools.unused !== undefined && !isCount(tools.unused)) return false
+  }
   return true
 }
 
@@ -741,6 +752,10 @@ export function sidebarLines(reply: StatsReply): SidebarLine[] {
       ],
     },
   ]
+  if (reply.toolUsage !== undefined && reply.toolUsage.used > 0) {
+    const unused = reply.toolUsage.unused === undefined ? "" : ` · ${count(reply.toolUsage.unused)} unused`
+    lines.push({ spans: [{ text: `tools ${count(reply.toolUsage.used)} used${unused}`, tone: "muted" }] })
+  }
   if (reply.profile !== undefined) {
     // Right under the header: the one setting the glance can act on, and the
     // `[profile]` target below switches it. `base` is still worth saying, because

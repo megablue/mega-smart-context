@@ -20,6 +20,9 @@ import type { ResolvedConfig } from "./config.ts"
 import { estimateTokens, memoryChars, messageChars, messagesChars } from "./measure.ts"
 import { APPEND_NOTE, POLICY, NOTICE_HEADING, renderMemory, renderNotices, renderSnapshot, renderTailState, renderUpdate } from "./prompts.ts"
 import { applyProfile, choiceLabel, chooseProfile, stampModel } from "./profiles.ts"
+import { AGGRESSIVE_LOOP_GUARD_ENVELOPE, updateLoopGuard } from "./loopguard.ts"
+import { ensureProjectFacts, foldProjectFacts, type ProjectSessionDeps } from "./project-session.ts"
+import { foldToolUsage, noteOfferedTools } from "./tool-usage.ts"
 import { mergeRaw, type RawDraft } from "./raw.ts"
 import { trimHistory, upsertNotices, type SessionStore } from "./state.ts"
 import type { Message, MemoryUpdate, PassSample, SessionRecord, SystemPart } from "./types.ts"
@@ -47,6 +50,8 @@ export interface ContextInput {
   readonly system: ReadonlyArray<SystemPart>
   readonly messages: ReadonlyArray<Message>
   readonly model?: unknown
+  /** Tool names the host offered on this pass; observed for tool usage only. */
+  readonly tools?: ReadonlyArray<string>
 }
 
 export interface ContextDeps {
@@ -54,6 +59,22 @@ export interface ContextDeps {
   readonly config: ResolvedConfig
   readonly warn?: (line: string) => void
   readonly now?: () => number
+  /**
+   * A project/history envelope for the loop guard's over-length rule.
+   *
+   * Optional so a host without project facts keeps the conservative fallback;
+   * the project-facts layer can supply its learned p90 here without changing
+   * the guard's state machine.
+   */
+  readonly loopGuardEnvelope?: number
+  /**
+   * The project store and key for learned project facts.
+   *
+   * Optional: a host without the resolver keeps every earlier byte and learns
+   * nothing. The block is snapshotted on the session record, while the fold is
+   * written to the project record under its own lock.
+   */
+  readonly project?: ProjectSessionDeps
 }
 
 export interface ContextReport {
@@ -89,6 +110,20 @@ function modelContextOf(model: unknown): number | undefined {
 function sameTurns(previous: ReadonlyArray<string>, current: ReadonlyArray<string>): boolean {
   if (previous.length !== current.length) return false
   return previous.every((id, index) => id === current[index])
+}
+
+/**
+ * Put the loop guard's redirect inside the existing trailing state note.
+ *
+ * The note is the one message allowed to churn, and it is already last. Appending
+ * the line before its closing tag keeps every earlier payload byte unchanged, so
+ * a redirect cannot invalidate the provider's prefix cache. A tail that does not
+ * end in a tag (a future renderer) still gets the line appended rather than lost.
+ */
+function withGuardLine(tail: string, line: string | undefined): string {
+  if (line === undefined) return tail
+  const marker = "</smart-context-state>"
+  return tail.endsWith(marker) ? tail.slice(0, tail.length - marker.length) + line + "\n" + marker : tail + "\n" + line
 }
 
 /** The fixed grace period for a legacy or undo-restored pending turn. */
@@ -245,6 +280,7 @@ export async function buildPayload(input: ContextInput, deps: ContextDeps): Prom
       typeof part.text === "string" &&
       part.text !== POLICY &&
       part.text !== APPEND_NOTE &&
+      part.text !== record.projectFacts?.rendered &&
       !part.text.startsWith(NOTICE_HEADING),
   )
   const hostSystemTokens =
@@ -310,6 +346,10 @@ async function buildAppendPlan(options: AppendPlanInput): Promise<ContextPlan> {
   const { input, deps, record, config, hostSystem, hostSystemTokens, raw, spans, notices, now } = options
 
   migrateAppend(record)
+
+  // Tool usage is a report, not a schema change: remember what the host offered
+  // on this pass so "never used" has a denominator. Sorted and bounded.
+  if (input.tools !== undefined) noteOfferedTools(record, input.tools)
 
   // Originals for this pass's shortened tool results. The view computes the
   // stable id and calls the sink; the record gets the merged store before save.
@@ -520,6 +560,40 @@ async function buildAppendPlan(options: AppendPlanInput): Promise<ContextPlan> {
     })
   }
 
+  // The loop guard folds only the newest prompt-turn. Its redirect rides the
+  // trailing state note, after the current turn, so the turn stays a stable
+  // prefix. The envelope can be supplied by the project/history layer; without
+  // one the guard learns from this session's green turns or its fallback.
+  let guardRedirect: string | undefined
+  if (config.loopGuard) {
+    const minCalls =
+      config.loopGuardMode === "aggressive"
+        ? Math.min(config.loopGuardMinCalls, AGGRESSIVE_LOOP_GUARD_ENVELOPE)
+        : config.loopGuardMinCalls
+    const guard = updateLoopGuard(record.guard, raw, {
+      mode: config.loopGuardMode,
+      nudges: config.loopGuardNudges,
+      minCalls,
+      envelopeEnabled: config.loopGuardEnvelope,
+      envelope: deps.loopGuardEnvelope,
+    })
+    record.guard = guard.state
+    guardRedirect = guard.redirect
+    if (config.debug && guardRedirect !== undefined) {
+      deps.warn?.(
+        `context ${input.sessionID}: loop guard redirect (${record.guard.redirectReason ?? "unknown"}): ${guardRedirect}`,
+      )
+    }
+  }
+
+  // Learn from the newest completed turn. This runs beside the loop guard and
+  // touches only the project record and `factsFolded`; it never changes the
+  // payload bytes, and the live turn is excluded by construction.
+  await foldProjectFacts(record, raw, deps.project, input.sessionID, config)
+  if (deps.project !== undefined) {
+    await foldToolUsage(record, raw, { ...deps.project, sessionID: input.sessionID })
+  }
+
   // The tail note is part of the working share. Render it once with the
   // turns-only number, then once with the number that includes the note; the
   // second render is the one inserted, so the printed split is honest.
@@ -534,29 +608,35 @@ async function buildAppendPlan(options: AppendPlanInput): Promise<ContextPlan> {
   const snapshotTokens = estimateTokens(snapshotText.length, config.charsPerToken)
   const updateTokens = estimateTokens(sentUpdateChars, config.charsPerToken)
   let workingTokens = estimateTokens(turnChars, config.charsPerToken)
-  let tail = renderTailState(record, {
-    poolTokens: snapshotTokens + updateTokens + workingTokens,
-    poolCap,
-    snapshotTokens,
-    updateTokens,
-    workingTokens,
-    compactDue: record.compact?.mode === "due",
-    keepTokens: config.compactKeepTokens,
-    leaving,
-    modelContext,
-  })
+  let tail = withGuardLine(
+    renderTailState(record, {
+      poolTokens: snapshotTokens + updateTokens + workingTokens,
+      poolCap,
+      snapshotTokens,
+      updateTokens,
+      workingTokens,
+      compactDue: record.compact?.mode === "due",
+      keepTokens: config.compactKeepTokens,
+      leaving,
+      modelContext,
+    }),
+    guardRedirect,
+  )
   workingTokens = estimateTokens(turnChars + tail.length, config.charsPerToken)
-  tail = renderTailState(record, {
-    poolTokens: snapshotTokens + updateTokens + workingTokens,
-    poolCap,
-    snapshotTokens,
-    updateTokens,
-    workingTokens,
-    compactDue: record.compact?.mode === "due",
-    keepTokens: config.compactKeepTokens,
-    leaving,
-    modelContext,
-  })
+  tail = withGuardLine(
+    renderTailState(record, {
+      poolTokens: snapshotTokens + updateTokens + workingTokens,
+      poolCap,
+      snapshotTokens,
+      updateTokens,
+      workingTokens,
+      compactDue: record.compact?.mode === "due",
+      keepTokens: config.compactKeepTokens,
+      leaving,
+      modelContext,
+    }),
+    guardRedirect,
+  )
   workingTokens = estimateTokens(turnChars + tail.length, config.charsPerToken)
 
   working.push({
@@ -617,9 +697,16 @@ async function buildAppendPlan(options: AppendPlanInput): Promise<ContextPlan> {
   }
   const messages: Message[] = [memoryMessage, ...working]
 
+  // The project-facts block is snapshotted per session, so this is a stable
+  // part on every pass after the first. It sits after the contract and before
+  // the notices: a learned fact is context, not an instruction, and a notice
+  // that changes must not move it.
+  const projectFactsText = await ensureProjectFacts(record, deps.project, config)
+
   const system: SystemPart[] = [...hostSystem]
   system.push({ type: "text", text: POLICY })
   system.push({ type: "text", text: APPEND_NOTE })
+  if (projectFactsText.length > 0) system.push({ type: "text", text: projectFactsText })
   if (noticesText !== undefined) system.push({ type: "text", text: noticesText })
 
   if (rawDrafts.size > 0 || record.raw !== undefined) {

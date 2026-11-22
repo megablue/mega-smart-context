@@ -12,6 +12,9 @@
 
 import { archivePending, recall } from "./archive.ts"
 import type { ResolvedConfig } from "./config.ts"
+import { describeFacts, forgetFact, renderFacts, unforgetFact } from "./facts.ts"
+import { toolUsageReport } from "./tool-usage.ts"
+import type { ProjectKey, ProjectRecord, ProjectStore } from "./project.ts"
 import { renderStats } from "./prompts.ts"
 import {
   choiceLabel,
@@ -41,11 +44,34 @@ export interface CommandDeps {
   readonly resume?: (sessionID: string, text: string) => Promise<void>
   /** The loaded build's own version, shown by `status`. The adapter reads it. */
   readonly version?: string
+  /** The project store and key, when the host can resolve one for this session. */
+  readonly projectFor?: (sessionID: string) => Promise<{ store: ProjectStore; key: ProjectKey } | undefined>
   readonly now?: () => number
 }
 
 const USAGE =
-  "usage: /context [status|now|resume|profile [auto|base|<name>]|memory <key>|recall <query>|purge <turn>]"
+  "usage: /context [status|now|resume|profile [auto|base|<name>]|memory <key>|recall <query>|purge <turn>|facts [forget|unforget <id>]|tools [all]]"
+
+/**
+ * The project-facts report: the lifecycle counts, then the exact block the next
+ * pass would inject. An empty render says so rather than printing a bare header.
+ */
+function factsReport(project: ProjectRecord, config: ResolvedConfig): string {
+  const rows = describeFacts(project)
+  const active = rows.filter((row) => row.state === "ACTIVE").length
+  const candidates = rows.filter((row) => row.state === "CANDIDATE").length
+  const retired = Object.keys(project.retired).length
+  const rendered = renderFacts(project, {
+    maxFacts: config.projectFactsMaxFacts,
+    maxTokens: config.projectFactsMaxTokens,
+  }).text
+  const lines = [
+    `project facts: ${active} active · ${candidates} candidate · ${retired} retired`,
+    config.projectFacts ? "projectFacts: on" : "projectFacts: off (nothing is injected)",
+  ]
+  lines.push("", rendered.length > 0 ? rendered : "no injectable facts")
+  return lines.join("\n")
+}
 
 /** The profile inventory: what is in force, what could be, and how auto resolves. */
 function profileReport(record: SessionRecord, config: ResolvedConfig): string {
@@ -184,6 +210,62 @@ export async function runContextCommand(sessionID: string, args: string, deps: C
             .map((hit) => `- ${hit.entry.id} · ${hit.entry.gist}${hit.entry.messages === undefined ? " (gist only)" : ""}`)
             .join("\n"),
     )
+    return
+  }
+
+  if (text === "tools" || text === "tools all") {
+    const project = await deps.projectFor?.(sessionID)
+    if (project === undefined) {
+      await deps.reply(sessionID, "tool usage: the project store is not available for this session")
+      return
+    }
+    const current = await project.store.load(project.key, { fresh: true })
+    await deps.reply(
+      sessionID,
+      toolUsageReport(current, record.offeredTools ?? [], deps.now?.() ?? Date.now(), text === "tools all"),
+    )
+    return
+  }
+
+  if (text === "facts" || text.startsWith("facts ")) {
+    const project = await deps.projectFor?.(sessionID)
+    if (project === undefined) {
+      await deps.reply(sessionID, "project facts are not available for this session")
+      return
+    }
+    const arg = text.slice("facts".length).trim()
+    if (arg.length === 0) {
+      const current = await project.store.load(project.key, { fresh: true })
+      await deps.reply(sessionID, factsReport(current, deps.config))
+      return
+    }
+    const [action, id] = arg.split(/\s+/u, 2)
+    if ((action !== "forget" && action !== "unforget") || id === undefined || id.length === 0) {
+      await deps.reply(sessionID, "usage: /context facts [forget|unforget <id>]")
+      return
+    }
+    try {
+      const changed = await project.store.mutate(project.key, (facts) =>
+        action === "forget" ? forgetFact(facts, id) : unforgetFact(facts, id),
+      )
+      // The snapshot is the injection cache: a lifecycle change must not wait
+      // for a new session to be seen.
+      await deps.store.mutate(sessionID, (fresh) => {
+        delete fresh.projectFacts
+      })
+      const message = changed
+        ? `${action === "forget" ? "forgot" : "restored"} ${id}`
+        : action === "forget"
+          ? `no fact ${id}`
+          : `no forgotten fact ${id}`
+      await deps.reply(sessionID, message)
+    } catch (error) {
+      if (error instanceof StoreConflictError) {
+        await deps.reply(sessionID, error.message)
+        return
+      }
+      throw error
+    }
     return
   }
 

@@ -27,6 +27,9 @@ An OpenCode 2.0 plugin that hands context management to the model. Instead of re
 - At a fold, the turns that no longer fit move to a **gated archive** with their raw messages, kept for `recall` rather than replayed or dropped silently.
 - **Compaction is owned by the plugin.** When the host makes a checkpoint, the plugin answers with the memory document itself instead of a separate summarization call.
 - **Subagents are managed independently**, each with its own window and memory, so a child never inherits the parent's context.
+- A **loop guard** watches the current turn for repeated failures and appends at most one short redirect to the trailing state note. It never aborts the turn or changes a tool result.
+- **Project facts** (`projectFacts: true`) learn short environment facts from observed tool outcomes across sessions in the same repository, then inject a small stable block at the start of the next session. They are inspectable, forgettable and never derived from assistant prose.
+- **Tool usage** is a read-only project report: completed calls, prompts and sessions per tool, plus unused and never-used tools. Nothing is hidden or denied automatically, and no arguments, outputs or paths are stored.
 - `/context` prints the current memory and archive; `/context now` archives pending turns; `/context resume` continues the session without adding a user message or ageing an eviction.
 
 ## Requirements
@@ -92,6 +95,14 @@ The settings a user normally touches:
 | `parentArchive` | `true` | let a subagent search its spawning session's archive (`from:"parent"`) |
 | `expandDigestChars` | `4000` | characters per `expand` page, clamped by `maxResultChars` |
 | `maxResultChars` | `4000` | shorten a tool result larger than this; the original stays retrievable at its raw marker |
+| `loopGuard` | `true` | append one short redirect to the trailing state note when the current turn is stuck |
+| `loopGuardMode` | `"default"` | `default` (about 20 calls) or `aggressive` (about 14) |
+| `loopGuardNudges` | `1` | redirects per prompt-turn; clamped to one |
+| `loopGuardMinCalls` | `20` | minimum calls before the guard judges |
+| `projectFacts` | `false` | learn short project-level environment facts from observed tool outcomes; off until validated |
+| `projectFactsMaxFacts` | `4` | facts in the injected project block, clamped to 0..4 |
+| `projectFactsMaxTokens` | `150` | token cap for the project block, clamped to 0..150 |
+| `projectFactsPropose` | `false` | reserved for a paid fact proposer; no request-path calls |
 | `subagents` | `true` | manage child sessions independently |
 | `refs` | `true` | allow feature-map references |
 | `updateCheck` | `true` | ask GitHub once a day for a newer version (one TUI toast per release) |
@@ -143,6 +154,10 @@ Every request starts with a `<smart-context>` block. If `goal` is empty, the mod
 | `/context profile` | print the profile in force (name, how it was chosen, the model), every named profile with its overrides, the model mappings and the default |
 | `/context profile auto\|base\|<name>` | pin this session to a named profile, pin it to the base config, or clear the pin so the model mapping and the default decide again |
 | `/context memory <key>` | print one memory key as JSON: `goal`, `plan`, `facts`, `files`, `decisions`, `open`, `refs` or `notes` |
+| `/context facts` | list active, candidate and retired project facts, with their ids and evidence |
+| `/context facts forget <id>` | retire one fact and stop injecting it |
+| `/context facts unforget <id>` | restore a forgotten fact |
+| `/context tools [all]` | read-only project tool-usage report: used, unused and never-used tools; `all` shows up to 64 used tools |
 | `/context recall <query>` | search the archive for a term; lists matching turn ids and gists, marking an entry `(gist only)` when its raw messages are gone |
 | `/context purge <turn>` | delete one pending or archived turn by id |
 
