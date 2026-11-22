@@ -334,6 +334,17 @@ img{max-width:100%;height:auto}
 <p>The version is <code>MAJOR.MINOR.PATCH</code>: MAJOR.MINOR is the released line, and PATCH is the number of commits since the base recorded in <code>package.json</code>, so it advances with every commit and the README version badge follows the same field. What <code>/context</code> prints is the loaded build&#39;s own version, which lags the repository until the install is re-synced.</p>
 </section>
 <section id="settings">
+<section id="token-economizer">
+<h2>Loop guard, project facts and tool usage</h2>
+<p>These three 0.2 behaviours sit beside the memory and working-window payload. Their settings are install-level, not profile keys.</p>
+<h3>Loop guard</h3>
+<p><code>loopGuard</code> defaults to <code>true</code>; <code>loopGuardMode</code> is <code>default</code> (about 20 calls) or <code>aggressive</code> (about 14), <code>loopGuardNudges</code> is clamped to one, <code>loopGuardMinCalls</code> defaults to 20, and <code>loopGuardEnvelope</code> is on. It judges only the newest real user turn and appends at most one short redirect inside the trailing state note. It never aborts a turn or mutates a tool result. The envelope uses green session samples, then the conservative fallback; a project-level envelope is not yet wired.</p>
+<h3>Project facts</h3>
+<p><code>projectFacts</code> defaults to <code>false</code>. When on, the plugin learns only from observed tool outcomes (never assistant prose), promotes a claim after three separate-session confirmations, and injects a stable block capped at <code>projectFactsMaxFacts</code> (4) and <code>projectFactsMaxTokens</code> (150). The first pass renders and snapshots the block; later passes reuse it byte-for-byte. <code>/context facts</code> lists facts, and <code>facts forget &lt;id&gt;</code> / <code>unforget &lt;id&gt;</code> control them. The last turn of a session folds on the next prompt; there is no idle fold.</p>
+<h3>Tool usage</h3>
+<p>The report is read-only and adds no config key. It counts completed tool calls per project from finished prompt-turns, stores only tool names, counters and timestamps, and is exposed by <code>/context tools [all]</code> and one status line. It never hides, denies or removes a tool, so the tool schema stays stable.</p>
+</section>
+
 <h2>Settings</h2>
 <p>Every setting is read from four layers, most specific last: built-in defaults, the package <code>options.json</code>, the plugin <code>options</code>, and <code>~/.config/opencode/mega-smart-context.json</code>. The user file is created with every default on first run and never overwritten. A source replaces only the keys it sets. An unknown key or a wrong type is an error: the plugin refuses to load rather than silently keeping a default the user believes they replaced.</p>
 <table>
