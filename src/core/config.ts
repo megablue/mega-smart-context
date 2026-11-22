@@ -39,6 +39,18 @@ export interface ResolvedConfig {
    * trusting it.
    */
   rebuildOnCompaction: boolean
+  /**
+   * Let the model extend this era's working budget when the pool is near its cap.
+   *
+   * The grant is clamped by the model window, so a session can never buy itself
+   * past the provider's compaction ceiling. Off means the note only offers the
+   * checkpoint; the model cannot extend.
+   */
+  windowExtend: boolean
+  /** How much larger the pool becomes on a grant; 1.1..4, rounded to 2dp. */
+  windowExtendFactor: number
+  /** Percent of the effective pool at which the note offers extend-or-checkpoint; 50..95. */
+  windowWarnPercent: number
   /** The divisor used to turn characters into estimated tokens. */
   charsPerToken: number
   /** Manage child (subagent) sessions independently. */
@@ -112,6 +124,9 @@ export const SESSION_KEYS = [
   "expandDigestChars",
   "refs",
   "maxResultChars",
+  "windowExtend",
+  "windowExtendFactor",
+  "windowWarnPercent",
 ] as const
 
 export type SessionKey = (typeof SESSION_KEYS)[number]
@@ -125,6 +140,9 @@ export const DEFAULT_CONFIG: ResolvedConfig = {
   workingTokens: 200_000,
   compactKeepTokens: 20_000,
   rebuildOnCompaction: false,
+  windowExtend: true,
+  windowExtendFactor: 2,
+  windowWarnPercent: 80,
   charsPerToken: 4,
   subagents: true,
   archiveMaxTurns: 200,
@@ -179,6 +197,7 @@ const BOOLEAN_KEYS = new Set([
   "enabled",
   "subagents",
   "rebuildOnCompaction",
+  "windowExtend",
   "parentArchive",
   "refs",
   "loopGuard",
@@ -195,6 +214,8 @@ const NUMBER_KEYS = new Set([
   "memoryTokens",
   "workingTokens",
   "compactKeepTokens",
+  "windowExtendFactor",
+  "windowWarnPercent",
   "charsPerToken",
   "archiveMaxTurns",
   "archiveMaxChars",
@@ -233,6 +254,10 @@ function coerceValue(key: string, raw: unknown, where: string): unknown {
       return Math.max(500, Math.round(raw))
     case "compactKeepTokens":
       return Math.max(500, Math.round(raw))
+    case "windowExtendFactor":
+      return clampInteger(raw * 100, 110, 400) / 100
+    case "windowWarnPercent":
+      return clampInteger(raw, 50, 95)
     case "charsPerToken":
       return clampInteger(raw * 100, 200, 800) / 100
     case "archiveMaxTurns":

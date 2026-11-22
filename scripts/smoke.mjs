@@ -33,6 +33,7 @@ import {
   loopGuardGreen,
 } from "../src/core/loopguard.ts"
 import { buildPayload } from "../src/core/context.ts"
+import { runCompaction } from "../src/core/compaction.ts"
 import { applyEvidence, factId } from "../src/core/facts.ts"
 import { ProjectStore, projectKeyFor } from "../src/core/project.ts"
 import { runMemoryTool } from "../src/core/memory-tool.ts"
@@ -1361,7 +1362,95 @@ ok(
   "the folded request drops the due note",
 )
 
-// The note hides the pool cap unless the model's real context window is small.
+// ---------------------------------------------------------------------------
+// A near-cap pool offers one extension; the grant clears the due mark
+// ---------------------------------------------------------------------------
+const extendConfig = resolveConfig({
+  options: {
+    contextLayout: "append",
+    memoryTokens: 1000,
+    workingTokens: 3000,
+    charsPerToken: 4,
+    windowExtend: true,
+    windowExtendFactor: 2,
+    windowWarnPercent: 80,
+    defaultProfile: "",
+  },
+})
+const extendStore = new SessionStore()
+const extendDeps = { store: extendStore, config: extendConfig }
+const extendModel = { limit: { context: 1_000_000 } }
+const extendPass = (messages) =>
+  buildPayload(
+    { sessionID: "append-extend", system: [{ type: "text", text: "base" }], messages, model: extendModel },
+    extendDeps,
+  )
+const extTurn0 = [user("xu0", "start"), assistant("xa0", "ok")]
+await extendPass(extTurn0)
+const extTurn1 = [...extTurn0, user("xu1", "x".repeat(6500)), assistant("xa1", "ok")]
+const extTurn2 = [...extTurn1, user("xu2", "y".repeat(6500)), assistant("xa2", "ok")]
+const extNear = await extendPass(extTurn2)
+ok(
+  extNear.messages.some(
+    (message) =>
+      message.id === "megasc_state" &&
+      message.content[0].text.includes("window:") &&
+      message.content[0].text.includes('action:"extend"'),
+  ),
+  "the near-cap note offers the extension",
+)
+const extGranted = await runMemoryTool(
+  { sessionID: "append-extend", action: "extend", reason: "finish the current edit" },
+  extendDeps,
+)
+let extendRecord = await extendStore.load("append-extend")
+ok(extGranted.ok && extendRecord.ext?.toCap === 8000 && extendRecord.ext?.factor === 2, "extend doubles the pool")
+ok(extendRecord.compact === undefined, "an extension clears a due mark")
+const extAfter = await extendPass(extTurn2)
+ok(
+  extAfter.messages.some(
+    (message) =>
+      message.id === "megasc_state" &&
+      message.content[0].text.includes("extension: +100%") &&
+      message.content[0].text.includes("/8k"),
+  ),
+  "the note shows the extended cap and the grant",
+)
+const extAgain = await runMemoryTool(
+  { sessionID: "append-extend", action: "extend", reason: "one more" },
+  extendDeps,
+)
+ok(!extAgain.ok && extAgain.text.includes("already has an extension"), "a second extension is refused")
+const extCompact = await runMemoryTool({ sessionID: "append-extend", action: "compact" }, extendDeps)
+ok(extCompact.ok, "compact is accepted after an extension")
+await extendPass([...extTurn2, user("xu3", "next"), assistant("xa3", "ok")])
+extendRecord = await extendStore.load("append-extend")
+ok(extendRecord.ext === undefined, "the fold clears the extension for the next era")
+
+const unknownWindowStore = new SessionStore()
+const unknownWindowDeps = {
+  store: unknownWindowStore,
+  config: resolveConfig({
+    options: { contextLayout: "append", memoryTokens: 1000, workingTokens: 3000, defaultProfile: "" },
+  }),
+}
+await buildPayload(
+  {
+    sessionID: "append-extend-unknown",
+    system: [],
+    messages: [user("yu1", "hi"), assistant("ya1", "ok")],
+    model: {},
+  },
+  unknownWindowDeps,
+)
+const noWindow = await runMemoryTool(
+  { sessionID: "append-extend-unknown", action: "extend", reason: "room" },
+  unknownWindowDeps,
+)
+ok(!noWindow.ok && noWindow.text.includes("model window is unknown"), "an unknown window cannot extend")
+
+// The note prints the pool cap on every window: the extension decision needs a
+// denominator, and the real window is only the clamp the grant enforces.
 const limitNote = async (model) =>
   (await appendPass([user("lg1", "Hello."), assistant("la1", "Hi.")], model)).messages.find(
     (message) => message.id === "megasc_state",
@@ -1373,18 +1462,18 @@ ok(
 )
 const bigWindowNote = await limitNote({ limit: { context: 1_000_000 } })
 ok(
-  bigWindowNote !== undefined && !bigWindowNote.content[0].text.includes("/23k"),
-  "the note omits the cap when the model window is large",
+  bigWindowNote !== undefined && bigWindowNote.content[0].text.includes("/23k"),
+  "the note prints the cap when the model window is large",
 )
 const boundaryWindowNote = await limitNote({ limit: { context: 300_000 } })
 ok(
-  boundaryWindowNote !== undefined && !boundaryWindowNote.content[0].text.includes("/23k"),
-  "a 300k window is not small enough to print the cap",
+  boundaryWindowNote !== undefined && boundaryWindowNote.content[0].text.includes("/23k"),
+  "the note prints the cap at the old small-window boundary",
 )
 const unknownWindowNote = await limitNote({})
 ok(
-  unknownWindowNote !== undefined && !unknownWindowNote.content[0].text.includes("/23k"),
-  "the note omits the cap when the model window is unknown",
+  unknownWindowNote !== undefined && unknownWindowNote.content[0].text.includes("/23k"),
+  "the note prints the cap when the model window is unknown",
 )
 
 // A fold can rebuild the retained tail's bytes when the flag is on.

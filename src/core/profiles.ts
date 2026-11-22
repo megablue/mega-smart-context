@@ -166,6 +166,9 @@ const LABELS: Record<SessionKey, string> = {
   expandDigestChars: "expand",
   refs: "refs",
   maxResultChars: "results",
+  windowExtend: "extend",
+  windowExtendFactor: "extend x",
+  windowWarnPercent: "warn %",
 }
 
 const TOKEN_KEYS = new Set<SessionKey>([

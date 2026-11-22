@@ -1,8 +1,8 @@
 {
   "name": "mega-smart-context",
-  "version": "0.2.2",
+  "version": "0.3.0",
   "megaSmartContext": {
-    "countBase": 66
+    "countBase": 69
   },
   "private": true,
   "description": "OpenCode 2.0 plugin: the model owns the context window — a bounded memory document, a verbatim working window, and a gated archive instead of append-only history",

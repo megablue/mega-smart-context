@@ -12,6 +12,7 @@
  */
 
 import { estimateTokens, formatTokens, memoryChars } from "./measure.ts"
+import { effectivePoolCap } from "./window.ts"
 import { isMemoryEmpty, MEMORY_FIELDS } from "./schema.ts"
 import { choiceLabel, chooseProfile, configForRecord, modelLabel } from "./profiles.ts"
 import { snapshotMemory } from "./append.ts"
@@ -127,7 +128,8 @@ export function budgetOf(record: SessionRecord, config: ResolvedConfig): BudgetR
   const memoryTokens = snapshotTokens + updateTokens
   const workingTokens = record.lastReport?.workingTokens ?? 0
   const totalTokens = memoryTokens + workingTokens
-  const poolCap = effective.memoryTokens + effective.workingTokens
+  const poolCap = effectivePoolCap(effective.memoryTokens, effective.workingTokens, record.ext)
+  const workingCap = Math.max(0, poolCap - effective.memoryTokens)
   const modelContext = record.lastReport?.modelContext
   const overBudget =
     totalTokens > poolCap || (modelContext !== undefined && totalTokens > Math.floor(modelContext * 0.9))
@@ -136,7 +138,7 @@ export function budgetOf(record: SessionRecord, config: ResolvedConfig): BudgetR
     workingTokens,
     totalTokens,
     memoryCap: effective.memoryTokens,
-    workingCap: effective.workingTokens,
+    workingCap,
     poolTokens: totalTokens,
     poolCap,
     snapshotTokens,
@@ -342,11 +344,17 @@ export interface TailBudget {
   /** Pre-rendered previews of the turns a fold would archive. */
   readonly leaving: ReadonlyArray<string>
   /**
-   * The model's real context window when the host supplies one; gates the cap.
-   * Above the threshold (or when unknown) the note prints usage without a cap:
-   * a small cap makes a big-window model conserve instead of keep going.
+   * The model's real context window when the host supplies one. Not printed:
+   * the note reports this plugin's own pool, which is the budget an extension
+   * changes; the window is only the clamp the grant tool enforces.
    */
   readonly modelContext?: number
+  /** Percent of the pool at which the note offers extend-or-checkpoint. */
+  readonly warnPercent: number
+  /** True when the pool crossed the warning line and the fold is not due yet. */
+  readonly near: boolean
+  /** True when a grant is possible: config on, no grant yet, window known. */
+  readonly canExtend: boolean
 }
 
 /**
@@ -368,9 +376,10 @@ export function renderTailState(record: SessionRecord, budget: TailBudget): stri
   if (mode === "plan") lines.push("mode: plan — do not modify files; tell the user to switch agents")
   else if (mode === "build") lines.push("mode: build — edit and run commands")
 
-  const smallWindow = budget.modelContext !== undefined && budget.modelContext < SMALL_WINDOW_MAX
-  const cap = smallWindow ? `/${formatTokens(budget.poolCap)}` : ""
-  const over = smallWindow && budget.poolTokens > budget.poolCap ? " · over cap" : ""
+  const cap = budget.poolCap > 0 ? `/${formatTokens(budget.poolCap)}` : ""
+  const percent =
+    budget.poolCap > 0 ? ` · ${Math.round((budget.poolTokens / budget.poolCap) * 100)}%` : ""
+  const over = budget.poolTokens > budget.poolCap ? " · over cap" : ""
   lines.push(
     `pool: ${formatTokens(budget.poolTokens)}${cap}` +
       ` (snapshot ${formatTokens(budget.snapshotTokens)} · updates ${formatTokens(budget.updateTokens)} · turns ${formatTokens(budget.workingTokens)})${over}`,
@@ -390,13 +399,55 @@ export function renderTailState(record: SessionRecord, budget: TailBudget): stri
     )
   }
 
-  if (budget.compactDue) {
+  if (record.hostCompact !== undefined) {
+    const at = new Date(record.hostCompact.at)
+    const when = Number.isFinite(at.getTime()) ? at.toISOString() : "(unknown time)"
     lines.push(
-      `compaction due: the pool is full; the newest ~${formatTokens(budget.keepTokens)} of turns stay, the rest is archived at the next prompt. ` +
+      `compacted: the host checkpointed this session at ${when}; ` +
+        `${record.hostCompact.turns} turn(s) were archived first (${record.hostCompact.archived} in archive). ` +
+        "Recall by query or expand a turn; the raw messages were kept.",
+    )
+  }
+
+  if (record.ext !== undefined) {
+    const left = Math.max(0, budget.poolCap - budget.poolTokens)
+    lines.push(
+      `extension: +${Math.round((record.ext.factor - 1) * 100)}% at turn ${q(record.ext.turn)} ` +
+        `(${q(record.ext.reason)}); ${formatTokens(left)} left. Finish only the current atomic step and update the brief.`,
+    )
+    if (budget.near) {
+      lines.push(
+        `extension spent: ${budget.warnPercent}% of the extended pool is used. ` +
+          "Update the continuation brief now (goal/plan/decisions/open); the fold runs at the cap.",
+      )
+    }
+  } else if (budget.near) {
+    const left = Math.max(0, budget.poolCap - budget.poolTokens)
+    lines.push(
+      `window: ${formatTokens(left)} left (${budget.warnPercent}% of the pool used). ` +
+        "Write the continuation brief into memory first (goal/plan/decisions/open, files, next steps), then choose:",
+    )
+    if (budget.canExtend) {
+      lines.push(
+        '  finish only the current atomic step: smart_context action:"extend" reason:"…" — or fold now: action:"compact"',
+      )
+    } else {
+      lines.push('  fold now: smart_context action:"compact" (the extension is unavailable)')
+    }
+  }
+
+  if (budget.compactDue) {
+    const spent = record.ext === undefined ? "" : " The extension is spent."
+    lines.push(
+      `compaction due: the pool is full.${spent} The newest ~${formatTokens(budget.keepTokens)} of turns stay, the rest is archived at the next prompt. ` +
         'Write what still matters from the turns below into memory now — they stay searchable (recall/expand); do not purge them. ' +
         'Call smart_context action:"compact" to fold sooner.',
     )
-    for (const line of budget.leaving) lines.push(`  leaving: ${line}`)
+  }
+
+  if ((budget.near || budget.compactDue) && budget.leaving.length > 0) {
+    lines.push("leaving at the fold:")
+    for (const line of budget.leaving) lines.push(`  ${line}`)
   }
 
   lines.push("</smart-context-state>")

@@ -18,6 +18,7 @@ import { archivePending, knows, mechanicalGist, trimArchive, turnMessages } from
 import { checkpointAppend, invalidateAppend, migrateAppend } from "./append.ts"
 import type { ResolvedConfig } from "./config.ts"
 import { estimateTokens, memoryChars, messageChars, messagesChars } from "./measure.ts"
+import { effectivePoolCap, isNear } from "./window.ts"
 import { APPEND_NOTE, POLICY, NOTICE_HEADING, renderMemory, renderNotices, renderSnapshot, renderTailState, renderUpdate } from "./prompts.ts"
 import { applyProfile, choiceLabel, chooseProfile, stampModel } from "./profiles.ts"
 import { AGGRESSIVE_LOOP_GUARD_ENVELOPE, updateLoopGuard } from "./loopguard.ts"
@@ -312,6 +313,7 @@ export async function buildPayload(input: ContextInput, deps: ContextDeps): Prom
       config,
       hostSystem,
       hostSystemTokens,
+      modelContext: modelContextOf(input.model),
       raw,
       spans,
       notices: split.notices,
@@ -326,6 +328,8 @@ interface AppendPlanInput {
   readonly config: ResolvedConfig
   readonly hostSystem: SystemPart[]
   readonly hostSystemTokens: number | undefined
+  /** The model's real window when the host supplies one; the extension clamp. */
+  readonly modelContext: number | undefined
   readonly raw: Message[]
   readonly spans: TurnSpan[]
   readonly notices: ReadonlyArray<{ id: string; text: string }>
@@ -343,9 +347,14 @@ interface AppendPlanInput {
  * through the same pending/archive path as the snapshot layout.
  */
 async function buildAppendPlan(options: AppendPlanInput): Promise<ContextPlan> {
-  const { input, deps, record, config, hostSystem, hostSystemTokens, raw, spans, notices, now } = options
+  const { input, deps, record, config, hostSystem, hostSystemTokens, modelContext, raw, spans, notices, now } = options
 
   migrateAppend(record)
+
+  // The pool cap is the budget an extension changes. The stored grant is an
+  // absolute cap, so a profile switch cannot move the ceiling mid-era.
+  const poolCap = effectivePoolCap(config.memoryTokens, config.workingTokens, record.ext)
+  const workingCap = Math.max(500, poolCap - config.memoryTokens)
 
   // Tool usage is a report, not a schema change: remember what the host offered
   // on this pass so "never used" has a denominator. Sorted and bounded.
@@ -374,7 +383,7 @@ async function buildAppendPlan(options: AppendPlanInput): Promise<ContextPlan> {
   let window = record.windowStart === undefined ? undefined : selectAppendWindow(raw, record.windowStart)
   if (window === undefined) {
     const fallback = selectWorkingWindow(raw, {
-      workingTokens: config.workingTokens,
+      workingTokens: workingCap,
       charsPerToken: config.charsPerToken,
     })
     window = selectAppendWindow(raw, fallback.turns[0]?.id) ?? {
@@ -410,12 +419,16 @@ async function buildAppendPlan(options: AppendPlanInput): Promise<ContextPlan> {
 
   // The shared pool, in characters. `memoryTokens` and `workingTokens` are
   // estimates, so convert once and compare the rendered bytes.
-  const poolChars = (config.memoryTokens + config.workingTokens) * Math.max(1, config.charsPerToken)
+  const poolChars = poolCap * Math.max(1, config.charsPerToken)
   let snapshotText = renderSnapshot(record.base ?? record.memory)
   let updateTexts = (record.updates ?? []).map(renderUpdate)
   let turnChars = messagesChars(workingTurns)
   let footChars = snapshotText.length + updateTexts.reduce((sum, text) => sum + text.length, 0) + turnChars
   let over = footChars > poolChars
+  // The warning line is the extension's decision point: 80% of the effective
+  // pool by default. It is not "due"; it is the moment the model may buy room
+  // for the current atomic unit or write the brief and fold.
+  const near = !over && isNear(footChars, poolChars, config.windowWarnPercent)
 
   // A `due` mark is a commit window, not an order to fold at once. It records
   // the turn it was raised in; every pass of that same turn keeps the window
@@ -444,6 +457,7 @@ async function buildAppendPlan(options: AppendPlanInput): Promise<ContextPlan> {
       charsPerToken: config.charsPerToken,
     })
     checkpointAppend(record)
+    delete record.ext
     record.windowStart = tail.turns[0]?.id
     window = selectAppendWindow(raw, record.windowStart) ?? {
       startIdx: tail.startIdx,
@@ -478,7 +492,7 @@ async function buildAppendPlan(options: AppendPlanInput): Promise<ContextPlan> {
   // the fold; the list is recomputed every pass because the tail depends on
   // the checkpoint, which the commits are growing.
   let leaving: string[] = []
-  if (record.compact?.mode === "due") {
+  if (record.compact?.mode === "due" || near) {
     const tailIds = new Set(
       selectWorkingWindow(raw, {
         workingTokens: config.compactKeepTokens,
@@ -603,8 +617,6 @@ async function buildAppendPlan(options: AppendPlanInput): Promise<ContextPlan> {
   // makes the provider re-read the whole turn on each tool loop. Trailing keeps
   // the turn a stable prefix and the note is still the last thing the model
   // reads before it replies.
-  const poolCap = config.memoryTokens + config.workingTokens
-  const modelContext = modelContextOf(input.model)
   const snapshotTokens = estimateTokens(snapshotText.length, config.charsPerToken)
   const updateTokens = estimateTokens(sentUpdateChars, config.charsPerToken)
   let workingTokens = estimateTokens(turnChars, config.charsPerToken)
@@ -618,6 +630,9 @@ async function buildAppendPlan(options: AppendPlanInput): Promise<ContextPlan> {
       compactDue: record.compact?.mode === "due",
       keepTokens: config.compactKeepTokens,
       leaving,
+      warnPercent: config.windowWarnPercent,
+      near,
+      canExtend: config.windowExtend && record.ext === undefined && modelContext !== undefined,
       modelContext,
     }),
     guardRedirect,
@@ -633,6 +648,9 @@ async function buildAppendPlan(options: AppendPlanInput): Promise<ContextPlan> {
       compactDue: record.compact?.mode === "due",
       keepTokens: config.compactKeepTokens,
       leaving,
+      warnPercent: config.windowWarnPercent,
+      near,
+      canExtend: config.windowExtend && record.ext === undefined && modelContext !== undefined,
       modelContext,
     }),
     guardRedirect,

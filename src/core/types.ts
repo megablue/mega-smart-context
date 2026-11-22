@@ -171,6 +171,37 @@ export interface CompactMark {
   turn?: string
 }
 
+/**
+ * A working-window extension granted for this era.
+ *
+ * The model asks for it when the pool is near its cap and the current unit is
+ * not safe to cut. The grant stores absolute caps rather than a multiplier, so
+ * a later config or profile change cannot silently move the ceiling. Absent
+ * until the model asks; cleared by the fold that ends the era.
+ */
+export interface WindowExtension {
+  at: number
+  /** The turn that asked for the extension. */
+  turn: string
+  /** The model's one-line reason, shown back in the state note. */
+  reason: string
+  /** The pool cap before the grant, in estimated tokens. */
+  fromCap: number
+  /** The pool cap the grant bought, in estimated tokens, clamped by the model window. */
+  toCap: number
+  /** `toCap / fromCap`, rounded, for display. */
+  factor: number
+}
+
+/** A host compaction the plugin observed, and the turns it preserved first. */
+export interface HostCompact {
+  at: number
+  /** Turns archived by this compaction. */
+  turns: number
+  /** The archive size after it, for the note. */
+  archived: number
+}
+
 // ---------------------------------------------------------------------------
 // Durable per-session state
 // ---------------------------------------------------------------------------
@@ -576,6 +607,10 @@ export interface SessionRecord {
   offeredTools?: string[]
   /** A compaction the next pass must perform, or a `due` note waiting for that pass. */
   compact?: CompactMark
+  /** A working-window extension for this era, granted by the model. */
+  ext?: WindowExtension
+  /** The host's latest checkpoint, when the plugin preserved the turns it replaced. */
+  hostCompact?: HostCompact
   /**
    * Turn ids whose bytes are rebuilt: reasoning dropped, successful write/edit
    * results replaced with a short confirmation, long shell output tail-cut.

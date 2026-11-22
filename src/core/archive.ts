@@ -39,7 +39,8 @@ export function turnMessages(messages: ReadonlyArray<Message>, span: TurnSpan): 
   }))
 }
 
-function charsOfMessages(messages: ReadonlyArray<Message>): number {
+/** Characters in a turn's raw messages, as the archive charges them. */
+export function charsOfMessages(messages: ReadonlyArray<Message>): number {
   let total = 0
   for (const message of messages) total += messageChars(message)
   return total

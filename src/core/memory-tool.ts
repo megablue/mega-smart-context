@@ -22,6 +22,7 @@ import type { ResolvedConfig } from "./config.ts"
 import { estimateTokens, formatTokens, memoryChars } from "./measure.ts"
 import { retirePinned } from "./notices.ts"
 import { budgetOf, noticePreview, renderMemory, renderStats } from "./prompts.ts"
+import { decideExtension } from "./window.ts"
 import { configForRecord } from "./profiles.ts"
 import { rawPage } from "./raw.ts"
 import { MEMORY_KEYS, applyPatch, parsePatch } from "./schema.ts"
@@ -48,6 +49,7 @@ export interface MemoryToolInput {
   limit?: unknown
   offset?: unknown
   mode?: unknown
+  reason?: unknown
   from?: unknown
 }
 
@@ -71,7 +73,7 @@ export interface MemoryToolOutcome {
 }
 
 /** Actions that cannot take from: they write, or read this session's own raw store. */
-const LOCAL_ACTIONS = new Set(["read", "raw", "patch", "stats", "ref", "archive", "purge", "notice", "compact"])
+const LOCAL_ACTIONS = new Set(["read", "raw", "patch", "stats", "ref", "archive", "purge", "notice", "compact", "extend"])
 
 export const TOOL_HELP = `smart_context actions:
 - read { key? } - print one memory key, or the whole document
@@ -79,6 +81,7 @@ export const TOOL_HELP = `smart_context actions:
 - patch { patch } - merge a patch (maps merge, lists replace, null resets)
 - stats - memory/working/archive usage
 - compact - fold the append-only update log into a new checkpoint and reset the window
+- extend { reason } - when the state note says the pool is near its cap, double this era's working pool (clamped by the model window); write the continuation brief first, finish only the current atomic step, then fold
 - ref { page, section, gist } - store a feature-map pointer and compare costs
 - archive { turn, gist, keepRaw? } - move a pending turn to the archive; without keepRaw the raw is discarded
 - purge { turn? | query? } - delete a pending/archived turn, or matching entries
@@ -390,6 +393,66 @@ function compact(record: SessionRecord, config: ResolvedConfig, now: number): Me
 }
 
 /**
+ * Grant the self-imposed working pool one bounded extension.
+ *
+ * The model asks at the warning line, while the current unit is still open. The
+ * grant is absolute and clamped by the real window in `window.ts`, so it can
+ * never buy a request past the provider's compaction ceiling. One grant per
+ * era: the next warning is the fold, not another extension.
+ */
+function extendWindow(
+  record: SessionRecord,
+  request: MemoryToolRequest,
+  config: ResolvedConfig,
+  now: number,
+): MemoryToolOutcome {
+  migrateAppend(record)
+  if (record.compact?.mode === "requested") {
+    return { text: "smart_context: a fold is already requested; the extension would be discarded", ok: false }
+  }
+  const reason = str(request.reason)
+  if (reason === undefined) {
+    return {
+      text: 'smart_context: extend needs reason - one line naming what the extra room buys before the fold',
+      ok: false,
+    }
+  }
+  const baseCap = config.memoryTokens + config.workingTokens
+  const report = record.lastReport
+  const decision = decideExtension({
+    enabled: config.windowExtend,
+    factor: config.windowExtendFactor,
+    baseCap,
+    modelContext: report?.modelContext,
+    hostSystemTokens: report?.hostSystemTokens,
+    alreadyExtended: record.ext !== undefined,
+  })
+  if (!decision.ok) return { text: "smart_context: cannot extend - " + decision.why, ok: false }
+  record.ext = {
+    at: now,
+    turn: currentTurnOf(record),
+    reason: reason.slice(0, 300),
+    fromCap: baseCap,
+    toCap: decision.toCap,
+    factor: decision.factor,
+  }
+  if (record.compact?.mode === "due") delete record.compact
+  return {
+    text:
+      "smart_context: window extended to ~" +
+      formatTokens(decision.toCap) +
+      " est (+" +
+      Math.round((decision.factor - 1) * 100) +
+      "%, " +
+      formatTokens(Math.max(0, decision.toCap - baseCap)) +
+      " added). Write or refresh the continuation brief now (goal/plan/decisions/open, files, next steps), " +
+      "finish only the current atomic step, and fold at the cap.\n" +
+      usage(record, config),
+    ok: true,
+  }
+}
+
+/**
  * List the pinned host notices, or retire a superseded one.
  *
  * The newest notice is the live instruction and is refused: a newer notice, not
@@ -480,6 +543,10 @@ export async function runMemoryTool(
     case "compact":
       return mutateOutcome(deps, sessionID, (record) =>
         compact(record, configForRecord(deps.config, record), nowOf(deps)),
+      )
+    case "extend":
+      return mutateOutcome(deps, sessionID, (record) =>
+        extendWindow(record, request, configForRecord(deps.config, record), nowOf(deps)),
       )
     case "patch":
       return mutateOutcome(deps, sessionID, (record) =>

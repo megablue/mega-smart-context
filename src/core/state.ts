@@ -22,6 +22,7 @@ import { normalizeLoopGuard } from "./loopguard.ts"
 import type {
   ArchivedTurn,
   CompactMark,
+  HostCompact,
   MemoryUpdate,
   ModelStamp,
   Notice,
@@ -33,6 +34,7 @@ import type {
   ToolUsageCursor,
   SessionRecord,
   StoragePort,
+  WindowExtension,
 } from "./types.ts"
 import { isPlainObject, messageOf } from "./types.ts"
 import { normalizeLastUndo, normalizeRevert, normalizeUndo } from "./undo.ts"
@@ -323,6 +325,44 @@ function normalizeUpdates(value: unknown): MemoryUpdate[] | undefined {
   return out
 }
 
+/** A granted working-window extension, or `undefined` when the record has none. */
+function normalizeWindowExtension(value: unknown): WindowExtension | undefined {
+  if (!isPlainObject(value)) return undefined
+  const fromCap = finitePositive(value.fromCap)
+  const toCap = finitePositive(value.toCap)
+  if (fromCap === undefined || toCap === undefined || toCap <= fromCap) return undefined
+  const factor = toCap / fromCap
+  return {
+    at: finiteTime(value.at),
+    turn: typeof value.turn === "string" ? value.turn : "",
+    reason: typeof value.reason === "string" ? value.reason.slice(0, 300) : "",
+    fromCap,
+    toCap,
+    factor: typeof value.factor === "number" && Number.isFinite(value.factor) ? value.factor : factor,
+  }
+}
+
+/** A host compaction marker, or `undefined` when the host has not compacted. */
+function normalizeHostCompact(value: unknown): HostCompact | undefined {
+  if (!isPlainObject(value)) return undefined
+  return {
+    at: finiteTime(value.at),
+    turns: typeof value.turns === "number" && Number.isFinite(value.turns) ? Math.max(0, Math.round(value.turns)) : 0,
+    archived:
+      typeof value.archived === "number" && Number.isFinite(value.archived)
+        ? Math.max(0, Math.round(value.archived))
+        : 0,
+  }
+}
+
+function finitePositive(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isFinite(value) && value > 0 ? Math.round(value) : undefined
+}
+
+function finiteTime(value: unknown): number {
+  return typeof value === "number" && Number.isFinite(value) && value > 0 ? value : 0
+}
+
 /** A pending append compaction, or `undefined` when none is marked. */
 function normalizeCompact(value: unknown): CompactMark | undefined {
   if (!isPlainObject(value)) return undefined
@@ -577,6 +617,10 @@ export function normalizeRecord(value: unknown, now: number): SessionRecord {
   if (offeredTools !== undefined) record.offeredTools = offeredTools
   const compact = normalizeCompact(value.compact)
   if (compact !== undefined) record.compact = compact
+  const ext = normalizeWindowExtension(value.ext)
+  if (ext !== undefined) record.ext = ext
+  const hostCompact = normalizeHostCompact(value.hostCompact)
+  if (hostCompact !== undefined) record.hostCompact = hostCompact
   if (Array.isArray(value.rebuilt)) record.rebuilt = value.rebuilt.filter((id): id is string => typeof id === "string")
   if (typeof value.rebuildSaved === "number" && Number.isFinite(value.rebuildSaved)) record.rebuildSaved = value.rebuildSaved
   if (Array.isArray(value.seenTurns)) record.seenTurns = value.seenTurns.filter((id): id is string => typeof id === "string")

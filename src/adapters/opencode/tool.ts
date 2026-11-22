@@ -34,6 +34,7 @@ Actions:
 - patch { patch: { goal?, plan?, facts?, files?, decisions?, open?, refs?, notes? } } — merge a patch. Maps merge key by key, lists replace, null resets a key (or deletes one map entry). Unknown keys are dropped; a write over the memory cap is rejected, not trimmed.
 - stats — memory, working-window and archive usage.
 - compact — fold the append-only update log into a new checkpoint and cut the window to the newest ~compactKeepTokens of turns; the rest is archived raw and stays searchable with recall/expand. Only when the state note says compaction is due — a due note lists the turns about to leave, so write what matters from them into memory first: it rewrites the checkpoint and discards the provider cache the layout exists to keep. It does not shrink memory; edit memory for that.
+- extend { reason } — when the state note says the pool is near its cap, double this era's working pool, clamped by the model window and a reserve. Write the continuation brief into memory first (goal/plan/decisions/open, files, next steps); the extra room is for finishing the current atomic step, not for new work. One extension per era; the next cap is the fold.
 - ref { page, section, gist } — store a feature-map pointer and report the gist vs section cost.
 - archive { turn, gist, keepRaw? } — move a pending turn into the cold archive. Without keepRaw:true the raw messages are discarded and expand can only return the gist.
 - purge { turn? | query? } — delete a pending or archived turn, or matching entries.
@@ -46,13 +47,17 @@ export const TOOL_INPUT = {
   properties: {
     action: {
       type: "string",
-      enum: ["read", "raw", "patch", "stats", "compact", "ref", "archive", "purge", "recall", "expand", "notice"],
+      enum: ["read", "raw", "patch", "stats", "compact", "extend", "ref", "archive", "purge", "recall", "expand", "notice"],
       description: "What to do. See the tool description for each action.",
     },
     patch: {
       type: "object",
       additionalProperties: true,
       description: "For action:patch. Keys: goal, plan, facts, files, decisions, open, refs, notes.",
+    },
+    reason: {
+      type: "string",
+      description: 'For action:extend — one line naming what the extra room buys before the fold.',
     },
     key: { type: "string", description: "For action:read — one memory key." },
     id: { type: "string", description: "For action:raw — the marker id from a shortened tool result." },
