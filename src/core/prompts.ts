@@ -381,7 +381,7 @@ export function renderTailState(record: SessionRecord, budget: TailBudget): stri
     budget.poolCap > 0 ? ` · ${Math.round((budget.poolTokens / budget.poolCap) * 100)}%` : ""
   const over = budget.poolTokens > budget.poolCap ? " · over cap" : ""
   lines.push(
-    `pool: ${formatTokens(budget.poolTokens)}${cap}` +
+    `pool: ${formatTokens(budget.poolTokens)}${cap}${percent}` +
       ` (snapshot ${formatTokens(budget.snapshotTokens)} · updates ${formatTokens(budget.updateTokens)} · turns ${formatTokens(budget.workingTokens)})${over}`,
   )
 

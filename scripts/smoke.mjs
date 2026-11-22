@@ -1460,6 +1460,10 @@ ok(
   smallCapNote !== undefined && smallCapNote.content[0].text.includes("/23k"),
   "the note prints the cap when the model window is small",
 )
+ok(
+  smallCapNote !== undefined && /\/23k · \d+%/.test(smallCapNote.content[0].text),
+  "the note prints the percent next to the cap",
+)
 const bigWindowNote = await limitNote({ limit: { context: 1_000_000 } })
 ok(
   bigWindowNote !== undefined && bigWindowNote.content[0].text.includes("/23k"),
