@@ -25,6 +25,7 @@ import { TextAttributes } from "@opentui/core"
 
 import { mechanicalGist } from "../src/core/archive.ts"
 import { SESSION_KEYS, parseLayer, resolveConfig } from "../src/core/config.ts"
+import { effectiveTokens, parseWeights, rawTokens, usageFromHostTokens, weightsFor } from "../src/core/pricing.ts"
 import { buildPayload } from "../src/core/context.ts"
 import { runMemoryTool } from "../src/core/memory-tool.ts"
 import { retirePinned } from "../src/core/notices.ts"
@@ -145,6 +146,45 @@ ok(
   "the shipped deep profile is the default",
 )
 ok(defaultBudgets.rebuildOnCompaction === false, "the tail rebuild is off by default")
+
+const pricingKnown = weightsFor("opencode/claude-sonnet-4-5")
+ok(
+  pricingKnown.source === "table" && pricingKnown.weights.cacheRead === 0.1,
+  "a known model uses the published price table",
+)
+const pricingUnknown = weightsFor("opencode-go/deepseek-v4.1-flash")
+ok(
+  pricingUnknown.source === "generic" && pricingUnknown.key === "deepseek-v4.1-flash",
+  "an unknown model is labelled generic",
+)
+const hostTokens = usageFromHostTokens({
+  input: 100,
+  output: 10,
+  reasoning: 99,
+  cache: { read: 1000, write: 200 },
+})
+ok(
+  hostTokens.input === 100 &&
+    hostTokens.cacheRead === 1000 &&
+    hostTokens.cacheWrite === 200 &&
+    hostTokens.output === 10,
+  "host tokens map to the pricing usage",
+)
+ok(
+  effectiveTokens(hostTokens, { input: 1, cacheRead: 0.1, cacheWrite: 1.25, cacheWrite1h: 2, output: 5 }) === 500,
+  "cache-aware effective tokens weight every bucket",
+)
+ok(
+  effectiveTokens(
+    { input: 0, cacheRead: 0, cacheWrite: 200, cacheWrite1h: 50, output: 0 },
+    { input: 1, cacheRead: 0.1, cacheWrite: 1.25, cacheWrite1h: 2, output: 5 },
+  ) === 287.5,
+  "the one-hour cache share gets its own price",
+)
+ok(parseWeights("1,0.1,1,4,2").cacheWrite1h === 2, "a weights spec parses")
+ok(rawTokens(hostTokens) === 1310, "raw tokens sum the buckets")
+assert.throws(() => parseWeights("1,2"), /weights need/, "a malformed weights spec is refused")
+passed += 1
 const packageOptions = JSON.parse(readFileSync(new URL("../options.json", import.meta.url), "utf8"))
 const packageBudgets = resolveConfig({ package: packageOptions })
 ok(
@@ -2468,7 +2508,7 @@ async function settle(predicate) {
 }
 
 const realFetch = globalThis.fetch
-let published = "0.1.99"
+let published = "0.2.99"
 let fetchCount = 0
 globalThis.fetch = async () => {
   fetchCount += 1
@@ -2481,14 +2521,14 @@ const stopTui = await setupTui(tuiOne.context)
 await settle(() => tuiOne.toasts.length === 1)
 ok(tuiOne.toasts.length === 1, "the TUI half toasts once for a newer version")
 ok(
-  tuiOne.toasts[0].message.includes("0.1.99 is available"),
+  tuiOne.toasts[0].message.includes("0.2.99 is available"),
   "the toast names the published version",
 )
 ok(
   tuiOne.toasts[0].message.includes(readPluginVersion()),
   "the toast names the loaded version",
 )
-ok(updateState.notified === "0.1.99" && updateState.checkedAt > 0, "the check records what it said")
+ok(updateState.notified === "0.2.99" && updateState.checkedAt > 0, "the check records what it said")
 ok(tuiOne.seen.listeners === 1, "the check wakes on session.idle")
 
 const fetchesAfterFirst = fetchCount

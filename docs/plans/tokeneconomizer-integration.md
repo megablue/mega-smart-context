@@ -1,6 +1,6 @@
 # TokenEconomizer integration plan
 
-Status: proposed, not implemented
+Status: started on `feat/tokeneconomizer-integration` (0.2.0 line); pricing slice implemented
 Work branch: `feat/tokeneconomizer-integration`
 Scope: ideas from [microsoft/TokenEconomizer](https://github.com/microsoft/TokenEconomizer) that fit mega-smart-context
 Baseline: mega-smart-context `a956106` (0.1.61), main == origin/main
@@ -239,7 +239,7 @@ Design:
   - one redirect on a synthetic 20-call failure loop;
   - two passes over the same messages produce the same guard decision.
 
-### 5.3 Cache-aware cost accounting
+### 5.3 Cache-aware cost accounting (implemented in 0.2.0)
 
 Goal: report what the plugin actually saved and what it cost, with cached tokens weighted
 correctly.
@@ -329,3 +329,6 @@ OpenCode's session DB. The live free-facts layer should prove itself first.
 
 - 2026-11-21: created from TokenEconomizer `1bfeccd` (v0.1.0-369-g1bfeccd) and
   mega-smart-context `a956106` (0.1.61).
+- 2026-11-22: 0.2.0 pricing slice implemented: `src/core/pricing.ts`, the analyzer's
+  host usage/effective-token report, `--model`/`--weights`, smoke tests, and the
+  analysis page.

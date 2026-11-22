@@ -194,7 +194,7 @@ npm install
 npm run typecheck     # tsc --noEmit, strict
 npm run smoke         # the context pass: memory injection, the working window, raw storage, profiles, the archive
 npm run test:install  # the installer's copy/drift/remove assertions
-npm run analyze       # read a recorded session back: enabled payload vs the disabled baseline
+npm run analyze       # read a recording back: enabled payload vs disabled baseline, effective tokens and cost
 ```
 
 ## Where the details live

@@ -36,6 +36,13 @@ import {
   UNKNOWN_WINDOW,
   simulateNative,
 } from "./native-compaction.mjs"
+import {
+  effectiveTokens,
+  parseWeights,
+  rawTokens,
+  usageFromHostTokens,
+  weightsFor,
+} from "../src/core/pricing.ts"
 
 const DEFAULT_DB = join(homedir(), ".local", "share", "opencode", "opencode.db")
 
@@ -53,6 +60,8 @@ function usage() {
     "  --dir <path>     the directory whose newest session to analyze (default: cwd)",
     "  --db <path>      the OpenCode database (default: ~/.local/share/opencode/opencode.db)",
     "  --context <n>    model context window for the native baseline (default: 200000)",
+    "  --model <id>     price this model id instead of the recorded one",
+    "  --weights <spec> input,cache_read,cache_write,output[,cache_write_1h]",
     "  --keep <n>       tokens native compaction keeps verbatim (default: 15000)",
     "  --summary <n>    tokens a native summary is assumed to occupy (default: 2000)",
     "  --buffer <n>     reserve below the window instead of the default ~10%",
@@ -82,6 +91,8 @@ function parseArgs(argv) {
     native: true,
     json: false,
     help: false,
+    model: undefined,
+    weights: undefined,
   }
   for (let index = 0; index < argv.length; index += 1) {
     const flag = argv[index]
@@ -92,6 +103,8 @@ function parseArgs(argv) {
     else if (flag === "--keep") args.keep = positive(argv[index + 1], flag)
     else if (flag === "--summary") args.summary = positive(argv[index + 1], flag)
     else if (flag === "--buffer") args.buffer = positive(argv[index + 1], flag)
+    else if (flag === "--model") args.model = argv[index + 1]
+    else if (flag === "--weights") args.weights = parseWeights(argv[index + 1])
     else if (flag === "--no-native") args.native = false
     else if (flag === "--json") args.json = true
     else if (flag === "--help" || flag === "-h") args.help = true
@@ -244,8 +257,41 @@ function baselineOf(history, options) {
   }
 }
 
+/** Sum the assistant messages' token usage and the provider's reported cost. */
+function hostUsage(db, sessionID) {
+  const row = db
+    .prepare(
+      "SELECT COUNT(*) AS calls, " +
+        "COALESCE(SUM(json_extract(data,'$.tokens.input')),0) AS input, " +
+        "COALESCE(SUM(json_extract(data,'$.tokens.output')),0) AS output, " +
+        "COALESCE(SUM(json_extract(data,'$.tokens.reasoning')),0) AS reasoning, " +
+        "COALESCE(SUM(json_extract(data,'$.tokens.cache.read')),0) AS cacheRead, " +
+        "COALESCE(SUM(json_extract(data,'$.tokens.cache.write')),0) AS cacheWrite, " +
+        "COALESCE(SUM(json_extract(data,'$.cost')),0) AS cost " +
+        "FROM session_message WHERE session_id = ? AND type = 'assistant'",
+    )
+    .get(sessionID)
+  const latest = db
+    .prepare(
+      "SELECT json_extract(data,'$.model.id') AS model FROM session_message " +
+        "WHERE session_id = ? AND type = 'assistant' ORDER BY seq DESC LIMIT 1",
+    )
+    .get(sessionID)
+  return {
+    calls: Number(row?.calls ?? 0),
+    model: typeof latest?.model === "string" ? latest.model : undefined,
+    tokens: usageFromHostTokens({
+      input: Number(row?.input ?? 0),
+      output: Number(row?.output ?? 0),
+      reasoning: Number(row?.reasoning ?? 0),
+      cache: { read: Number(row?.cacheRead ?? 0), write: Number(row?.cacheWrite ?? 0) },
+    }),
+    cost: Number(row?.cost ?? 0),
+  }
+}
+
 /** Read the database and return plain data — the text report is a view of it. */
-export function analyze({ session, dir, db, context = UNKNOWN_WINDOW, keep = DEFAULT_KEEP, summary = DEFAULT_SUMMARY, buffer, native = true }) {
+export function analyze({ session, dir, db, context = UNKNOWN_WINDOW, keep = DEFAULT_KEEP, summary = DEFAULT_SUMMARY, buffer, native = true, model, weights }) {
   if (!existsSync(db)) throw new Error(`no database at ${db}`)
   const sqlite = new DatabaseSync(db, { readOnly: true })
   try {
@@ -267,6 +313,10 @@ export function analyze({ session, dir, db, context = UNKNOWN_WINDOW, keep = DEF
       history !== undefined && native
         ? baselineOf(history, { window: context, keep, summary, buffer })
         : null
+    const host = hostUsage(sqlite, located.id)
+    const modelID = model ?? host.model ?? record.lastModel?.id
+    const choice = weights === undefined ? weightsFor(modelID) : { key: "cli", source: "override", weights }
+    const effective = effectiveTokens(host.tokens, choice.weights)
 
     return {
       db,
@@ -297,11 +347,36 @@ export function analyze({ session, dir, db, context = UNKNOWN_WINDOW, keep = DEF
       history: history ?? null,
       summary: history === undefined ? null : summarizeHistory(history),
       baseline,
+      usage: {
+        calls: host.calls,
+        model: modelID ?? null,
+        weights: choice.weights,
+        weightsSource: choice.source,
+        tokens: host.tokens,
+        rawTokens: rawTokens(host.tokens),
+        effectiveTokens: effective,
+        hostCost: host.cost,
+      },
       transcript: transcriptEstimate(sqlite, located.id),
     }
   } finally {
     sqlite.close()
   }
+}
+
+function renderUsage(usage) {
+  if (usage === null || usage.calls === 0) return "usage no assistant token data"
+  const tokens = usage.tokens
+  const parts = [`input ${formatTokens(tokens.input)}`]
+  if (tokens.cacheRead > 0) parts.push(`cache read ${formatTokens(tokens.cacheRead)}`)
+  if (tokens.cacheWrite > 0) parts.push(`cache write ${formatTokens(tokens.cacheWrite)}`)
+  parts.push(`output ${formatTokens(tokens.output)}`)
+  const source = usage.weightsSource === "generic" ? "generic weights; override with --weights" : `${usage.weightsSource} weights`
+  const hostCost = usage.hostCost > 0 ? ` · provider cost $${usage.hostCost.toFixed(6)}` : ""
+  return [
+    `usage ${usage.calls} calls · ${parts.join(" · ")} · raw ${formatTokens(usage.rawTokens)}`,
+    `effective ${formatTokens(usage.effectiveTokens)} input-token equivalents (${usage.model ?? "unknown model"}, ${source})${hostCost}`,
+  ].join("\n")
 }
 
 function renderPlugins(data) {
@@ -407,6 +482,7 @@ export function render(data) {
     `directory ${data.directory}${data.parentID ? `  (child of ${data.parentID})` : ""}`,
     renderPlugins(data),
     data.history !== null ? renderHistory(data.history, data.summary, data.baseline) : renderFallback(data),
+    renderUsage(data.usage),
     `memory ${formatTokens(data.memoryChars)} chars · seenTurns ${data.seenTurns} · pending ${data.pending.length} · ` +
       `archive ${data.archive.length} · record ${formatBytes(data.recordBytes)}`,
     `goal: ${oneLine(data.goal, 100) || "(empty)"}`,
