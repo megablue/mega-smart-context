@@ -1,0 +1,138 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="generator" content="opencode-feature-map">
+<title>Window extension - one bounded growth per era - feature map</title>
+<style>
+:root{color-scheme:light dark;--fg:#1d2433;--muted:#5b6475;--bg:#fff;--line:#d8dee9;--accent:#0b6e99;--warn:#8a5a00;--code:#f4f6fa}
+@media (prefers-color-scheme:dark){:root{--fg:#e6eaf2;--muted:#9aa4b8;--bg:#11151c;--line:#2b3342;--accent:#6cc4e8;--warn:#e0b25c;--code:#1a202a}}
+*{box-sizing:border-box}
+body{margin:0 auto;max-width:60rem;padding:2rem 1.25rem 4rem;background:var(--bg);color:var(--fg);font:16px/1.6 system-ui,-apple-system,Segoe UI,sans-serif}
+h1,h2,h3{line-height:1.25;margin:2rem 0 .75rem}
+h1{font-size:1.9rem;border-bottom:2px solid var(--line);padding-bottom:.4rem}
+h2{font-size:1.35rem}
+h3{font-size:1.08rem;color:var(--muted)}
+p,ul,ol,table,pre,blockquote{margin:.75rem 0}
+a{color:var(--accent)}
+code{background:var(--code);padding:.1em .3em;border-radius:.25rem;font-size:.92em}
+pre{background:var(--code);border:1px solid var(--line);border-radius:.4rem;padding:.8rem 1rem;overflow:auto}
+pre code{background:none;padding:0}
+pre.verbatim{border-left:4px solid var(--warn)}
+pre.verbatim::before{content:"verbatim - " attr(data-why);display:block;color:var(--warn);font:600 .78rem/1.4 ui-monospace,monospace;margin-bottom:.5rem;white-space:pre-wrap}
+pre.pseudo{border-left:4px solid var(--accent)}
+pre.mermaid{background:var(--bg);border:1px dashed var(--line)}
+p.status{color:var(--muted);font-size:.92rem}
+table{border-collapse:collapse;width:100%}
+th,td{border:1px solid var(--line);padding:.4rem .6rem;text-align:left;vertical-align:top}
+th{background:var(--code)}
+blockquote{margin-left:0;padding-left:1rem;border-left:3px solid var(--line);color:var(--muted)}
+hr{border:0;border-top:1px solid var(--line);margin:2rem 0}
+.lede{color:var(--muted)}
+</style>
+</head>
+<body>
+<article class="map">
+<h1>Window extension - one bounded growth per era</h1>
+<p class="status">Status: shipped - Read when: <code>window.ts</code>, <code>decideExtension</code>, <code>effectivePoolCap</code>, the <code>windowExtend</code> / <code>windowExtendFactor</code> / <code>windowWarnPercent</code> keys, <code>action:&quot;extend&quot;</code>, the near-cap note, <code>record.ext</code>, &quot;the window grew&quot;, or &quot;the extension was refused&quot;.</p>
+
+<section id="what-it-does">
+<h2>What it does</h2>
+<p>The working pool can grow once per compaction era, on the model&#39;s request, when the trailing state note says the pool is near its cap. At <code>windowWarnPercent</code> (80% default) of the effective pool the note asks the model to write the continuation brief into memory first, then offers two moves: finish only the current atomic step with <code>smart_context { action:&quot;extend&quot;, reason:&quot;...&quot; }</code>, or fold now with <code>action:&quot;compact&quot;</code>. The extension is not automatic; the model has to ask for it and say why.</p>
+<p>A grant raises the pool to a cap that is bounded twice: by <code>windowExtendFactor</code> (2 means double, clamped 1.1..4) and by what the host&#39;s own ceiling will accept before it compacts. The realized multiplier can therefore be smaller than the configured one. The cap that the plugin enforces - for the working window, <code>budgetOf</code>, <code>/context</code> and the stats report - becomes <code>record.ext.toCap</code>; the model&#39;s real context window is only a clamp and is never printed as a used figure.</p>
+<p>One grant per era. A fold clears <code>record.ext</code>, and so does a host compaction, so the next era starts at <code>memoryTokens + workingTokens</code> again. After a grant the note reports the extension and asks for one atomic step; at the warning line of the extended pool it says the extension is spent and the fold runs at the cap; once the pool is full the usual <code>compaction due</code> line says the extension is spent. There is no automatic continuation after the fold.</p>
+</section>
+
+<section id="map">
+<h2>Map</h2>
+<ul>
+<li><code>src/core/window.ts</code> - <code>decideExtension</code>, <code>ExtensionRequest</code>, <code>ExtensionDecision</code>, <code>effectivePoolCap</code>, <code>budgetPercent</code>, <code>isNear</code>, <code>extensionHeadroom</code>, <code>EXTEND_FACTOR_MIN</code> / <code>EXTEND_FACTOR_MAX</code>, <code>WARN_PERCENT_MIN</code> / <code>WARN_PERCENT_MAX</code>, and the internal <code>hardCapOf</code>. Pure arithmetic: no store, no host, no display formatting.</li>
+<li><code>src/core/config.ts</code> - <code>windowExtend</code>, <code>windowExtendFactor</code> and <code>windowWarnPercent</code> in <code>SESSION_KEYS</code>, <code>DEFAULT_CONFIG</code> and <code>parseLayer</code>; the factor clamps 1.1..4 and the percent 50..95.</li>
+<li><code>src/core/types.ts</code> - <code>WindowExtension</code> and <code>record.ext</code> (<code>at</code>, <code>turn</code>, <code>reason</code>, <code>fromCap</code>, <code>toCap</code>, <code>factor</code>); <code>HostCompact</code> records the host checkpoint.</li>
+<li><code>src/core/context.ts</code> - <code>buildAppendPlan</code> measures the window against the effective cap and passes the extension decision to the note.</li>
+<li><code>src/core/prompts.ts</code> - <code>renderTailState</code> prints the pool cap and percent, the near-cap choice, the extension line and the spent line; <code>budgetOf</code> reports the effective cap to <code>/context</code>.</li>
+<li><code>src/core/memory-tool.ts</code> - the <code>extend</code> action, the required <code>reason</code>, and the four refusals.</li>
+<li><code>src/core/compaction.ts</code> - <code>runCompaction</code> archives the host&#39;s turns and clears <code>record.ext</code>.</li>
+<li><code>scripts/window.test.mjs</code> (13), <code>scripts/compaction-archive.test.mjs</code> (7) and <code>scripts/smoke.mjs</code> (679) - the unit tests, the host-compaction tests and the end-to-end extension assertions.</li>
+</ul>
+</section>
+
+<section id="how-why">
+<h2>How &amp; why</h2>
+
+<h3>The note always carries the denominator</h3>
+<p>The trailing state note used to print the pool cap only for windows under <code>SMALL_WINDOW_MAX</code> (300k). The model cannot make an extension decision against a bare numerator, so the gate is gone: the note now always prints <code>pool: &lt;used&gt;/&lt;cap&gt; &middot; &lt;pct&gt;% (...)</code>. The cap is the effective pool for the era - <code>record.ext.toCap</code> when an extension is live, otherwise <code>memoryTokens + workingTokens</code>. The percentage is a rounded display against the effective cap, and <code>isNear</code> uses the same cap; the rounding is clamped so a bad estimate cannot overflow the line.</p>
+
+<h3>The decision point</h3>
+<p>At or above <code>windowWarnPercent</code> of the effective pool, and below the cap, the note says:</p>
+<pre class="code"><code>window: &lt;left&gt; left (&lt;pct&gt;% of the pool used). Write the continuation brief into memory first (goal/plan/decisions/open, files, next steps), then choose:
+  finish only the current atomic step: smart_context action:"extend" reason:"..." - or fold now: action:"compact"</code></pre>
+<p>When the extension is unavailable - disabled, already granted this era, or the model window is unknown - only the fold line is printed. A <code>leaving at the fold:</code> list follows when the fold is near or due.</p>
+
+<h3>The clamp arithmetic</h3>
+<p><code>baseCap = memoryTokens + workingTokens</code>. With the model window <code>window</code> and the host&#39;s own system/tool estimate <code>hostSystemTokens</code>:</p>
+<ul>
+<li><code>reserve = max(floor(window * 0.1), window &gt;= 32000 ? 16000 : 0)</code></li>
+<li><code>ceiling = window - reserve - hostSystemTokens</code></li>
+<li><code>hardCap = floor(ceiling * 0.9)</code> - the last 10% is safety for tool schemas and character-count error</li>
+<li><code>toCap = min(floor(baseCap * clamp(factor, 1.1, 4)), hardCap)</code></li>
+<li>grant only when <code>toCap &gt; baseCap</code>; the stored <code>factor</code> is <code>round(toCap / baseCap, 2)</code></li>
+</ul>
+<p>The order of the refusals is deliberate: disabled, already extended, unknown model window, then no headroom. The last case is the one that surprises: a window small enough that the hard cap sits below the base pool refuses rather than shrinking the pool. <code>hostSystemTokens</code> is optional and is subtracted only when the host reports it.</p>
+
+<h3>What a grant changes</h3>
+<p><code>runMemoryTool</code> requires a non-empty <code>reason</code>, calls <code>decideExtension</code>, stores <code>record.ext = { at, turn, reason, fromCap, toCap, factor }</code>, and clears a <code>compact.due</code> mark if one was set. It does not touch the transcript or the memory document. The next note says:</p>
+<pre class="code"><code>extension: +&lt;n&gt;% at turn &lt;id&gt; (&lt;reason&gt;); &lt;left&gt; left. Finish only the current atomic step and update the brief.</code></pre>
+<p>At the warning line of the extended pool it adds <code>extension spent: ... Update the continuation brief now ... the fold runs at the cap.</code> At 100% the <code>compaction due</code> line adds <code>The extension is spent.</code> A granted extension that is not spent does not remove the fold: the fold still happens at the extended cap.</p>
+
+<h3>Resets and what does not happen</h3>
+<p><code>action:&quot;compact&quot;</code> clears <code>record.ext</code> with the rest of the fold state. A host compaction also clears it, along with <code>windowStart</code>, the update log, <code>seenTurns</code> and the rebuild bookkeeping; the host&#39;s turns are archived first. The plugin does not continue the task by itself after a fold, and it does not grant a second extension in the same era.</p>
+</section>
+
+<section id="config-keys-ui">
+<h2>Config keys / UI</h2>
+<table>
+<thead><tr><th>Key</th><th>Default</th><th>Range / effect</th></tr></thead>
+<tbody>
+<tr><td><code>windowExtend</code></td><td><code>true</code></td><td>allow one working-pool extension per compaction era</td></tr>
+<tr><td><code>windowExtendFactor</code></td><td><code>2</code></td><td>1.1..4 - requested multiplier, further clamped by the model window</td></tr>
+<tr><td><code>windowWarnPercent</code></td><td><code>80</code></td><td>50..95 - effective-pool percent that offers extend or fold</td></tr>
+</tbody>
+</table>
+<p>All three are profile-overridable session keys, like the budget and archive keys. The cap in the note is always the effective pool: <code>pool 60k/300k &middot; 20%</code> before a grant, <code>pool 60k/400k &middot; 15%</code> after one. The real model window appears only inside a refusal (<code>no headroom under the ~810k model ceiling</code>), never as a used figure.</p>
+</section>
+
+<section id="tests-that-pin-it">
+<h2>Tests that pin it</h2>
+<ul>
+<li>&quot;the bounds are the documented ones&quot;</li>
+<li>&quot;a 1M window doubles a 300k cap under an 810k hard cap&quot;</li>
+<li>&quot;a 400k window binds the extension at the 324k hard cap&quot;</li>
+<li>&quot;a 200k window refuses because the hard cap is below the base&quot;</li>
+<li>&quot;the exact refusal message is returned for each gate&quot;</li>
+<li>&quot;a spent extension and a disabled one are refused in that order of precedence&quot;</li>
+<li>&quot;host system tokens reduce the hard cap by their overhead&quot;</li>
+<li>&quot;the factor is clamped at both ends&quot;</li>
+<li>&quot;the host reply reserve steps up at a 32k window&quot;</li>
+<li>&quot;the effective pool cap prefers an extension over the sum&quot;</li>
+<li>&quot;budget percent rounds and clamps to a display-safe range&quot;</li>
+<li>&quot;isNear triggers at exactly the warning threshold&quot;</li>
+<li>&quot;extension headroom never goes negative&quot;</li>
+</ul>
+<p><code>scripts/smoke.mjs</code> carries the end-to-end cases: the near-cap note, a 2x grant, the second-extension refusal, the fold reset and the unknown-window refusal. <code>scripts/compaction-archive.test.mjs</code> pins the host seam that clears the extension and archives the turns first.</p>
+</section>
+
+<section id="related">
+<h2>Related</h2>
+<ul>
+<li><code>context-handoff.html</code> - the note, the working window and where the cap is printed.</li>
+<li><code>compaction.html</code> - the fold and the lossless host seam that clears the extension.</li>
+<li><code>archive.html</code> - where the folded turns and raw messages go.</li>
+<li><code>profiles.html</code> - the session keys a profile may override.</li>
+</ul>
+</section>
+
+</article>
+</body>
+</html>

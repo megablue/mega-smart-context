@@ -22,10 +22,11 @@ An OpenCode 2.0 plugin that hands context management to the model. Instead of re
 
 - The model writes a **memory document** with the `smart_context` tool — the goal, plan, facts, files, decisions and open threads — and every request starts with it.
 - **The layout is append-only.** The request keeps that document as a **checkpoint** and appends one accepted delta after each completed turn, so a patch does not rewrite the provider prefix; when the shared pool fills, a due note lists what will leave and the fold waits for the next prompt, keeping the newest `compactKeepTokens` (20k default) of turns and archiving the rest. The old snapshot layout lives on the `snapshot` branch.
+- **The working window can grow once per era.** At `windowWarnPercent` (80% default) of the pool, the trailing note offers one bounded extension with `smart_context action:"extend" reason:"…"` or a fold; the grant is clamped by the model's real context window, and the next warning is the fold.
 - **Oversized tool results are shortened, not lost.** A result over `maxResultChars` keeps a content-aware summary (JSON arrays are sampled, logs keep their errors), and the original stays in the session record behind a `raw: r_…` marker; `smart_context action:"raw" id:"…"` pages it back. The newest result, errors and denials are never shortened.
 - A short **verbatim working window** keeps the newest turns exactly as they happened, so nothing in the live tool loop is paraphrased.
 - At a fold, the turns that no longer fit move to a **gated archive** with their raw messages, kept for `recall` rather than replayed or dropped silently.
-- **Compaction is owned by the plugin.** When the host makes a checkpoint, the plugin answers with the memory document itself instead of a separate summarization call.
+- **Compaction is owned by the plugin.** When the host makes a checkpoint, the plugin first archives every turn it is about to discard (raw kept, so `recall`/`expand` still reach it) and then answers with the memory document itself instead of a separate summarization call; empty memory archives the turns but declines the summary, and the next note says what was saved.
 - **Subagents are managed independently**, each with its own window and memory, so a child never inherits the parent's context.
 - A **loop guard** watches the current turn for repeated failures and appends at most one short redirect to the trailing state note. It never aborts the turn or changes a tool result.
 - **Project facts** (`projectFacts: true`) learn short environment facts from observed tool outcomes across sessions in the same repository, then inject a small stable block at the start of the next session. They are inspectable, forgettable and never derived from assistant prose.
@@ -90,6 +91,9 @@ The settings a user normally touches:
 | `workingTokens` | `200000` | cap on the verbatim working window, estimated |
 | `compactKeepTokens` | `20000` | verbatim turns a fold keeps, estimated |
 | `rebuildOnCompaction` | `false` | rebuild the retained tail's bytes at a fold |
+| `windowExtend` | `true` | allow one working-pool extension per era |
+| `windowExtendFactor` | `2` | requested extension multiplier, clamped 1.1..4 and by the model window |
+| `windowWarnPercent` | `80` | pool percent at which the note offers extend or fold, clamped 50..95 |
 | `archiveMaxTurns` | `200` | turns kept in the archive before the oldest are dropped |
 | `archiveMaxChars` | `400000` | characters kept in the archive before the oldest are dropped |
 | `parentArchive` | `true` | let a subagent search its spawning session's archive (`from:"parent"`) |
@@ -125,7 +129,7 @@ Profiles are named bundles of the session-level settings. A session takes, in or
 }
 ```
 
-A profile may set only the session keys (`memoryTokens`, `workingTokens`, `compactKeepTokens`, `rebuildOnCompaction`, `charsPerToken`, `archiveMaxTurns`, `archiveMaxChars`, `parentArchive`, `expandDigestChars`, `refs`, `maxResultChars`); the install keys are refused. The retired `evictionLead` and `autoArchive` keys are still accepted and ignored, so an old profile loads. Switch from the sidebar's `[profile]`, the dialog's `Switch profile...`, or `/context profile auto|base|<name>`.
+A profile may set only the session keys (`memoryTokens`, `workingTokens`, `compactKeepTokens`, `rebuildOnCompaction`, `windowExtend`, `windowExtendFactor`, `windowWarnPercent`, `charsPerToken`, `archiveMaxTurns`, `archiveMaxChars`, `parentArchive`, `expandDigestChars`, `refs`, `maxResultChars`); the install keys are refused. The retired `evictionLead` and `autoArchive` keys are still accepted and ignored, so an old profile loads. Switch from the sidebar's `[profile]`, the dialog's `Switch profile...`, or `/context profile auto|base|<name>`.
 
 The source repository's [`docs/SPEC.html`](docs/SPEC.html) has the full table and the behavior.
 
@@ -133,7 +137,7 @@ The update check is the only network call the plugin makes, and it runs in the T
 
 ## Use
 
-- The model writes memory with the `smart_context` tool: `read`, `raw`, `patch`, `stats`, `compact`, `ref`, `archive`, `purge`, `recall`, `expand`, `notice`. `raw` pages back an original shortened tool result by its marker id; `notice` lists or retires a pinned host notice.
+- The model writes memory with the `smart_context` tool: `read`, `raw`, `patch`, `stats`, `compact`, `extend`, `ref`, `archive`, `purge`, `recall`, `expand`, `notice`. `raw` pages back an original shortened tool result by its marker id; `notice` lists or retires a pinned host notice.
 - A turn that left the working window is readable before it is archived: `expand` looks in the archive first and then in the pending queue, and says when a read is not durable. `archive` without `keepRaw` warns that the raw is now gone, so `expand` can only return the gist.
 - A subagent can read its spawning session's archive without importing it: `recall`/`expand` with `from:"parent"`. The field is read-only and never reaches a writing action, and the reply tells the child how many characters its caller can actually keep.
 - `/context` prints the current memory and archive, and carries the control actions a user needs; the subcommands are in [The `/context` command](#the-context-command).

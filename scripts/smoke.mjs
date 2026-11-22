@@ -2712,7 +2712,7 @@ async function settle(predicate) {
 }
 
 const realFetch = globalThis.fetch
-let published = "0.2.99"
+let published = "0.3.99"
 let fetchCount = 0
 globalThis.fetch = async () => {
   fetchCount += 1
@@ -2725,14 +2725,14 @@ const stopTui = await setupTui(tuiOne.context)
 await settle(() => tuiOne.toasts.length === 1)
 ok(tuiOne.toasts.length === 1, "the TUI half toasts once for a newer version")
 ok(
-  tuiOne.toasts[0].message.includes("0.2.99 is available"),
+  tuiOne.toasts[0].message.includes("0.3.99 is available"),
   "the toast names the published version",
 )
 ok(
   tuiOne.toasts[0].message.includes(readPluginVersion()),
   "the toast names the loaded version",
 )
-ok(updateState.notified === "0.2.99" && updateState.checkedAt > 0, "the check records what it said")
+ok(updateState.notified === "0.3.99" && updateState.checkedAt > 0, "the check records what it said")
 ok(tuiOne.seen.listeners === 1, "the check wakes on session.idle")
 
 const fetchesAfterFirst = fetchCount

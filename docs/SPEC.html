@@ -114,7 +114,7 @@ img{max-width:100%;height:auto}
 <p>An empty <code>goal</code> renders an explicit warning. Values are JSON-quoted so a newline or a delimiter inside a model-written note cannot change the shape. The block is data, not instructions; the standing policy lives in the system message. It carries no live counters either: the running numbers are read on demand with <code>smart_context { action:&quot;stats&quot; }</code> or <code>/context</code>, so the block changes only when memory itself does.</p>
 <p>The working window follows the block, verbatim, newest turns first in budget terms. The current turn is always kept, including every tool call and result the model just asked for.</p>
 <p>Nothing the plugin does to a message in the window depends on a newer turn. An oversized tool result is shortened by a pure function of its own bytes, and reasoning is passed through exactly as the host sent it. A message therefore keeps the same bytes on every later pass, so a provider&#39;s prefix cache above it stays warm.</p>
-<p>The first block is a checkpoint and a patch does not rewrite it. The request carries the checkpoint, the turns, a <code>&lt;smart-context-update&gt;</code> block after each completed turn that wrote memory, the current turn, and a <code>&lt;smart-context-state&gt;</code> note after it. The update block carries only the accepted delta; the state note carries the live mode, the pool usage and any pending eviction. The note prints the pool cap only when the model's real context window is really small (< 300k, <code>SMALL_WINDOW_MAX</code>), so a big-window model is never told it has a small one. The note trails the turn because its live numbers change on every pass, and a byte that changes before the current turn would make the provider re-read the whole turn on each tool loop. <code>read</code> still returns the merged document.</p>
+<p>The first block is a checkpoint and a patch does not rewrite it. The request carries the checkpoint, the turns, a <code>&lt;smart-context-update&gt;</code> block after each completed turn that wrote memory, the current turn, and a <code>&lt;smart-context-state&gt;</code> note after it. The update block carries only the accepted delta; the state note carries the live mode, the pool usage and any pending eviction. The note always prints the pool cap and the percentage used - <code>pool: 60k/300k &middot; 20% (snapshot ... &middot; updates ... &middot; turns ...)</code> - because the model needs a denominator for the extension decision; the cap is the effective pool, which an extension can raise. The note trails the turn because its live numbers change on every pass, and a byte that changes before the current turn would make the provider re-read the whole turn on each tool loop. <code>read</code> still returns the merged document.</p>
 <p>Host <strong>notices</strong> - the Plan/Build reminders the host injects as synthetic user messages, and the nudge it appends when a reply is cut off at the output-token limit - are not replayed as turns. The plugin strips them from the working window and pins them into the system prompt under &quot;## Pinned host notices&quot;, newest first - every distinct text except the mode pair, where only the mode the host announced last is pinned (a Plan and a Build reminder cannot both be in force, and pinning both left the superseded &quot;do not implement&quot; text reading as the live instruction). &quot;Newest&quot; is recency of emission: a text the host re-emits moves to the end, so the refusal lands on the instruction that is actually live. A mode switch therefore cannot evict a turn, and the standing instruction survives every pass until a newer notice replaces it. The model may retire a superseded notice with <code>smart_context { action:&quot;notice&quot;, remove:&quot;&lt;id&gt;&quot; }</code>; the newest is the live instruction and a removal of it is refused. A retirement outlives the pass that recorded it - the text stays retired while the host&#39;s window still holds a copy - and clears when the host emits the same text again under a new id.</p>
 <p>Host messages split into a second class. A background job&#39;s completion (a <code>&lt;shell&gt;</code> or <code>&lt;subagent&gt;</code> block) arrives the same way a notice does, but it belongs to the turn that launched it: the plugin leaves it in the window, counts its bytes toward that turn, and starts no turn of its own, so a job finishing cannot age a pending eviction or show up as a working turn. The host&#39;s fixed one-sentence &quot;The previous response was interrupted&quot; continuation is a <em>cue</em>: the same tail treatment, but never pinned, because it is stale once the model has continued and is not a standing instruction.</p>
 <p>What the plugin never counts is the host&#39;s own instruction set. Its <code>core/instructions</code> and neighbouring blobs ride in the request&#39;s system parts beside the policy, and no budget includes them: <code>/context</code> reports them as <code>host system ~X est (N parts)</code> for display only, and the line is absent when the host supplies no such part. When the build&#39;s debug option is on, the context pass also logs the count and the head of each such part, which is how the shape of <code>event.system</code> is checked.</p>
@@ -155,6 +155,21 @@ img{max-width:100%;height:auto}
 <td>rebuild the retained tail's bytes at a fold</td>
 </tr>
 <tr>
+<td><code>windowExtend</code></td>
+<td>true</td>
+<td>allow one working-pool extension per compaction era</td>
+</tr>
+<tr>
+<td><code>windowExtendFactor</code></td>
+<td>2</td>
+<td>requested multiplier, clamped 1.1..4 and by the model's real window</td>
+</tr>
+<tr>
+<td><code>windowWarnPercent</code></td>
+<td>80</td>
+<td>effective-pool percent at which the note offers extend or fold, clamped 50..95</td>
+</tr>
+<tr>
 <td><code>charsPerToken</code></td>
 <td>4</td>
 <td>the divisor that turns characters into estimated tokens</td>
@@ -168,7 +183,8 @@ img{max-width:100%;height:auto}
 </table>
 <p>A tool result over <code>maxResultChars</code> is shortened, never dropped. A JSON array is sampled with a sentinel row, a log keeps its error/warning lines and a head/tail, and any other text keeps a head and tail; the marker names a raw id. The original is stored in the session record under that id (bounded, 24-hour TTL) and <code>smart_context action:&quot;raw&quot; id</code> pages it back. The newest tool result is never eroded, and a result that is primarily an error or denial is preserved whole. The tool call and its result keep their ids and their order. A turn that alone exceeds the working budget is still kept; <code>/context</code> and <code>action:&quot;stats&quot;</code> report <code>OVER CAP</code> and the policy asks the model to fold sooner.</p>
 <p>In the append layout <code>memoryTokens</code> and <code>workingTokens</code> form one shared pool. When the rendered checkpoint, log and turns exceed the pool, the state note says compaction is due and lists the turns that will leave. The fold waits for the next prompt — the current turn keeps its full context, and the model is expected to write what matters from the leaving turns into memory first — or runs sooner on <code>action:&quot;compact&quot;</code>. It then keeps the newest <code>compactKeepTokens</code> of turns and archives the rest with their raw messages.</p>
-<p>When the host reports a model context size, the plugin also warns when memory plus working would exceed 90% of it. It does not silently shrink either side.</p>
+<p>When the model's real context window is known, one extension can raise the pool per era. At <code>windowWarnPercent</code> of the effective pool the trailing note asks for the continuation brief first, then offers either the extension or the fold. The grant is bounded twice: by <code>windowExtendFactor</code> (clamped 1.1..4) and by the host's ceiling. Let <code>reserve = max(floor(window * 0.1), window &gt;= 32000 ? 16000 : 0)</code>, <code>ceiling = window - reserve - hostSystemTokens</code> and <code>hardCap = floor(ceiling * 0.9)</code> (the last 10% is safety for tool schemas and estimate error). The grant is <code>toCap = min(floor(baseCap * factor), hardCap)</code>, where <code>baseCap = memoryTokens + workingTokens</code>, and only when <code>toCap &gt; baseCap</code>. The realized factor can be smaller than the requested one. The model window is a clamp, never a used figure.</p>
+<p>The grant is stored as <code>record.ext = { at, turn, reason, fromCap, toCap, factor }</code> and the effective cap becomes <code>record.ext.toCap</code> everywhere the pool is enforced. It is refused when <code>windowExtend</code> is off, the era already has one, the model window is unknown, or the hard cap leaves no headroom. After a grant the note reports the extension and asks for one atomic step; at the warning line of the extended pool it says the extension is spent and the fold runs at the cap; at 100% the <code>compaction due</code> line says it is spent. The fold clears the extension, and so does a host compaction.</p>
 </section>
 <section id="profiles">
 <h2>Profiles</h2>
@@ -205,6 +221,7 @@ img{max-width:100%;height:auto}
 <section id="compaction">
 <h2>Compaction</h2>
 <p>When the host asks for a checkpoint summary, the plugin returns the rendered memory document and skips the host&#39;s summarizer. If memory is empty, it declines and lets the host summarize; returning an empty block would erase the checkpoint in the name of owning it. The summary is the same block the model reads, so it too carries no live counters.</p>
+<p>Host compaction is lossless. Before answering, <code>runCompaction</code> archives every turn in <code>event.messages</code> that is not already archived or pending, raw messages kept, then trims to <code>archiveMaxTurns</code> and <code>archiveMaxChars</code>. It clears <code>windowStart</code>, <code>compact</code>, <code>ext</code>, <code>rebuilt</code>, <code>rebuildSaved</code> and <code>seenTurns</code>, so the next era starts clean, and records <code>hostCompact = { at, turns, archived }</code>. With empty memory it archives first and still declines the summary. The next tail note reads <code>compacted: the host checkpointed this session at &lt;ISO&gt;; N turn(s) were archived first (M in archive). Recall by query or expand a turn; the raw messages were kept.</code></p>
 <p>In the append layout there is a second, plugin-owned checkpoint: <code>smart_context { action:&quot;compact&quot; }</code> folds the update log into the checkpoint immediately, and a full shared pool raises a &quot;compaction due&quot; line that lists the turns about to leave. The due mark is a commit window: the fold waits for the next prompt so the model can write what matters into memory first, and a routine compact is still a loss - it moves the checkpoint and makes the provider re-read it, so the tool description reserves it for a due note. The fold keeps the newest <code>compactKeepTokens</code> of turns and archives the rest immediately, raw kept, rather than leaving them in a pending queue. With <code>rebuildOnCompaction</code> on, the fold also rebuilds the retained tail&#39;s bytes: completed-turn reasoning is dropped, a successful write/edit text result becomes <code>&lt;path&gt; ok</code> and its call keeps only the path, a long successful shell output keeps its last 20 lines, a grep result keeps the files and matched line numbers, a read a later read of the same path repeats becomes a one-line marker, and error results, content/json shapes, user text and the current turn are untouched; <code>rebuildSaved</code> records the characters removed. The host hook still returns the merged document.</p>
 </section>
 <section id="undo">
@@ -263,6 +280,10 @@ img{max-width:100%;height:auto}
 <tr>
 <td><code>compact</code></td>
 <td>fold the append-only update log into a new checkpoint and reset the window. Not routine: it rewrites the checkpoint and costs the provider prefix cache</td>
+</tr>
+<tr>
+<td><code>extend { reason }</code></td>
+<td>raise the working pool once per era, at the warning line; the reason is required, and the grant is clamped by the model window. Refused when disabled, already granted, the window is unknown, or there is no headroom</td>
 </tr>
 <tr>
 <td><code>ref { page, section, gist }</code></td>
@@ -365,15 +386,45 @@ img{max-width:100%;height:auto}
 </tr>
 <tr>
 <td><code>memoryTokens</code></td>
-<td><code>20000</code></td>
+<td><code>100000</code></td>
 <td>&gt;= 1000 - memory cap, estimated</td>
-<td>config file</td>
+<td>config file, profile</td>
 </tr>
 <tr>
 <td><code>workingTokens</code></td>
-<td><code>20000</code></td>
+<td><code>200000</code></td>
 <td>&gt;= 500 - working window cap, estimated</td>
-<td>config file</td>
+<td>config file, profile</td>
+</tr>
+<tr>
+<td><code>compactKeepTokens</code></td>
+<td><code>20000</code></td>
+<td>&gt;= 500 - verbatim turns a fold keeps, estimated</td>
+<td>config file, profile</td>
+</tr>
+<tr>
+<td><code>rebuildOnCompaction</code></td>
+<td><code>false</code></td>
+<td>bool - rebuild the retained tail at a fold</td>
+<td>config file, profile</td>
+</tr>
+<tr>
+<td><code>windowExtend</code></td>
+<td><code>true</code></td>
+<td>bool - allow one working-pool extension per era</td>
+<td>config file, profile</td>
+</tr>
+<tr>
+<td><code>windowExtendFactor</code></td>
+<td><code>2</code></td>
+<td>1.1..4 - requested multiplier, further clamped by the model window</td>
+<td>config file, profile</td>
+</tr>
+<tr>
+<td><code>windowWarnPercent</code></td>
+<td><code>80</code></td>
+<td>50..95 - effective-pool percent at which the note offers extend or fold</td>
+<td>config file, profile</td>
 </tr>
 <tr>
 <td><code>charsPerToken</code></td>
@@ -450,7 +501,7 @@ img{max-width:100%;height:auto}
 <tr>
 <td><code>profiles</code></td>
 <td><code>{ deep }</code></td>
-<td>object - named bundles of the session keys (budgets, erosion, archive bounds, <code>refs</code>, <code>charsPerToken</code>); the install keys are refused; the package ships <code>deep</code> at 100k memory / 200k working</td>
+<td>object - named bundles of the session keys (budgets, extension, erosion, archive bounds, <code>refs</code>, <code>charsPerToken</code>); the install keys are refused; the package ships <code>deep</code> at 100k memory / 200k working</td>
 <td>config file</td>
 </tr>
 <tr>
@@ -482,6 +533,10 @@ img{max-width:100%;height:auto}
 <li>No exact tokenizer or per-model token accounting; the caps are estimates.
 </li>
 <li>No transcript edits; a checkpoint is written by the host&#39;s compaction hook or by the append layout&#39;s <code>compact</code> action, and the plugin owns the host checkpoint only when memory is non-empty.
+</li>
+<li>No provider token meter at build time: the model&#39;s real context window is only a clamp on an extension and is never printed as a used figure.
+</li>
+<li>No extension when the host reports no model window, no second extension in the same era, and no automatic continuation after the fold.
 </li>
 </ul>
 </section>
