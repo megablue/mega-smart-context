@@ -410,7 +410,10 @@ function extendWindow(
   if (record.compact?.mode === "requested") {
     return { text: "smart_context: a fold is already requested; the extension would be discarded", ok: false }
   }
-  const reason = str(request.reason)
+  // An older host schema has no "reason" field and drops it; "gist" and
+  // "query" are long-standing fields, so an installed schema still passes a
+  // reason through until the next restart re-registers the tool.
+  const reason = str(request.reason) ?? str(request.gist) ?? str(request.query)
   if (reason === undefined) {
     return {
       text: 'smart_context: extend needs reason - one line naming what the extra room buys before the fold',

@@ -132,6 +132,7 @@ const VERIFY_COMMAND = new RegExp(
     "\\b(?:npx|pnpx)\\s+(?:tsc|jest|vitest|mocha|pytest|eslint|ruff|mypy|pyright|biome)\\b",
     "\\b(?:tsc|jest|vitest|mocha|ava|pytest|tox|nox|eslint|ruff|mypy|pyright|biome|phpunit|rspec|ctest)\\b",
     "\\bnode\\s+--test\\b",
+    "\\bnode\\s+[^\\s;&|]*\\.(?:test|spec)\\.[cm]?[jt]s\\b",
     "\\bpython\\d?(?:\\.\\d+)?\\s+-m\\s+(?:pytest|unittest|tox|nox)\\b",
     "\\b(?:cargo|go|dotnet|mvn|mvnw|gradle|gradlew|make)\\s+(?:[^\\s;&|]+\\s+)*(?:test|build|check|clippy|nextest)\\b",
     "\\b(?:swift|mix)\\s+test\\b",
@@ -405,7 +406,9 @@ function isVerification(name: string, input: unknown): boolean {
   const canonical = canonicalTool(name)
   if (canonical === "test" || canonical === "check") return true
   if (!SHELL_TOOLS.has(canonical)) return false
-  const command = stringArg(input, ["command", "cmd", "script"]) ?? ""
+  // Code Mode runs nested tools from one outer "execute" call; the check
+  // commands live in the code string, not in a "command" field.
+  const command = stringArg(input, ["command", "cmd", "script", "code"]) ?? ""
   return VERIFY_COMMAND.test(command)
 }
 

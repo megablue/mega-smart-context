@@ -323,3 +323,16 @@ test("a shrunken transcript keeps the one delivered redirect", () => {
   assert.equal(shrunken.state.redirected, true)
   assert.equal(shrunken.redirect, first.redirect)
 })
+
+test("a Code Mode execute that runs a check counts as verification", () => {
+  const messages = [user("u1", "work")]
+  for (let index = 0; index < 8; index += 1) {
+    messages.push(call("c" + index, "id" + index, "execute", { code: "throw new Error('boom " + index + "')" }))
+    messages.push(result("r" + index, "id" + index, "execute", "Error: boom " + index))
+  }
+  messages.push(call("c8", "id8", "execute", { code: "await tools.shell({ command: 'npm run typecheck' })" }))
+  messages.push(result("r8", "id8", "execute", "typecheck passes"))
+  const decision = updateLoopGuard(undefined, messages)
+  assert.notEqual(decision.reason, "failures")
+  assert.equal(decision.state.verifications, 1)
+})
