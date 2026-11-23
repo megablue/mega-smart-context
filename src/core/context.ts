@@ -51,6 +51,14 @@ export interface ContextInput {
   readonly system: ReadonlyArray<SystemPart>
   readonly messages: ReadonlyArray<Message>
   readonly model?: unknown
+  /**
+   * The model's real context window, when the adapter resolved it.
+   *
+   * The context event usually carries a `ModelRef`, not the model record, so the
+   * adapter looks the window up once in the host's model list. Absent means the
+   * window is unknown; the extension refuses rather than guessing.
+   */
+  readonly modelContext?: number
   /** Tool names the host offered on this pass; observed for tool usage only. */
   readonly tools?: ReadonlyArray<string>
 }
@@ -98,7 +106,7 @@ export interface ContextPlan {
 }
 
 /** A model window, when the host happens to hand one over. */
-function modelContextOf(model: unknown): number | undefined {
+export function modelContextOf(model: unknown): number | undefined {
   if (typeof model !== "object" || model === null) return undefined
   const value = model as Record<string, any>
   const candidates = [value.limit?.context, value.info?.limit?.context, value.context]
@@ -313,7 +321,7 @@ export async function buildPayload(input: ContextInput, deps: ContextDeps): Prom
       config,
       hostSystem,
       hostSystemTokens,
-      modelContext: modelContextOf(input.model),
+      modelContext: input.modelContext ?? modelContextOf(input.model),
       raw,
       spans,
       notices: split.notices,

@@ -56,6 +56,7 @@ export async function setup(ctx: PluginContext): Promise<() => Promise<void>> {
   const store = new SessionStore(ctx.storage, { warn, directory: ctx.location.directory })
   const featureMap = createFsFeatureMap()
   const childCache = new Map<string, boolean>()
+  const modelWindows = new Map<string, number>()
   // One project store per setup: it owns the in-memory copy, the per-project
   // lock and the git-root cache behind the whole plugin surface.
   const project = createProjectResolver(ctx, warn)
@@ -66,7 +67,7 @@ export async function setup(ctx: PluginContext): Promise<() => Promise<void>> {
   registrations.push(
     await ctx.session.hook("context", async (event) => {
       try {
-        return await runContextTransform(ctx, event, { store, config, featureMap, childCache, warn, project })
+        return await runContextTransform(ctx, event, { store, config, featureMap, childCache, modelWindows, warn, project })
       } catch (error) {
         // A turn must never break because a pass failed.
         warn("the context pass failed and the request continues: " + messageOf(error))

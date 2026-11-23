@@ -104,6 +104,7 @@ import { extractHtmlSection, extractSection, htmlToText, pageCandidates } from "
 import { deriveVersion, readVersionBase } from "../src/core/version.ts"
 import { balanceCuts, erodeToolResults, gistText, hostMessageOf, isHostCue, isHostJob, isHostMessage, isHostTail, isRealUser, modeReminderOf, noticeOf, rebuildTurn, RESUMED_TEXT, selectAppendWindow, selectWorkingWindow, splitNotices, supersededReads, turnSpans } from "../src/core/view.ts"
 import { livenessFromError } from "../src/adapters/opencode/sessions.ts"
+import { modelWindowOf } from "../src/adapters/opencode/context.ts"
 import { TOOL_DESCRIPTION } from "../src/adapters/opencode/tool.ts"
 import { readPluginVersion } from "../src/adapters/opencode/version.ts"
 import {
@@ -1448,6 +1449,32 @@ const noWindow = await runMemoryTool(
   unknownWindowDeps,
 )
 ok(!noWindow.ok && noWindow.text.includes("model window is unknown"), "an unknown window cannot extend")
+
+const modelWindowCache = new Map()
+const modelWindowHost = {
+  model: {
+    list: async () => ({
+      data: [
+        {
+          providerID: "opencode-go",
+          id: "deepseek-v4.1-flash",
+          modelID: "deepseek-v4.1-flash",
+          limit: { context: 1_000_000 },
+        },
+      ],
+    }),
+  },
+}
+const resolvedWindow = await modelWindowOf(
+  modelWindowHost,
+  { id: "deepseek-v4.1-flash", providerID: "opencode-go" },
+  modelWindowCache,
+)
+ok(resolvedWindow === 1_000_000, "the model window resolves from the host model list")
+ok(
+  modelWindowCache.get("opencode-go/deepseek-v4.1-flash") === 1_000_000,
+  "the resolved model window is cached",
+)
 
 // The note prints the pool cap on every window: the extension decision needs a
 // denominator, and the real window is only the clamp the grant enforces.

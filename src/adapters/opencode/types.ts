@@ -93,6 +93,8 @@ export interface CommandDomain {
 
 export interface ModelDomain {
   transform(callback: (editor: any) => void): Promise<Registration>
+  /** The host's model list, including each model's `limit.context`. */
+  list(input?: unknown): Promise<any>
 }
 
 /** One event the host broadcasts. Only `type` and `data` are read. */

@@ -20,7 +20,7 @@ import { readFile } from "node:fs/promises"
 import { resolve, sep } from "node:path"
 
 import type { ResolvedConfig } from "../../core/config.ts"
-import { buildPayload, type ContextReport } from "../../core/context.ts"
+import { buildPayload, modelContextOf, type ContextReport } from "../../core/context.ts"
 import type { ProjectSessionDeps } from "../../core/project-session.ts"
 import { extractHtmlSection, extractSection, pageCandidates } from "../../core/refs.ts"
 import type { SessionStore } from "../../core/state.ts"
@@ -34,6 +34,8 @@ export interface TransformDeps {
   readonly config: ResolvedConfig
   readonly featureMap: FeatureMapPort
   readonly childCache: Map<string, boolean>
+  /** Resolved model windows, keyed `providerID/modelID`, shared across passes. */
+  readonly modelWindows?: Map<string, number>
   readonly warn: (line: string) => void
   /**
    * The project-facts resolver, when the host can supply one.
@@ -112,6 +114,58 @@ export function createFsFeatureMap(): FeatureMapPort {
   }
 }
 
+/** The `{ id, providerID }` reference a context event hands over. */
+function modelRefOf(model: unknown): { providerID: string; id: string } | undefined {
+  if (typeof model !== "object" || model === null) return undefined
+  const value = model as Record<string, any>
+  const providerID = typeof value.providerID === "string" ? value.providerID : undefined
+  const id =
+    typeof value.id === "string"
+      ? value.id
+      : typeof value.modelID === "string"
+        ? value.modelID
+        : undefined
+  return providerID === undefined || id === undefined ? undefined : { providerID, id }
+}
+
+/**
+ * Resolve the model's real context window.
+ *
+ * The context event carries a ModelRef, not the full model record; the host's
+ * own model list is the only source of `limit.context`. One call per
+ * provider/model is enough, and the cache is shared across passes.
+ */
+export async function modelWindowOf(
+  ctx: { readonly model?: { list?(input?: unknown): Promise<any> } },
+  model: unknown,
+  cache: Map<string, number>,
+): Promise<number | undefined> {
+  const direct = modelContextOf(model)
+  if (direct !== undefined) return direct
+  const ref = modelRefOf(model)
+  if (ref === undefined) return undefined
+  const key = ref.providerID + "/" + ref.id
+  const cached = cache.get(key)
+  if (cached !== undefined) return cached
+  try {
+    const output = await ctx.model?.list?.({})
+    const data = Array.isArray(output) ? output : Array.isArray(output?.data) ? output.data : []
+    for (const entry of data) {
+      const info = entry?.info ?? entry
+      if (info?.providerID !== ref.providerID) continue
+      if (info?.id !== ref.id && info?.modelID !== ref.id) continue
+      const limit = info?.limit?.context
+      if (typeof limit === "number" && Number.isFinite(limit) && limit > 0) {
+        cache.set(key, limit)
+        return limit
+      }
+    }
+  } catch {
+    // Unknown is safe: the extension refuses instead of guessing.
+  }
+  return undefined
+}
+
 export async function runContextTransform(
   ctx: PluginContext,
   event: SessionContextEvent,
@@ -135,12 +189,15 @@ export async function runContextTransform(
     }
   }
 
+  const modelContext = await modelWindowOf(ctx, event.model, deps.modelWindows ?? new Map())
+
   const plan = await buildPayload(
     {
       sessionID,
       system: event.system,
       messages: event.messages,
       model: event.model,
+      modelContext,
       tools:
         event.tools === undefined || event.tools === null
           ? undefined
