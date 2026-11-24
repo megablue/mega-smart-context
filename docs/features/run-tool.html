@@ -1,0 +1,99 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Run tool - one shell with a clock that fits the work - feature map</title>
+<style>
+:root{color-scheme:light dark;--fg:#1d2433;--muted:#5b6475;--bg:#fff;--line:#d8dee9;--accent:#0b6e99;--warn:#8a5a00;--code:#f4f6fa}
+@media (prefers-color-scheme:dark){:root{--fg:#e6eaf2;--muted:#9aa4b8;--bg:#11151c;--line:#2b3342;--accent:#6cc4e8;--warn:#e0b25c;--code:#1a202a}}
+*{box-sizing:border-box}
+body{margin:0 auto;max-width:60rem;padding:2rem 1.25rem 4rem;background:var(--bg);color:var(--fg);font:16px/1.6 system-ui,-apple-system,Segoe UI,sans-serif}
+h1,h2,h3{line-height:1.25;margin:2rem 0 .75rem}
+h1{font-size:1.9rem;border-bottom:2px solid var(--line);padding-bottom:.4rem}
+h2{font-size:1.35rem}
+h3{font-size:1.08rem;color:var(--muted)}
+p,ul,ol,table,pre,blockquote{margin:.75rem 0}
+a{color:var(--accent)}
+code{background:var(--code);padding:.1em .3rem;border-radius:.25rem;font-size:.92em}
+pre{background:var(--code);border:1px solid var(--line);border-radius:.4rem;padding:.8rem 1rem;overflow:auto}
+pre code{background:none;padding:0}
+p.status{color:var(--muted);font-size:.92rem}
+table{border-collapse:collapse;width:100%}
+th,td{border:1px solid var(--line);padding:.4rem .6rem;text-align:left;vertical-align:top}
+th{background:var(--code)}
+blockquote{margin-left:0;padding-left:1rem;border-left:3px solid var(--line);color:var(--muted)}
+</style>
+</head>
+<body>
+<article class="map">
+<h1>Run tool - one shell with a clock that fits the work</h1>
+<p class="status">Status: shipped (0.3.6) - Read when: <code>run</code>, <code>PersistentShell</code>, <code>JobRegistry</code>, <code>TimingStore</code>, <code>classify</code>, <code>.opencode/run.json</code>, the host <code>shell</code> is replaced, or &quot;the command was killed at the timeout&quot;.</p>
+
+<section id="what-it-does">
+<h2>What it does</h2>
+<ul>
+<li>Replaces the host's <code>shell</code> tool in the offered set with <code>run</code>; the model calls it through Code Mode and gets output, exit code, wall time, state and an optional job id.</li>
+<li>Quick commands return as soon as they exit. The persistent PowerShell REPL starts on the first call and is reused, so later quick calls are tens of milliseconds rather than a new process.</li>
+<li>Servers and watchers return a job id as soon as a manifest rule or a built-in pattern says they are ready; they keep running.</li>
+<li>Builds, tests, deploys and CI watches wait for the learned p90. If they overrun, they return a job id, keep running, and send a completion note.</li>
+<li>Nothing is killed on a deadline. <code>timeout</code> is an expected-duration hint; <code>job</code> plus <code>stop:true</code> is the explicit stop.</li>
+</ul>
+</section>
+
+<section id="map">
+<h2>Map</h2>
+<ul>
+<li><code>src/core/run/classify.ts</code> - <code>classify</code>, <code>readManifest</code>, <code>CommandClass</code>, <code>RunManifest</code>, <code>ServiceRule</code>. Built-in service/job patterns and the project manifest.</li>
+<li><code>src/core/run/shell.ts</code> - <code>PersistentShell</code>; <code>prewarm</code>, <code>run</code>, <code>dispose</code>. A long-lived PowerShell REPL.</li>
+<li><code>src/core/run/jobs.ts</code> - <code>JobRegistry</code>, <code>JobResult</code>; <code>start</code>, <code>status</code>, <code>stop</code>, <code>dispose</code>. Session-scoped job ids, output capture and the completion note.</li>
+<li><code>src/core/run/timings.ts</code> - <code>TimingStore</code>; <code>signature</code>, <code>project</code>, <code>p90</code>, <code>deadline</code>, <code>record</code>. The learned clock table.</li>
+<li><code>src/core/run/tool.ts</code> - <code>TOOL_NAME</code>, <code>TOOL_DESCRIPTION</code>, <code>TOOL_INPUT</code>, <code>TOOL_OUTPUT</code>, <code>createRunTool</code>.</li>
+<li><code>src/adapters/opencode/index.ts</code> - creates the shell, jobs and timing store; registers the tool; adds the context hook that deletes <code>event.tools.shell</code> and inserts <code>run</code>; disposes the shell and jobs.</li>
+<li><code>.opencode/run.json</code> - optional per-project <code>services</code> and <code>jobs</code> rules, read by <code>readManifest</code>.</li>
+</ul>
+</section>
+
+<section id="how-why">
+<h2>How &amp; why</h2>
+<p>The host's <code>shell</code> tool has no clock: a dev server either blocks the turn or gets killed at the deadline. The run tool makes the clock part of the classifier. <code>classify</code> checks the project manifest first, then the built-in service patterns (Vite, Next, uvicorn, Flask, dotnet, Rails, ...) and job patterns (npm test/build/deploy, jest, vitest, tsc, <code>gh run watch</code>, git push, docker build).</p>
+<p>A quick command goes to the persistent shell with no timeout. The first call pays the PowerShell start; later calls reuse the shell. Output is capped at 8,000 characters with a head/tail and a job hint so a large log cannot swallow the turn.</p>
+<p>A service starts under <code>JobRegistry</code>; the registry returns a job id as soon as the manifest's <code>ready</code> text or <code>port</code> appears, or after the ready timeout. A job uses <code>TimingStore.deadline</code>: the learned p90 times 1.5, floored at 30 seconds and capped at 30 minutes, raised by a larger <code>timeout</code> hint. If the deadline passes, the call returns the job id and the registry keeps the process alive; a completion note is delivered with <code>ctx.session.synthetic</code>.</p>
+<p><code>job</code> reads the status, <code>job</code> plus <code>stop:true</code> stops it, and both are scoped to the calling session. An unknown id is an error, not another command. The context pass never mutates the transcript; it only changes the offered tool set.</p>
+</section>
+
+<section id="config">
+<h2>Config keys / UI</h2>
+<p>No plugin config keys. The optional project manifest at <code>.opencode/run.json</code>:</p>
+<table>
+<thead><tr><th>Key</th><th>Type</th><th>Meaning</th></tr></thead>
+<tbody>
+<tr><td><code>services[].match</code></td><td>string</td><td>Regex (or case-insensitive substring if the regex is invalid) matched against the command.</td></tr>
+<tr><td><code>services[].ready</code></td><td>string</td><td>Text to wait for in the service output.</td></tr>
+<tr><td><code>services[].port</code></td><td>number</td><td>Port to probe for readiness.</td></tr>
+<tr><td><code>services[].readyTimeoutMs</code></td><td>number</td><td>How long to wait for readiness before returning the job.</td></tr>
+<tr><td><code>jobs[]</code></td><td>string[]</td><td>Commands (substring match) that should use the learned job clock.</td></tr>
+</tbody>
+</table>
+<p>Tool input: <code>command</code>, <code>workdir</code>, <code>timeout</code> (hint), <code>job</code>, <code>stop</code>. No UI; the tool is offered in the Code Mode catalog and in the context payload.</p>
+</section>
+
+<section id="tests">
+<h2>Tests that pin it</h2>
+<ul>
+<li><code>scripts/smoke.mjs</code>: &quot;a short command is classified quick&quot;, &quot;a dev server is classified service&quot;, &quot;a test run is classified job&quot;, &quot;a manifest service rule wins&quot;, &quot;the ready pattern is carried&quot;, &quot;a volatile number collapses in a timing signature&quot;, &quot;the project key is normalized&quot;, &quot;no sample means no learned deadline&quot;, &quot;the default deadline is bounded&quot;, &quot;a larger hint is honored up to the cap&quot;.</li>
+<li>Live check (11/24): first <code>tools.run</code> 167 ms, warm 14 ms; a missing file returned exit 1 with the message in output.</li>
+</ul>
+</section>
+
+<section id="related">
+<h2>Related</h2>
+<ul>
+<li><a href="context-handoff.html">Context handoff</a> - the context hook that swaps <code>shell</code> for <code>run</code>.</li>
+<li><a href="tool-usage.html">Tool usage</a> - the read-only report sees the tool calls the run tool records.</li>
+<li><a href="installation.html">Installation</a> - the copy install; the installed plugin must be re-synced after a source edit.</li>
+</ul>
+</section>
+</article>
+</body>
+</html>

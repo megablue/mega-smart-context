@@ -32,6 +32,8 @@ import {
   MAX_LOOP_GUARD_SIGNATURES,
   loopGuardGreen,
 } from "../src/core/loopguard.ts"
+import { classify } from "../src/core/run/classify.ts"
+import { TimingStore } from "../src/core/run/timings.ts"
 import { buildPayload } from "../src/core/context.ts"
 import { runCompaction } from "../src/core/compaction.ts"
 import { applyEvidence, factId } from "../src/core/facts.ts"
@@ -361,14 +363,14 @@ const host = makeHost()
 const dispose = await plugin.setup(host.ctx)
 ok(typeof host.hooks.context === "function", "the context hook is registered")
 ok(typeof host.hooks.compaction === "function", "the compaction hook is registered")
-ok(host.tools.length === 1 && host.tools[0].name === "smart_context", "smart_context is registered")
+ok(host.tools.length === 2 && host.tools.some((entry) => entry.name === "smart_context") && host.tools.some((entry) => entry.name === "run"), "smart_context and run are registered")
 ok(host.commands.length === 1 && host.commands[0].name === "context", "/context is registered")
 ok(
   host.rpcs.length === 1 && host.rpcs[0].definition === STATUS_RPC,
   "the server registers the status RPC from the shared definition",
 )
 
-const tool = host.tools[0]
+const tool = host.tools.find((entry) => entry.name === "smart_context")
 const callContext = { sessionID: "s1", agent: "build", messageID: "m", id: "t", signal: new AbortController().signal }
 
 // ---------------------------------------------------------------------------
@@ -4143,6 +4145,24 @@ ok(
     guardNorm.guard?.redirectText?.length === MAX_LOOP_GUARD_REDIRECT,
   "a stored guard state is normalized and bounded on load",
 )
+
+// The run tool: the classifier and the learned clock are the shell slot contract.
+const runQuick = classify("Write-Output hi", undefined)
+ok(runQuick.kind === "quick", "a short command is classified quick")
+ok(classify("npm run dev", undefined).kind === "service", "a dev server is classified service")
+ok(classify("npm test", undefined).kind === "job", "a test run is classified job")
+const runManifest = { services: [{ match: "start-api", ready: "listening" }] }
+const runService = classify("start-api --port 3000", runManifest)
+ok(runService.kind === "service", "a manifest service rule wins")
+ok(runService.rule?.ready === "listening", "the ready pattern is carried")
+ok(TimingStore.signature("npm test -- 123456") === "npm test -- #", "a volatile number collapses in a timing signature")
+ok(TimingStore.project("C:\\Work\\App") === "c:/work/app", "the project key is normalized")
+const runTimingsStore = new TimingStore()
+await runTimingsStore.load()
+ok(runTimingsStore.p90("__none__", "__none__") === undefined, "no sample means no learned deadline")
+const runDefaultDeadline = runTimingsStore.deadline("__none__", "__none__", undefined)
+ok(runDefaultDeadline >= 30_000 && runDefaultDeadline <= 30 * 60_000, "the default deadline is bounded")
+ok(runTimingsStore.deadline("__none__", "__none__", 1_800_000) === 1_800_000, "a larger hint is honored up to the cap")
 
 await dispose()
 console.log(`smoke: ${passed} assertions passed`)

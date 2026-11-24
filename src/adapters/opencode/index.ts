@@ -24,7 +24,7 @@ import { runCompaction } from "../../core/compaction.ts"
 import { messageOf } from "../../core/types.ts"
 import { createContextCommand } from "./command.ts"
 import { resolveHostConfig } from "./config.ts"
-import { createFsFeatureMap, runContextTransform } from "./context.ts"
+import { createFsFeatureMap, directoryOf, runContextTransform } from "./context.ts"
 import { createProjectResolver } from "./project.ts"
 import { SessionStore, sameDirectory, StoreConflictError } from "../../core/state.ts"
 import { STATUS_RPC, statsOf, type NoticeRequest, type ProfileRequest, type PurgeRequest, type StatsRequest } from "../../core/status.ts"
@@ -33,6 +33,10 @@ import { retirePinned } from "../../core/notices.ts"
 import { choiceLabel, chooseProfile, profileNames } from "../../core/profiles.ts"
 import { purgeWithUndo, queueRevert, revertTarget } from "../../core/undo.ts"
 import { createSmartContextTool } from "./tool.ts"
+import { JobRegistry } from "../../core/run/jobs.ts"
+import { PersistentShell } from "../../core/run/shell.ts"
+import { TimingStore } from "../../core/run/timings.ts"
+import { createRunTool, TOOL_DESCRIPTION as RUN_TOOL_DESCRIPTION, TOOL_INPUT as RUN_TOOL_INPUT, TOOL_NAME as RUN_TOOL_NAME } from "../../core/run/tool.ts"
 import { readPluginVersion } from "./version.ts"
 import { sweepOrphanedSessions } from "./sessions.ts"
 import type { PluginContext, Registration } from "./types.ts"
@@ -67,7 +71,16 @@ export async function setup(ctx: PluginContext): Promise<() => Promise<void>> {
   registrations.push(
     await ctx.session.hook("context", async (event) => {
       try {
-        return await runContextTransform(ctx, event, { store, config, featureMap, childCache, modelWindows, warn, project })
+        const report = await runContextTransform(ctx, event, { store, config, featureMap, childCache, modelWindows, warn, project })
+        try {
+          if (event !== null && typeof event === "object" && event.tools !== null && typeof event.tools === "object") {
+            delete event.tools.shell
+            event.tools[RUN_TOOL_NAME] = { description: RUN_TOOL_DESCRIPTION, input: RUN_TOOL_INPUT }
+          }
+        } catch (error) {
+          warn("run tool wire update failed: " + messageOf(error))
+        }
+        return report
       } catch (error) {
         // A turn must never break because a pass failed.
         warn("the context pass failed and the request continues: " + messageOf(error))
@@ -113,6 +126,31 @@ export async function setup(ctx: PluginContext): Promise<() => Promise<void>> {
       )
     }),
   )
+
+  // The run tool is the shell slot, not a second plugin. A persistent REPL
+  // keeps quick commands cheap; services and jobs own their clocks and never
+  // die on a deadline.
+  const runShell = new PersistentShell(warn)
+  const runTimings = new TimingStore()
+  await runTimings.load()
+  const runJobs = new JobRegistry((sessionID, text) => {
+    void ctx.session.synthetic({ sessionID, text, resume: true }).catch((error) => {
+      warn("run completion note failed: " + messageOf(error))
+    })
+  })
+  const runTool = createRunTool({
+    shell: runShell,
+    jobs: runJobs,
+    timings: runTimings,
+    directoryOf: (sessionID) => directoryOf(ctx, sessionID),
+    warn,
+  })
+  try {
+    registrations.push(await ctx.tool.transform((editor) => editor.add(runTool)))
+  } catch (error) {
+    warn("run tool registration with codemode failed, retrying without it: " + messageOf(error))
+    registrations.push(await ctx.tool.transform((editor) => editor.add({ ...runTool, options: {} })))
+  }
 
   if (config.manualCommand) {
     try {
@@ -271,6 +309,8 @@ export async function setup(ctx: PluginContext): Promise<() => Promise<void>> {
   void sweepOrphanedSessions(ctx, warn)
 
   return async () => {
+    runShell.dispose()
+    runJobs.dispose()
     for (const registration of [...registrations].reverse()) {
       try {
         await registration.dispose()

@@ -4,9 +4,11 @@ Next: `docs/features/index.html` - the feature map. Read only the page for your 
 
 **A snapshot, not a source of truth.** This file goes stale by design. If it disagrees with the code, the code is right. The process doc is `AGENTS.md`, the feature map is `docs/features/` and the behavior spec is `docs/SPEC.html`. This file is the volatile one - it exists so a new session knows *where things stand*, not *how they work*.
 
-As of `main` (append-only) - 2026-11-22.
+As of `feat/tokeneconomizer-integration` - 2026-11-24.
 
 ## State
+
+- **The run tool is integrated (11/24).** `src/core/run/` owns the persistent shell, classifier, job registry and timing store; `src/adapters/opencode/index.ts` registers `run` and the context hook removes the host `shell` and offers `run`. The standalone `mega-run` plugin is retired. The classifier and timing contract are pinned in `scripts/smoke.mjs`; typecheck and smoke pass. The timing table still lives at `~/.config/opencode/mega-run/timings.json`.
 
 - **Installer restored to the mega-skillstate reference (11/22).** `scripts/install.ts` is the reference copy installer again: `files[]` plus `package.json`, byte-drift reporting, `--help`/`--uninstall`, detailed junction status, and a real `import.meta.url` guard so `test:install` can import it. Installer smoke 17; typecheck passes.
 

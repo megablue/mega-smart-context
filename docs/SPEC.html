@@ -354,6 +354,17 @@ img{max-width:100%;height:auto}
 <p>The same output reports a rollback when one has been applied - <code>last undo: before &lt;turn&gt; &middot; N memory key(s) restored, M turn(s) dropped</code>, with a <code>not restorable</code> count when the journal could only do part of the job - and the journal itself as <code>undo journal: N turn(s), oldest &lt;turn&gt; &middot; /undo rolls these back</code>.</p>
 <p>The version is <code>MAJOR.MINOR.PATCH</code>: MAJOR.MINOR is the released line, and PATCH is the number of commits since the base recorded in <code>package.json</code>, so it advances with every commit and the README version badge follows the same field. What <code>/context</code> prints is the loaded build&#39;s own version, which lags the repository until the install is re-synced.</p>
 </section>
+<section id="run-tool">
+<h2>The run tool</h2>
+<p>The plugin replaces the host's <code>shell</code> with <code>run</code> in the offered tool set. The model calls it through Code Mode and receives the output, exit code, wall time, state and an optional job id. A command is classified before it starts:</p>
+<ul>
+<li><strong>Quick commands</strong> return as soon as they exit. There is no deadline.</li>
+<li><strong>Servers and watchers</strong> return a job id as soon as they are ready and keep running. Readiness comes from an optional project manifest or a built-in dev-server pattern.</li>
+<li><strong>Builds, tests, deploys and CI watches</strong> wait for a learned p90, then return a job id if they overrun; the process keeps running and a completion note arrives later.</li>
+<li><strong>Jobs</strong> are read with <code>job</code> and stopped with <code>job</code> plus <code>stop:true</code>. Jobs are scoped to the session.</li>
+</ul>
+<p><code>timeout</code> is an expected-duration hint, never a hard cap; nothing is killed on a deadline. An optional <code>.opencode/run.json</code> can add per-project <code>services</code> (with <code>match</code>, <code>ready</code>, <code>port</code>, <code>readyTimeoutMs</code>) and <code>jobs</code> rules. The tool has no plugin config keys and no UI.</p>
+</section>
 <section id="settings">
 <section id="token-economizer">
 <h2>Loop guard, project facts and tool usage</h2>
