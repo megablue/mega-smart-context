@@ -136,6 +136,18 @@ export async function setup(ctx: PluginContext): Promise<() => Promise<void>> {
     }),
   )
 
+  // A stale runtime binding can outlive the catalog removal; deny the call
+  // rather than let a model that remembers the old name execute it.
+  if (typeof ctx.tool.hook === "function") {
+    registrations.push(
+      await ctx.tool.hook("execute.before", async (event: any) => {
+        if (event !== null && typeof event === "object" && event.tool === "shell") {
+          throw new Error("The shell tool is replaced by run. Use run instead.")
+        }
+      }),
+    )
+  }
+
   // The run tool is the shell slot, not a second plugin. A persistent REPL
   // keeps quick commands cheap; services and jobs own their clocks and never
   // die on a deadline.

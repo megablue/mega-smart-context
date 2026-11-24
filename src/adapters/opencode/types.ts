@@ -69,6 +69,7 @@ export interface ToolEditor {
 
 export interface ToolDomain {
   transform(callback: (editor: ToolEditor) => void): Promise<Registration>
+  hook?(name: string, callback: (event: any) => Promise<void> | void): Promise<Registration>
   list(): Promise<ReadonlyArray<{ readonly name: string }>>
 }
 

@@ -271,6 +271,7 @@ ok(win.chars <= 300 * 4 || win.overBudget, "the window stays within budget or re
 
 function makeHost(options = {}) {
   const hooks = {}
+  const toolHooks = {}
   const tools = []
   tools.push({
     name: "shell",
@@ -348,6 +349,10 @@ function makeHost(options = {}) {
         })
         return { dispose: async () => {} }
       },
+      async hook(name, callback) {
+        toolHooks[name] = callback
+        return { dispose: async () => {} }
+      },
       async list() {
         return tools.map((tool) => ({ name: tool.name }))
       },
@@ -365,7 +370,7 @@ function makeHost(options = {}) {
       },
     },
   }
-  return { ctx, hooks, tools, commands, replies, synthetics, rpcs, storage }
+  return { ctx, hooks, toolHooks, tools, commands, replies, synthetics, rpcs, storage }
 }
 
 const { default: plugin } = await import(pathToFileURL(resolve(root, "server.ts")).href)
@@ -377,6 +382,14 @@ ok(typeof host.hooks.context === "function", "the context hook is registered")
 ok(typeof host.hooks.compaction === "function", "the compaction hook is registered")
 ok(host.tools.length === 2 && host.tools.some((entry) => entry.name === "smart_context") && host.tools.some((entry) => entry.name === "run"), "smart_context and run are registered")
 ok(!host.tools.some((entry) => entry.name === "shell"), "the runtime shell tool is removed")
+ok(typeof host.toolHooks["execute.before"] === "function", "the shell guard is registered")
+let shellDenied = false
+try {
+  await host.toolHooks["execute.before"]({ tool: "shell" })
+} catch {
+  shellDenied = true
+}
+ok(shellDenied, "the shell tool call is denied")
 ok(host.commands.length === 1 && host.commands[0].name === "context", "/context is registered")
 ok(
   host.rpcs.length === 1 && host.rpcs[0].definition === STATUS_RPC,
