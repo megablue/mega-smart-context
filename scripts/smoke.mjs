@@ -272,6 +272,12 @@ ok(win.chars <= 300 * 4 || win.overBudget, "the window stays within budget or re
 function makeHost(options = {}) {
   const hooks = {}
   const tools = []
+  tools.push({
+    name: "shell",
+    description: "host shell",
+    input: { type: "object" },
+    execute: async () => ({ content: [{ type: "text", text: "shell" }] }),
+  })
   const commands = []
   const replies = []
   const synthetics = []
@@ -333,7 +339,13 @@ function makeHost(options = {}) {
     },
     tool: {
       async transform(callback) {
-        callback({ add: (tool) => tools.push(tool) })
+        callback({
+          add: (tool) => tools.push(tool),
+          remove: (id) => {
+            const index = tools.findIndex((tool) => tool.name === id)
+            if (index >= 0) tools.splice(index, 1)
+          },
+        })
         return { dispose: async () => {} }
       },
       async list() {
@@ -364,6 +376,7 @@ const dispose = await plugin.setup(host.ctx)
 ok(typeof host.hooks.context === "function", "the context hook is registered")
 ok(typeof host.hooks.compaction === "function", "the compaction hook is registered")
 ok(host.tools.length === 2 && host.tools.some((entry) => entry.name === "smart_context") && host.tools.some((entry) => entry.name === "run"), "smart_context and run are registered")
+ok(!host.tools.some((entry) => entry.name === "shell"), "the runtime shell tool is removed")
 ok(host.commands.length === 1 && host.commands[0].name === "context", "/context is registered")
 ok(
   host.rpcs.length === 1 && host.rpcs[0].definition === STATUS_RPC,

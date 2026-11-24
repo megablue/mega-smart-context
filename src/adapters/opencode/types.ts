@@ -64,6 +64,7 @@ export interface ToolDefinition {
 
 export interface ToolEditor {
   add(tool: ToolDefinition): void
+  remove?(id: string): void
 }
 
 export interface ToolDomain {

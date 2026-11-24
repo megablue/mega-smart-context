@@ -127,6 +127,15 @@ export async function setup(ctx: PluginContext): Promise<() => Promise<void>> {
     }),
   )
 
+  // The host's shell is the tool this plugin replaces. Removing it from the
+  // registry is what makes the replacement real: deleting it from event.tools
+  // only hides it from the offered list, while tools.shell stays callable.
+  registrations.push(
+    await ctx.tool.transform((editor) => {
+      if (typeof editor.remove === "function") editor.remove("shell")
+    }),
+  )
+
   // The run tool is the shell slot, not a second plugin. A persistent REPL
   // keeps quick commands cheap; services and jobs own their clocks and never
   // die on a deadline.

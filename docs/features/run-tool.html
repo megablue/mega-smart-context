@@ -28,12 +28,12 @@ blockquote{margin-left:0;padding-left:1rem;border-left:3px solid var(--line);col
 <body>
 <article class="map">
 <h1>Run tool - one shell with a clock that fits the work</h1>
-<p class="status">Status: shipped (0.3.6) - Read when: <code>run</code>, <code>PersistentShell</code>, <code>JobRegistry</code>, <code>TimingStore</code>, <code>classify</code>, <code>.opencode/run.json</code>, the host <code>shell</code> is replaced, or &quot;the command was killed at the timeout&quot;.</p>
+<p class="status">Status: shipped (0.3.7) - Read when: <code>run</code>, <code>PersistentShell</code>, <code>JobRegistry</code>, <code>TimingStore</code>, <code>classify</code>, <code>.opencode/run.json</code>, the host <code>shell</code> is replaced, or &quot;the command was killed at the timeout&quot;.</p>
 
 <section id="what-it-does">
 <h2>What it does</h2>
 <ul>
-<li>Replaces the host's <code>shell</code> tool in the offered set with <code>run</code>; the model calls it through Code Mode and gets output, exit code, wall time, state and an optional job id.</li>
+<li>Removes the host's <code>shell</code> tool from the registry and the offered set and offers <code>run</code> in its place; the model calls it through Code Mode and gets output, exit code, wall time, state and an optional job id.</li>
 <li>Quick commands return as soon as they exit. The persistent PowerShell REPL starts on the first call and is reused, so later quick calls are tens of milliseconds rather than a new process.</li>
 <li>Servers and watchers return a job id as soon as a manifest rule or a built-in pattern says they are ready; they keep running.</li>
 <li>Builds, tests, deploys and CI watches wait for the learned p90. If they overrun, they return a job id, keep running, and send a completion note.</li>
@@ -49,7 +49,7 @@ blockquote{margin-left:0;padding-left:1rem;border-left:3px solid var(--line);col
 <li><code>src/core/run/jobs.ts</code> - <code>JobRegistry</code>, <code>JobResult</code>; <code>start</code>, <code>status</code>, <code>stop</code>, <code>dispose</code>. Session-scoped job ids, output capture and the completion note.</li>
 <li><code>src/core/run/timings.ts</code> - <code>TimingStore</code>; <code>signature</code>, <code>project</code>, <code>p90</code>, <code>deadline</code>, <code>record</code>. The learned clock table.</li>
 <li><code>src/core/run/tool.ts</code> - <code>TOOL_NAME</code>, <code>TOOL_DESCRIPTION</code>, <code>TOOL_INPUT</code>, <code>TOOL_OUTPUT</code>, <code>createRunTool</code>.</li>
-<li><code>src/adapters/opencode/index.ts</code> - creates the shell, jobs and timing store; registers the tool; adds the context hook that deletes <code>event.tools.shell</code> and inserts <code>run</code>; disposes the shell and jobs.</li>
+<li><code>src/adapters/opencode/index.ts</code> - creates the shell, jobs and timing store; registers the tool; removes <code>shell</code> from the tool registry via <code>ToolEditor.remove</code> when the host supports it; adds the context hook that deletes <code>event.tools.shell</code> and inserts <code>run</code>; disposes the shell and jobs.</li>
 <li><code>.opencode/run.json</code> - optional per-project <code>services</code> and <code>jobs</code> rules, read by <code>readManifest</code>.</li>
 </ul>
 </section>
@@ -59,7 +59,7 @@ blockquote{margin-left:0;padding-left:1rem;border-left:3px solid var(--line);col
 <p>The host's <code>shell</code> tool has no clock: a dev server either blocks the turn or gets killed at the deadline. The run tool makes the clock part of the classifier. <code>classify</code> checks the project manifest first, then the built-in service patterns (Vite, Next, uvicorn, Flask, dotnet, Rails, ...) and job patterns (npm test/build/deploy, jest, vitest, tsc, <code>gh run watch</code>, git push, docker build).</p>
 <p>A quick command goes to the persistent shell with no timeout. The first call pays the PowerShell start; later calls reuse the shell. Output is capped at 8,000 characters with a head/tail and a job hint so a large log cannot swallow the turn.</p>
 <p>A service starts under <code>JobRegistry</code>; the registry returns a job id as soon as the manifest's <code>ready</code> text or <code>port</code> appears, or after the ready timeout. A job uses <code>TimingStore.deadline</code>: the learned p90 times 1.5, floored at 30 seconds and capped at 30 minutes, raised by a larger <code>timeout</code> hint. If the deadline passes, the call returns the job id and the registry keeps the process alive; a completion note is delivered with <code>ctx.session.synthetic</code>.</p>
-<p><code>job</code> reads the status, <code>job</code> plus <code>stop:true</code> stops it, and both are scoped to the calling session. An unknown id is an error, not another command. The context pass never mutates the transcript; it only changes the offered tool set.</p>
+<p><code>job</code> reads the status, <code>job</code> plus <code>stop:true</code> stops it, and both are scoped to the calling session. An unknown id is an error, not another command. The adapter removes <code>shell</code> from the tool registry (<code>ToolEditor.remove</code>) and the context pass deletes it from the offered set, so the runtime <code>tools.shell</code> binding is gone. The transcript is untouched.</p>
 </section>
 
 <section id="config">
@@ -82,6 +82,7 @@ blockquote{margin-left:0;padding-left:1rem;border-left:3px solid var(--line);col
 <h2>Tests that pin it</h2>
 <ul>
 <li><code>scripts/smoke.mjs</code>: &quot;a short command is classified quick&quot;, &quot;a dev server is classified service&quot;, &quot;a test run is classified job&quot;, &quot;a manifest service rule wins&quot;, &quot;the ready pattern is carried&quot;, &quot;a volatile number collapses in a timing signature&quot;, &quot;the project key is normalized&quot;, &quot;no sample means no learned deadline&quot;, &quot;the default deadline is bounded&quot;, &quot;a larger hint is honored up to the cap&quot;.</li>
+<li><code>scripts/smoke.mjs</code>: &quot;the runtime shell tool is removed&quot;.</li>
 <li>Live check (11/24): first <code>tools.run</code> 167 ms, warm 14 ms; a missing file returned exit 1 with the message in output.</li>
 </ul>
 </section>
