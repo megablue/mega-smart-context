@@ -4,10 +4,11 @@ Next: `docs/features/index.html` - the feature map. Read only the page for your 
 
 **A snapshot, not a source of truth.** This file goes stale by design. If it disagrees with the code, the code is right. The process doc is `AGENTS.md`, the feature map is `docs/features/` and the behavior spec is `docs/SPEC.html`. This file is the volatile one - it exists so a new session knows *where things stand*, not *how they work*.
 
-As of `feat/tokeneconomizer-integration` - 2026-11-24.
+As of `feat/tokeneconomizer-integration` - 2026-11-25.
 
 ## State
 
+- **npm run scripts go direct (11/25).** The run tool resolves `npm run <script>` from `package.json` and runs the underlying command directly with the npm lifecycle env and `node_modules/.bin` on PATH; pre/post scripts and extra arguments stay on npm. This removes the wrapper's start-up window, which was long enough for a host plugin reload to dispose the shell and kill `npm run plugin:status` at ~0.55s. The direct status completes in ~0.2s. Pinned by smoke and the feature page.
 - **The run tool is integrated (11/24).** `src/core/run/` owns the persistent shell, classifier, job registry and timing store; `src/adapters/opencode/index.ts` registers `run`, removes the host `shell` from the tool registry via `ToolEditor.remove` when available, the context hook also removes it from the offered set, and a `tool.execute.before` guard denies a stale `shell` call. The standalone `mega-run` plugin is retired. The classifier and timing contract are pinned in `scripts/smoke.mjs`; typecheck and smoke pass. The timing table still lives at `~/.config/opencode/mega-run/timings.json`.
 
 - **Installer restored to the mega-skillstate reference (11/22).** `scripts/install.ts` is the reference copy installer again: `files[]` plus `package.json`, byte-drift reporting, `--help`/`--uninstall`, detailed junction status, and a real `import.meta.url` guard so `test:install` can import it. Installer smoke 17; typecheck passes.

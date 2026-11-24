@@ -1,4 +1,5 @@
 import { classify, readManifest } from "./classify.ts"
+import { npmScriptCommand, resolveNpmScript } from "./npm.ts"
 import type { JobRegistry, JobResult } from "./jobs.ts"
 import type { PersistentShell } from "./shell.ts"
 import { TimingStore } from "./timings.ts"
@@ -7,6 +8,7 @@ export const TOOL_NAME = "run"
 
 export const TOOL_DESCRIPTION = `Run a shell command with a clock that fits the work.
 - Omit timeout for quick commands: the call returns when the command exits, usually in under a second.
+- npm run <script> runs the package script directly with the npm lifecycle env and node_modules/.bin on PATH; pre/post scripts or extra arguments fall back to npm.
 - Servers and watchers (vite, npm run dev, dev-preview, gh run watch) return a job id as soon as they are ready and keep running.
 - Builds, tests and deploys wait for their learned p90; if they overrun, they return a job id, keep running, and send a completion note. Nothing is killed on a deadline.
 - Pass job to check a running job; pass job and stop:true to stop it. timeout is a hint, never a hard cap.`
@@ -144,10 +146,12 @@ export function createRunTool(deps: RunToolDeps): any {
       const manifest = await readManifest(directory)
       const classified = classify(value.command, manifest)
       const hint = typeof value.timeout === "number" && Number.isFinite(value.timeout) ? value.timeout : undefined
+      const direct = resolveNpmScript(directory, value.command)
+      const command = direct === undefined ? value.command : npmScriptCommand(direct)
 
       if (classified.kind === "quick") {
         try {
-          const result = await deps.shell.run(value.command, directory, 10_000)
+          const result = await deps.shell.run(command, directory, 10_000)
           return done({
             output: result.output,
             exitCode: result.exitCode,
@@ -159,7 +163,7 @@ export function createRunTool(deps: RunToolDeps): any {
         }
       }
 
-      const job = deps.jobs.start(sessionID, value.command, directory, classified.kind)
+      const job = deps.jobs.start(sessionID, command, directory, classified.kind)
 
       if (classified.kind === "service") {
         const result = await deps.jobs.waitForService(job, {

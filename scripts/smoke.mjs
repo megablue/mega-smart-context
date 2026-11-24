@@ -33,6 +33,7 @@ import {
   loopGuardGreen,
 } from "../src/core/loopguard.ts"
 import { classify } from "../src/core/run/classify.ts"
+import { npmScriptCommand, resolveNpmScript } from "../src/core/run/npm.ts"
 import { TimingStore } from "../src/core/run/timings.ts"
 import { buildPayload } from "../src/core/context.ts"
 import { runCompaction } from "../src/core/compaction.ts"
@@ -4189,6 +4190,16 @@ ok(runTimingsStore.p90("__none__", "__none__") === undefined, "no sample means n
 const runDefaultDeadline = runTimingsStore.deadline("__none__", "__none__", undefined)
 ok(runDefaultDeadline >= 30_000 && runDefaultDeadline <= 30 * 60_000, "the default deadline is bounded")
 ok(runTimingsStore.deadline("__none__", "__none__", 1_800_000) === 1_800_000, "a larger hint is honored up to the cap")
+const runNpmVersion = resolveNpmScript(".", "npm run version:check")
+ok(runNpmVersion?.command === "node scripts/version.mjs --check", "an npm run script resolves to its package command")
+const runNpmStatus = resolveNpmScript(".", "npm run plugin:status")
+ok(runNpmStatus?.command === "node scripts/install.ts --status", "the status script resolves to its package command")
+ok(resolveNpmScript(".", "npm exec -- node -v") === undefined, "npm exec is not a package script")
+ok(resolveNpmScript(".", "npm run __no_such_script__") === undefined, "an unknown script falls back to npm")
+const runNpmDirect = runNpmVersion === undefined ? "" : npmScriptCommand(runNpmVersion)
+ok(runNpmDirect.includes("npm_lifecycle_event = 'version:check'"), "the direct npm command carries the lifecycle event")
+ok(runNpmDirect.includes("node_modules") && runNpmDirect.includes(".bin"), "the direct npm command puts node_modules/.bin on PATH")
+ok(runNpmDirect.includes("try { node scripts/version.mjs --check } finally"), "the direct npm command restores the environment")
 
 await dispose()
 console.log(`smoke: ${passed} assertions passed`)
