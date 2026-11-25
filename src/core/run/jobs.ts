@@ -1,7 +1,7 @@
 import { spawn, type ChildProcess } from "node:child_process"
 import { randomUUID } from "node:crypto"
 import { connect } from "node:net"
-import { hideConsoleWindow } from "./windows.ts"
+import { consoleSpawnOptions } from "./windows.ts"
 
 export type JobState = "running" | "completed" | "failed" | "stopped"
 
@@ -70,12 +70,12 @@ function shellSpawn(command: string, cwd: string): ChildProcess {
     return spawn(
       "powershell.exe",
       ["-NoLogo", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", command],
-      { cwd, windowsHide: hideConsoleWindow(), stdio: ["ignore", "pipe", "pipe"], env: { ...process.env, NO_COLOR: "1", CI: "1" } },
+      { ...consoleSpawnOptions(), cwd, stdio: ["ignore", "pipe", "pipe"], env: { ...process.env, NO_COLOR: "1", CI: "1" } },
     )
   }
   return spawn("bash", ["-lc", command], {
+    ...consoleSpawnOptions(),
     cwd,
-    windowsHide: hideConsoleWindow(),
     stdio: ["ignore", "pipe", "pipe"],
     env: { ...process.env, NO_COLOR: "1", CI: "1" },
   })

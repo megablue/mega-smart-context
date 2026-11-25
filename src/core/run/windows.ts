@@ -1,13 +1,19 @@
 /**
  * Windows allocates a console for a console-app child when its parent has none.
- * `windowsHide` gives the immediate child no console, so its node/npm/vite
- * grandchildren can allocate a visible console and steal focus. Share the
- * host's console when the host has one; hide only when there is nothing to
- * inherit.
+ * `windowsHide` alone gives the top-level child no console, so its node/npm/vite
+ * grandchildren can allocate a visible console and steal focus. If the host has
+ * a console, share it (windowsHide: false). Otherwise give the child its own
+ * console and hide it (detached: true, windowsHide: true) so descendants inherit
+ * a hidden console instead of allocating a visible one.
  */
-export function hideConsoleWindow(
+export interface ConsoleSpawnOptions {
+  windowsHide: boolean
+  detached: boolean
+}
+
+export function consoleSpawnOptions(
   hostHasConsole: boolean = Boolean(process.stdout.isTTY || process.stderr.isTTY),
-): boolean {
-  if (process.platform !== "win32") return true
-  return !hostHasConsole
+): ConsoleSpawnOptions {
+  if (process.platform !== "win32") return { windowsHide: true, detached: false }
+  return hostHasConsole ? { windowsHide: false, detached: false } : { windowsHide: true, detached: true }
 }
