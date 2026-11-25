@@ -39,7 +39,7 @@ const JOB_PATTERNS = [
   /\b(?:npm|pnpm|yarn|bun)\s+(?:run\s+)?(?:test|build|deploy|release|lint|typecheck|e2e)\b/i,
   /\b(?:jest|vitest|playwright|cypress|puppeteer|tsc)\b/i,
   /\bgh\s+run\s+(?:watch|view|list)\b/i,
-  /\bgit\s+(?:push|fetch|pull|clone|rebase|merge)\b/i,
+  /\bgit\s+clone\b/i,
   /\bdocker\s+(?:build|compose)\b/i,
   /\b(?:deploy|release)\b/i,
 ]
