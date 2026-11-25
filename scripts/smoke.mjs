@@ -35,6 +35,7 @@ import {
 import { classify } from "../src/core/run/classify.ts"
 import { npmScriptCommand, resolveNpmScript } from "../src/core/run/npm.ts"
 import { TimingStore } from "../src/core/run/timings.ts"
+import { hideConsoleWindow } from "../src/core/run/windows.ts"
 import { buildPayload } from "../src/core/context.ts"
 import { runCompaction } from "../src/core/compaction.ts"
 import { applyEvidence, factId } from "../src/core/facts.ts"
@@ -4200,6 +4201,8 @@ const runNpmDirect = runNpmVersion === undefined ? "" : npmScriptCommand(runNpmV
 ok(runNpmDirect.includes("npm_lifecycle_event = 'version:check'"), "the direct npm command carries the lifecycle event")
 ok(runNpmDirect.includes("node_modules") && runNpmDirect.includes(".bin"), "the direct npm command puts node_modules/.bin on PATH")
 ok(runNpmDirect.includes("try { node scripts/version.mjs --check } finally"), "the direct npm command restores the environment")
+ok(hideConsoleWindow(true) === (process.platform === "win32" ? false : true), "a host console is shared on Windows")
+ok(hideConsoleWindow(false) === true, "no host console keeps the child hidden")
 
 await dispose()
 console.log(`smoke: ${passed} assertions passed`)

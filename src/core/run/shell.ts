@@ -1,5 +1,6 @@
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process"
 import { randomUUID } from "node:crypto"
+import { hideConsoleWindow } from "./windows.ts"
 
 export interface ShellResult {
   output: string
@@ -61,7 +62,7 @@ export class PersistentShell {
     const exe = process.platform === "win32" ? "powershell.exe" : "pwsh"
     const encoded = Buffer.from(LOOP, "utf16le").toString("base64")
     const proc = spawn(exe, ["-NoLogo", "-NoProfile", "-NonInteractive", "-EncodedCommand", encoded], {
-      windowsHide: true,
+      windowsHide: hideConsoleWindow(),
       stdio: ["pipe", "pipe", "pipe"],
       env: { ...process.env, TERM: "dumb", NO_COLOR: "1", CLICOLOR: "0" },
     })

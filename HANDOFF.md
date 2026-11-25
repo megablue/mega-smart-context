@@ -8,6 +8,7 @@ As of `feat/tokeneconomizer-integration` - 2026-11-25.
 
 ## State
 
+- **Console focus fixed (11/25).** The run tool's Windows shell and job spawns now share the host console when the host has a TTY (`hideConsoleWindow`); a hidden top-level PowerShell has no console, so its `node`/`npm`/`vite` grandchildren used to allocate a visible console and steal focus. When the host has no console the child stays hidden. Pinned by smoke; installed 0.3.11.
 - **npm run scripts go direct (11/25).** The run tool resolves `npm run <script>` from `package.json` and runs the underlying command directly with the npm lifecycle env and `node_modules/.bin` on PATH; pre/post scripts and extra arguments stay on npm. This removes the wrapper's start-up window, which was long enough for a host plugin reload to dispose the shell and kill `npm run plugin:status` at ~0.55s. The direct status completes in ~0.2s. Pinned by smoke and the feature page.
 - **The run tool is integrated (11/24).** `src/core/run/` owns the persistent shell, classifier, job registry and timing store; `src/adapters/opencode/index.ts` registers `run`, removes the host `shell` from the tool registry via `ToolEditor.remove` when available, the context hook also removes it from the offered set, and a `tool.execute.before` guard denies a stale `shell` call. The standalone `mega-run` plugin is retired. The classifier and timing contract are pinned in `scripts/smoke.mjs`; typecheck and smoke pass. The timing table still lives at `~/.config/opencode/mega-run/timings.json`.
 

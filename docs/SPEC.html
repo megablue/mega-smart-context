@@ -358,6 +358,7 @@ img{max-width:100%;height:auto}
 <h2>The run tool</h2>
 <p>The plugin removes the host's <code>shell</code> tool from the registered tool set and offers <code>run</code> in its place. The model calls it through Code Mode and receives the output, exit code, wall time, state and an optional job id. The removal is in the registry, not only the offered list, and a before-execute guard rejects a stale <code>shell</code> call with a use-run error. A command is classified before it starts:</p>
 <p>An <code>npm run &lt;script&gt;</code> is resolved from the project's <code>package.json</code> and run directly with the npm lifecycle environment and <code>node_modules/.bin</code> on <code>PATH</code>; pre/post scripts and extra arguments stay on npm. This removes the wrapper's start-up window, during which a host plugin reload can dispose the shell.</p>
+<p>On Windows the shell and job children share the host console when the host has one, so their <code>node</code>/<code>npm</code>/<code>vite</code> grandchildren do not allocate a visible console and steal focus. When the host has no console, the child stays hidden.</p>
 <ul>
 <li><strong>Quick commands</strong> return as soon as they exit. There is no deadline.</li>
 <li><strong>Servers and watchers</strong> return a job id as soon as they are ready and keep running. Readiness comes from an optional project manifest or a built-in dev-server pattern.</li>
