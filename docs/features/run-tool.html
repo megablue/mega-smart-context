@@ -28,7 +28,7 @@ blockquote{margin-left:0;padding-left:1rem;border-left:3px solid var(--line);col
 <body>
 <article class="map">
 <h1>Run tool - one shell with a clock that fits the work</h1>
-<p class="status">Status: shipped (0.3.16) - Read when: <code>run</code>, <code>PersistentShell</code>, <code>JobRegistry</code>, <code>TimingStore</code>, <code>classify</code>, <code>resolveNpmScript</code>, <code>.opencode/run.json</code>, the host <code>shell</code> is replaced, or &quot;the command was killed at the timeout&quot;.</p>
+<p class="status">Status: shipped (0.3.17) - Read when: <code>run</code>, <code>PersistentShell</code>, <code>JobRegistry</code>, <code>TimingStore</code>, <code>classify</code>, <code>resolveNpmScript</code>, <code>.opencode/run.json</code>, the host <code>shell</code> is replaced, or &quot;the command was killed at the timeout&quot;.</p>
 
 <section id="what-it-does">
 <h2>What it does</h2>
@@ -39,6 +39,7 @@ blockquote{margin-left:0;padding-left:1rem;border-left:3px solid var(--line);col
 <li>On Windows the shell and job children share the host console when the host has one, so <code>node</code>/<code>npm</code>/<code>vite</code> grandchildren cannot allocate a new visible console and steal focus; otherwise the job/service child gets a hidden console that its <code>node</code>/<code>npm</code>/<code>vite</code> descendants inherit, so no visible console is allocated and focus is not stolen. The persistent shell remains on <code>windowsHide: true</code>.</li>
 <li>A host plugin reload does not abort an in-flight <code>run</code>: the shell finishes the current command before it stops, and running jobs keep running.</li>
 <li>One-shot <code>git push</code>/<code>fetch</code>/<code>pull</code> are quick commands and return their output; only <code>git clone</code> stays a job.</li>
+<li>The shell reports an up-to-date <code>git push</code> as success; PowerShell's <code>$LASTEXITCODE</code> is <code>-1</code> for that case.</li>
 <li>Servers and watchers return a job id as soon as a manifest rule or a built-in pattern says they are ready; they keep running.</li>
 <li>Builds, tests, deploys and CI watches wait for the learned p90. If they overrun, they return a job id, keep running, and send a completion note.</li>
 <li>Nothing is killed on a deadline. <code>timeout</code> is an expected-duration hint; <code>job</code> plus <code>stop:true</code> is the explicit stop.</li>
@@ -69,6 +70,7 @@ blockquote{margin-left:0;padding-left:1rem;border-left:3px solid var(--line);col
 <p>The adapter's disposer no longer rejects a pending shell command; it marks the shell for shutdown and stops it after the result. <code>JobRegistry.dispose</code> forgets the jobs without killing them, so a service survives a plugin reload.</p>
 <p>The learned deadline can be zero for a new signature. The job path waits at least 2s before returning a running job, so a short command's output arrives in the same call.</p>
 <p>Git one-shots were classified as jobs, so <code>git push</code> returned an empty completed result. Only <code>git clone</code> is a job now; the rest use the quick shell's 10s clock.</p>
+<p>A successful up-to-date <code>git push</code> leaves <code>$LASTEXITCODE</code> at <code>-1</code>. The shell treats <code>-1</code> as success when the command did not throw, so the call is <code>completed</code> rather than <code>failed</code>.</p>
 <p>A service starts under <code>JobRegistry</code>; the registry returns a job id as soon as the manifest's <code>ready</code> text or <code>port</code> appears, or after the ready timeout. A job uses <code>TimingStore.deadline</code>: the learned p90 times 1.5, floored at 30 seconds and capped at 30 minutes, raised by a larger <code>timeout</code> hint. If the deadline passes, the call returns the job id and the registry keeps the process alive; a completion note is delivered with <code>ctx.session.synthetic</code>.</p>
 <p><code>job</code> reads the status, <code>job</code> plus <code>stop:true</code> stops it, and both are scoped to the calling session. An unknown id is an error, not another command. The adapter removes <code>shell</code> from the tool registry (<code>ToolEditor.remove</code>), the context pass deletes it from the offered set, and a <code>tool.execute.before</code> guard denies a stale <code>shell</code> call with an error that says to use <code>run</code>. The transcript is untouched.</p>
 </section>

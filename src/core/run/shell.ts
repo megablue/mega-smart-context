@@ -39,7 +39,7 @@ while ($true) {
   $ok = $true
   $result = $null
   try { $result = Invoke-Expression $cmd 2>&1; $ok = $true } catch { $result = $_.Exception.Message; $ok = $false }
-  $code = if ($null -ne $LASTEXITCODE -and $LASTEXITCODE -ne 0) { $LASTEXITCODE } elseif ($ok) { 0 } else { 1 }
+  $code = if ($ok -and ($null -eq $LASTEXITCODE -or $LASTEXITCODE -eq 0 -or $LASTEXITCODE -eq -1)) { 0 } elseif ($null -ne $LASTEXITCODE -and $LASTEXITCODE -ne 0) { $LASTEXITCODE } elseif ($ok) { 0 } else { 1 }
   if ($null -ne $result) { $result | Out-String -Stream }
   Write-Output ($marker + ':' + $code)
 }`
