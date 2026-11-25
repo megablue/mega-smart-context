@@ -179,7 +179,10 @@ export function createRunTool(deps: RunToolDeps): any {
       const project = TimingStore.project(directory)
       const signature = TimingStore.signature(value.command)
       const deadline = deps.timings.deadline(project, signature, hint)
-      const result = await deps.jobs.waitForJob(job, deadline)
+      // A new signature can have a zero learned deadline. Wait briefly so
+      // short jobs (git push, deploys) return their output instead of an
+      // immediate empty running result.
+      const result = await deps.jobs.waitForJob(job, Math.max(deadline, 2_000))
       if (result.state === "completed" || result.state === "failed") {
         void deps.timings.record(project, signature, result.wallTimeSeconds * 1000)
       } else if (result.state === "running") {

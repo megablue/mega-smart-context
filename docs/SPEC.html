@@ -360,6 +360,7 @@ img{max-width:100%;height:auto}
 <p>An <code>npm run &lt;script&gt;</code> is resolved from the project's <code>package.json</code> and run directly with the npm lifecycle environment and <code>node_modules/.bin</code> on <code>PATH</code>; pre/post scripts and extra arguments stay on npm. This removes the wrapper's start-up window, during which a host plugin reload can dispose the shell.</p>
 <p>On Windows the job/service child shares the host console when the host has one; otherwise it gets a hidden console that its <code>node</code>/<code>npm</code>/<code>vite</code> descendants inherit, so no visible console is allocated and focus is not stolen. The persistent shell stays hidden with <code>windowsHide: true</code> because a detached shell breaks its stdin REPL.</p>
 <p>A plugin reload does not abort an in-flight run: the shell finishes the current command before it stops, and running jobs keep running.</p>
+<p>A short job waits at least 2s for its result, so one-shot commands such as <code>git push</code> return their output instead of an immediate empty running result.</p>
 <ul>
 <li><strong>Quick commands</strong> return as soon as they exit. There is no deadline.</li>
 <li><strong>Servers and watchers</strong> return a job id as soon as they are ready and keep running. Readiness comes from an optional project manifest or a built-in dev-server pattern.</li>
