@@ -50,6 +50,7 @@ export class PersistentShell {
   private stderrBuffer = ""
   private pending: Pending | null = null
   private queue: Promise<unknown> = Promise.resolve()
+  private disposeRequested = false
   private readonly warn: (line: string) => void
 
   constructor(warn: (line: string) => void = () => {}) {
@@ -95,6 +96,7 @@ export class PersistentShell {
     this.pending = null
     clearTimeout(pending.timer)
     pending.reject(new Error(message))
+    if (this.disposeRequested) this.kill()
   }
 
   private onStdout(chunk: string): void {
@@ -125,6 +127,7 @@ export class PersistentShell {
       exitCode: Number.isFinite(exitCode as number) ? exitCode : null,
       wallTimeSeconds: (Date.now() - pending.started) / 1000,
     })
+    if (this.disposeRequested) this.kill()
   }
 
   run(command: string, workdir: string | undefined, timeoutMs: number): Promise<ShellResult> {
@@ -154,9 +157,18 @@ export class PersistentShell {
     return next
   }
 
-  dispose(): void {
-    this.fail("plugin disposed")
+  private kill(): void {
     try { this.proc?.kill() } catch {}
     this.proc = null
+  }
+
+  /**
+   * Do not reject an in-flight command: a host plugin reload disposes this
+   * instance while the run tool is still awaiting the result. Let the pending
+   * command finish, then stop the shell. Idle shells stop immediately.
+   */
+  dispose(): void {
+    this.disposeRequested = true
+    if (this.pending === null) this.kill()
   }
 }

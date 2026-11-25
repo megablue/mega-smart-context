@@ -243,19 +243,12 @@ export class JobRegistry {
     return this.result(job)
   }
 
+  /**
+   * A plugin reload must not kill a service the session started. Forget the
+   * jobs but leave their processes running; the host owns the process tree on
+   * shutdown.
+   */
   dispose(): void {
-    for (const job of this.jobs.values()) {
-      if (job.state !== "running") continue
-      try {
-        if (process.platform === "win32" && job.child.pid !== undefined) {
-          spawn("taskkill", ["/PID", String(job.child.pid), "/T", "/F"], { windowsHide: true, stdio: "ignore" })
-        } else {
-          job.child.kill()
-        }
-      } catch {
-        // Best effort.
-      }
-    }
     this.jobs.clear()
   }
 }

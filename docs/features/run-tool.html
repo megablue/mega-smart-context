@@ -28,7 +28,7 @@ blockquote{margin-left:0;padding-left:1rem;border-left:3px solid var(--line);col
 <body>
 <article class="map">
 <h1>Run tool - one shell with a clock that fits the work</h1>
-<p class="status">Status: shipped (0.3.13) - Read when: <code>run</code>, <code>PersistentShell</code>, <code>JobRegistry</code>, <code>TimingStore</code>, <code>classify</code>, <code>resolveNpmScript</code>, <code>.opencode/run.json</code>, the host <code>shell</code> is replaced, or &quot;the command was killed at the timeout&quot;.</p>
+<p class="status">Status: shipped (0.3.14) - Read when: <code>run</code>, <code>PersistentShell</code>, <code>JobRegistry</code>, <code>TimingStore</code>, <code>classify</code>, <code>resolveNpmScript</code>, <code>.opencode/run.json</code>, the host <code>shell</code> is replaced, or &quot;the command was killed at the timeout&quot;.</p>
 
 <section id="what-it-does">
 <h2>What it does</h2>
@@ -37,6 +37,7 @@ blockquote{margin-left:0;padding-left:1rem;border-left:3px solid var(--line);col
 <li>Quick commands return as soon as they exit. The persistent PowerShell REPL starts on the first call and is reused, so later quick calls are tens of milliseconds rather than a new process.</li>
 <li><code>npm run &lt;script&gt;</code> starts the package script directly, so it does not sit in the npm wrapper's start-up window; pre/post scripts and extra arguments stay on npm.</li>
 <li>On Windows the shell and job children share the host console when the host has one, so <code>node</code>/<code>npm</code>/<code>vite</code> grandchildren cannot allocate a new visible console and steal focus; otherwise the job/service child gets a hidden console that its <code>node</code>/<code>npm</code>/<code>vite</code> descendants inherit, so no visible console is allocated and focus is not stolen. The persistent shell remains on <code>windowsHide: true</code>.</li>
+<li>A host plugin reload does not abort an in-flight <code>run</code>: the shell finishes the current command before it stops, and running jobs keep running.</li>
 <li>Servers and watchers return a job id as soon as a manifest rule or a built-in pattern says they are ready; they keep running.</li>
 <li>Builds, tests, deploys and CI watches wait for the learned p90. If they overrun, they return a job id, keep running, and send a completion note.</li>
 <li>Nothing is killed on a deadline. <code>timeout</code> is an expected-duration hint; <code>job</code> plus <code>stop:true</code> is the explicit stop.</li>
@@ -64,6 +65,7 @@ blockquote{margin-left:0;padding-left:1rem;border-left:3px solid var(--line);col
 <p>A quick command goes to the persistent shell with no timeout. The first call pays the PowerShell start; later calls reuse the shell. Output is capped at 8,000 characters with a head/tail and a job hint so a large log cannot swallow the turn.</p>
 <p><code>npm run &lt;script&gt;</code> is resolved from the project's <code>package.json</code> and run directly with the npm lifecycle environment and <code>node_modules/.bin</code> on <code>PATH</code>. The wrapper's start-up is long enough for a host plugin reload to dispose the shell; the direct script finishes first. Pre/post scripts and extra arguments stay on npm.</p>
 <p>On Windows <code>windowsHide</code> alone gives the top-level PowerShell no console, so console-app grandchildren can allocate a visible console and steal focus. <code>windows.ts</code> shares the host console when the host has one; otherwise the job/service spawn combines <code>detached: true</code> with <code>windowsHide: true</code> so the child gets its own hidden console. The persistent shell stays on <code>windowsHide: true</code>; <code>detached</code> breaks its stdin REPL.</p>
+<p>The adapter's disposer no longer rejects a pending shell command; it marks the shell for shutdown and stops it after the result. <code>JobRegistry.dispose</code> forgets the jobs without killing them, so a service survives a plugin reload.</p>
 <p>A service starts under <code>JobRegistry</code>; the registry returns a job id as soon as the manifest's <code>ready</code> text or <code>port</code> appears, or after the ready timeout. A job uses <code>TimingStore.deadline</code>: the learned p90 times 1.5, floored at 30 seconds and capped at 30 minutes, raised by a larger <code>timeout</code> hint. If the deadline passes, the call returns the job id and the registry keeps the process alive; a completion note is delivered with <code>ctx.session.synthetic</code>.</p>
 <p><code>job</code> reads the status, <code>job</code> plus <code>stop:true</code> stops it, and both are scoped to the calling session. An unknown id is an error, not another command. The adapter removes <code>shell</code> from the tool registry (<code>ToolEditor.remove</code>), the context pass deletes it from the offered set, and a <code>tool.execute.before</code> guard denies a stale <code>shell</code> call with an error that says to use <code>run</code>. The transcript is untouched.</p>
 </section>
@@ -90,10 +92,12 @@ blockquote{margin-left:0;padding-left:1rem;border-left:3px solid var(--line);col
 <li><code>scripts/smoke.mjs</code>: &quot;a short command is classified quick&quot;, &quot;a dev server is classified service&quot;, &quot;a test run is classified job&quot;, &quot;a manifest service rule wins&quot;, &quot;the ready pattern is carried&quot;, &quot;a volatile number collapses in a timing signature&quot;, &quot;the project key is normalized&quot;, &quot;no sample means no learned deadline&quot;, &quot;the default deadline is bounded&quot;, &quot;a larger hint is honored up to the cap&quot;.</li>
 <li><code>scripts/smoke.mjs</code>: &quot;an npm run script resolves to its package command&quot;, &quot;the status script resolves to its package command&quot;, &quot;npm exec is not a package script&quot;, &quot;an unknown script falls back to npm&quot;, &quot;the direct npm command carries the lifecycle event&quot;, &quot;the direct npm command puts node_modules/.bin on PATH&quot;, &quot;the direct npm command restores the environment&quot;.</li>
 <li><code>scripts/smoke.mjs</code>: &quot;a host console is shared on Windows&quot;, &quot;no host console gets a hidden console&quot;.</li>
+<li>Manual reload test: <code>node scripts/install.ts</code> through <code>tools.run</code> returns its output across the host reload instead of &quot;shell exited&quot;.</li>
 <li><code>scripts/smoke.mjs</code>: &quot;the runtime shell tool is removed&quot;, &quot;the shell guard is registered&quot;, &quot;the shell tool call is denied&quot;.</li>
 <li>Live check (11/24): first <code>tools.run</code> 167 ms, warm 14 ms; a missing file returned exit 1 with the message in output.</li>
 <li>Live check (11/25): <code>npm run plugin:status</code> through <code>tools.run</code> returned in ~0.2s with the direct status instead of dying at the npm wrapper's ~0.55s reload window.</li>
 <li>Live check (11/25): a long-running dev server inherited a hidden console; no new window and no focus loss.</li>
+<li>Live check (11/25): <code>node scripts/install.ts</code> through <code>tools.run</code> returned its install output across the reload.</li>
 </ul>
 </section>
 
