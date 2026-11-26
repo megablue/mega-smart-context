@@ -24,6 +24,7 @@ import { pathToFileURL } from "node:url"
 import { TextAttributes } from "@opentui/core"
 
 import { mechanicalGist } from "../src/core/archive.ts"
+import { checkpointAppend } from "../src/core/append.ts"
 import { SESSION_KEYS, parseLayer, resolveConfig } from "../src/core/config.ts"
 import { effectiveTokens, parseWeights, rawTokens, usageFromHostTokens, weightsFor } from "../src/core/pricing.ts"
 import {
@@ -55,8 +56,9 @@ import {
 } from "../src/core/profiles.ts"
 import { runContextCommand } from "../src/core/command.ts"
 import { messageChars, messagesChars } from "../src/core/measure.ts"
-import { APPEND_NOTE, NOTICE_HEADING, POLICY, renderMemory, renderStats } from "../src/core/prompts.ts"
-import { emptyMemory } from "../src/core/schema.ts"
+import { APPEND_NOTE, NOTICE_HEADING, POLICY, renderMemory, renderStats, renderTailState } from "../src/core/prompts.ts"
+import { applyPatch, emptyMemory } from "../src/core/schema.ts"
+import { MAX_DIRECTIVES, captureDirectives, directivesIn } from "../src/core/directives.ts"
 import { RAW_TTL_MS, mergeRaw, rawId, rawPage } from "../src/core/raw.ts"
 import {
   PANEL_ACTION,
@@ -4229,6 +4231,130 @@ ok(runNpmDirect.includes("node_modules") && runNpmDirect.includes(".bin"), "the 
 ok(runNpmDirect.includes("try { node scripts/version.mjs --check } finally"), "the direct npm command restores the environment")
 ok(consoleSpawnOptions(true).detached === false && consoleSpawnOptions(true).windowsHide === (process.platform === "win32" ? false : true), "a host console is shared on Windows")
 ok(consoleSpawnOptions(false).detached === (process.platform === "win32" ? true : false) && consoleSpawnOptions(false).windowsHide === true, "no host console gets a hidden console")
+
+// Capture guarantees: a standing instruction is copied verbatim, survives the
+// checkpoint, and a host compaction carries it in the summary.
+const captureStore = new SessionStore()
+const captureConfig = resolveConfig({
+  options: { workingTokens: 20_000, memoryTokens: 3_000, charsPerToken: 2, defaultProfile: "" },
+})
+const captureDeps = { store: captureStore, config: captureConfig }
+const captureTurn = [
+  user("cap1", "Remember: never edit the installed plugins. Can you check the gate?"),
+  assistant("capa1", "ok"),
+]
+const capturePlan = await buildPayload(
+  { sessionID: "capture", system: [{ type: "text", text: "base" }], messages: captureTurn, model: {} },
+  captureDeps,
+)
+const captureRecord = await captureStore.load("capture", { fresh: true })
+ok(
+  captureRecord.memory.directives.length === 1 &&
+    captureRecord.memory.directives[0].text === "Remember: never edit the installed plugins.",
+  "a remember sentence becomes a directive",
+)
+const captureTail = capturePlan.messages[capturePlan.messages.length - 1].content[0].text
+ok(
+  captureTail.includes("directives: captured since the checkpoint") &&
+    captureTail.includes("never edit the installed plugins"),
+  "the state note names a fresh directive",
+)
+ok(renderMemory(captureRecord).includes("## Directives"), "the merged memory document renders directives")
+
+const captureRepeat = [
+  ...captureTurn,
+  user("cap2", "remember: never edit the installed plugins."),
+  assistant("capa2", "ok"),
+]
+await buildPayload(
+  { sessionID: "capture", system: [{ type: "text", text: "base" }], messages: captureRepeat, model: {} },
+  captureDeps,
+)
+const captureAgain = await captureStore.load("capture", { fresh: true })
+ok(captureAgain.memory.directives.length === 1, "a repeated directive is stored once")
+ok(directivesIn("do you remember the plan?").length === 0, "a question is not a directive")
+ok(directivesIn("<system-update>remember this</system-update>").length === 0, "a host block is not a directive")
+
+const compactionEvent = { sessionID: "capture", messages: captureRepeat }
+await runCompaction(compactionEvent, { store: captureStore, config: captureConfig })
+ok(
+  compactionEvent.result?.summary.includes("never edit the installed plugins"),
+  "a host compaction returns the directive in its summary",
+)
+
+const foldSource = await captureStore.load("capture", { fresh: true })
+checkpointAppend(foldSource)
+ok(foldSource.base?.directives.length === 1, "the checkpoint clone keeps a directive")
+
+const cleared = applyPatch(captureAgain.memory, { directives: null })
+ok(cleared.memory.directives.length === 0, "a cleared directive is gone")
+
+const overflow = { memory: emptyMemory(), directivesDropped: 0 }
+for (let index = 0; index < MAX_DIRECTIVES + 4; index += 1) {
+  captureDirectives(overflow, [user("ov" + index, "remember rule " + index)], 1)
+}
+ok(
+  overflow.memory.directives.length === MAX_DIRECTIVES && overflow.directivesDropped === 4,
+  "directives are capped with a visible drop count",
+)
+
+const phaseBudget = {
+  poolTokens: 0,
+  poolCap: 0,
+  snapshotTokens: 0,
+  updateTokens: 0,
+  workingTokens: 0,
+  compactDue: false,
+  keepTokens: 0,
+  leaving: [],
+  warnPercent: 80,
+  near: false,
+  canExtend: false,
+}
+const phaseRecord = {
+  ...captureAgain,
+  memory: {
+    ...captureAgain.memory,
+    plan: [
+      { step: 1, status: "done", text: "write the core" },
+      { step: 2, status: "active", text: "wire capture" },
+    ],
+  },
+}
+const phaseNote = renderTailState(phaseRecord, phaseBudget)
+ok(
+  phaseNote.includes("phase: 1/2 done") && phaseNote.includes("active: wire capture"),
+  "the state note names the active phase",
+)
+const freshNote = renderTailState(
+  { ...phaseRecord, base: { ...phaseRecord.memory, directives: [] } },
+  phaseBudget,
+)
+ok(
+  freshNote.includes("directives: captured since the checkpoint") &&
+    freshNote.includes("never edit the installed plugins"),
+  "a directive captured after the checkpoint is named in the state note",
+)
+const dueNote = renderTailState(
+  { ...phaseRecord, memory: { ...phaseRecord.memory, plan: [] } },
+  { ...phaseBudget, compactDue: true },
+)
+ok(
+  dueNote.includes("the fold will keep no phase information"),
+  "a fold with an empty plan warns that the phase will not survive",
+)
+const compactedNote = renderTailState(
+  {
+    ...phaseRecord,
+    hostCompact: { at: 0, turns: 2, archived: 2 },
+    memory: { ...phaseRecord.memory, plan: [] },
+  },
+  phaseBudget,
+)
+ok(
+  compactedNote.includes("no plan or phase survived"),
+  "a host compaction with no plan names the recovery path",
+)
 
 await dispose()
 console.log(`smoke: ${passed} assertions passed`)

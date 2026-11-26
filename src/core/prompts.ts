@@ -18,7 +18,7 @@ import { choiceLabel, chooseProfile, configForRecord, modelLabel } from "./profi
 import { snapshotMemory } from "./append.ts"
 import { modeReminderOf } from "./view.ts"
 import type { ResolvedConfig } from "./config.ts"
-import type { Memory, MemoryUpdate, SessionRecord } from "./types.ts"
+import type { Memory, MemoryUpdate, PlanStep, SessionRecord } from "./types.ts"
 import { isPlainObject } from "./types.ts"
 
 /**
@@ -50,6 +50,16 @@ the working budget (verbatim), and the current turn.
   only the keys that changed. Maps merge; lists replace; \`null\` resets a key (or
   deletes one map entry). Unknown keys are dropped and an over-cap write is
   rejected rather than silently trimmed.
+- A user instruction is not a finding: when the user says remember, don't,
+  never, always or from now on, the runtime copies the sentence into
+  \`directives\` and the state note repeats it until you fold it into
+  \`decisions\`. Fold it in the same turn and clear the entry; the list is a
+  reminder, not a second memory.
+- After a plan is agreed, write every step with its status before the first tool
+  call, and update the status when it changes. The state note's \`phase:\` line is
+  derived from \`plan\`, and a list patch replaces the whole list.
+- A host compaction has no commit window: the transcript is replaced with this
+  document. The plan and its phase survive only if they are written here.
 - Patch at the end of a turn, not after every fact: the memory block sits at the
   head of the next request, so a patch re-reads everything behind it instead of
   riding the prefix cache. Facts found mid-turn are one patch at the end.
@@ -168,6 +178,17 @@ function oneLine(value: string): string {
   return value.replace(/\s+/g, " ").trim()
 }
 
+/** The plan's current unit, in one line for the state note. */
+function phaseLine(plan: ReadonlyArray<PlanStep>): string {
+  if (plan.length === 0) return "phase: none (plan empty)"
+  const done = plan.filter((step) => step.status === "done").length
+  const active = plan.filter((step) => step.status === "active")
+  const head = `phase: ${done}/${plan.length} done`
+  if (active.length === 0) return `${head} · no active step`
+  if (active.length === 1) return `${head} · active: ${oneLine(active[0].text)}`
+  return `${head} · ${active.length} active steps`
+}
+
 function budgetLine(report: BudgetReport): string {
   const parts = [
     `memory ${formatTokens(report.memoryTokens)}/${formatTokens(report.memoryCap)} est`,
@@ -197,6 +218,11 @@ function memoryBody(memory: Memory, sortMaps: boolean): string[] {
     lines.push("goal: (empty — write the user's request here before it leaves the window)")
   } else {
     lines.push(`goal: ${q(oneLine(memory.goal))}`)
+  }
+
+  if ((memory.directives ?? []).length > 0) {
+    lines.push("", "## Directives")
+    for (const directive of memory.directives ?? []) lines.push(`- ${q(directive.text)}`)
   }
 
   if (memory.plan.length > 0) {
@@ -387,6 +413,23 @@ export function renderTailState(record: SessionRecord, budget: TailBudget): stri
     `pool: ${formatTokens(budget.poolTokens)}${cap}${percent}` +
       ` (snapshot ${formatTokens(budget.snapshotTokens)} · updates ${formatTokens(budget.updateTokens)} · turns ${formatTokens(budget.workingTokens)})${over}`,
   )
+  lines.push(phaseLine(record.memory.plan ?? []))
+
+  // Directives captured after the last checkpoint are not in the block the model
+  // just read, so the note names them once. After a fold the checkpoint carries
+  // them and this section is empty.
+  const checkpoint = record.base ?? record.memory
+  const known = new Set((checkpoint.directives ?? []).map((directive) => directive.id))
+  const fresh = (record.memory.directives ?? []).filter((directive) => !known.has(directive.id))
+  if (fresh.length > 0) {
+    lines.push("directives: captured since the checkpoint; fold each into decisions, then clear it:")
+    for (const directive of fresh) lines.push(`  ${q(directive.text)}`)
+  }
+  if ((record.directivesDropped ?? 0) > 0) {
+    lines.push(
+      `directives: ${record.directivesDropped} older instruction(s) were dropped at the cap; fold them into decisions.`,
+    )
+  }
 
   for (const pending of record.pending) {
     lines.push(`pending: ${pending.id} · ${q(pending.gist)}`)
@@ -410,6 +453,14 @@ export function renderTailState(record: SessionRecord, budget: TailBudget): stri
         `${record.hostCompact.turns} turn(s) were archived first (${record.hostCompact.archived} in archive). ` +
         "Recall by query or expand a turn; the raw messages were kept.",
     )
+    if ((record.memory.plan ?? []).length === 0) {
+      lines.push(
+        "  no plan or phase survived: the transcript is now this document. " +
+          "Recover the plan from the archived turns (recall with lost:true, then expand) or restate it before continuing.",
+      )
+    } else {
+      lines.push("  " + phaseLine(record.memory.plan ?? []))
+    }
   }
 
   if (record.ext !== undefined) {
@@ -446,6 +497,10 @@ export function renderTailState(record: SessionRecord, budget: TailBudget): stri
         'Write what still matters from the turns below into memory now — they stay searchable (recall/expand); do not purge them. ' +
         'Call smart_context action:"compact" to fold sooner.',
     )
+    lines.push(phaseLine(record.memory.plan ?? []))
+    if ((record.memory.plan ?? []).length === 0) {
+      lines.push("  the fold will keep no phase information: write plan (all steps and statuses) before it runs.")
+    }
   }
 
   if ((budget.near || budget.compactDue) && budget.leaving.length > 0) {

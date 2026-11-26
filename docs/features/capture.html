@@ -1,0 +1,126 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="generator" content="opencode-feature-map">
+<title>Capture guarantees - directives survive, phase stays visible — feature map</title>
+<style>
+:root{color-scheme:light dark;--fg:#1d2433;--muted:#5b6475;--bg:#fff;--line:#d8dee9;--accent:#0b6e99;--warn:#8a5a00;--code:#f4f6fa}
+@media (prefers-color-scheme:dark){:root{--fg:#e6eaf2;--muted:#9aa4b8;--bg:#11151c;--line:#2b3342;--accent:#6cc4e8;--warn:#e0b25c;--code:#1a202a}}
+*{box-sizing:border-box}
+body{margin:0 auto;max-width:60rem;padding:2rem 1.25rem 4rem;background:var(--bg);color:var(--fg);font:16px/1.6 system-ui,-apple-system,Segoe UI,sans-serif}
+h1,h2,h3{line-height:1.25;margin:2rem 0 .75rem}
+h1{font-size:1.9rem;border-bottom:2px solid var(--line);padding-bottom:.4rem}
+h2{font-size:1.35rem}
+h3{font-size:1.08rem;color:var(--muted)}
+p,ul,ol,table,pre,blockquote{margin:.75rem 0}
+a{color:var(--accent)}
+code{background:var(--code);padding:.1em .3em;border-radius:.25rem;font-size:.92em}
+pre{background:var(--code);border:1px solid var(--line);border-radius:.4rem;padding:.8rem 1rem;overflow:auto}
+pre code{background:none;padding:0}
+pre.verbatim{border-left:4px solid var(--warn)}
+pre.verbatim::before{content:"verbatim — " attr(data-why);display:block;color:var(--warn);font:600 .78rem/1.4 ui-monospace,monospace;margin-bottom:.5rem;white-space:pre-wrap}
+pre.pseudo{border-left:4px solid var(--accent)}
+p.status{color:var(--muted);font-size:.92rem}
+table{border-collapse:collapse;width:100%}
+th,td{border:1px solid var(--line);padding:.4rem .6rem;text-align:left;vertical-align:top}
+th{background:var(--code)}
+blockquote{margin-left:0;padding-left:1rem;border-left:3px solid var(--line);color:var(--muted)}
+hr{border:0;border-top:1px solid var(--line);margin:2rem 0}
+</style>
+</head>
+<body>
+<article class="map">
+<h1>Capture guarantees - directives survive, phase stays visible</h1>
+<p class="status">Status: shipped (v0.3.21) - Read when: a user says &quot;remember&quot; or &quot;don&#39;t&quot;, the plan disappears after a host compaction, <code>directives</code>, the phase line in the state note, <code>runCompaction</code> recovery, or &quot;the model forgot what I told it&quot;.</p>
+
+<h2>What it does</h2>
+<ul>
+<li>Copies every user sentence that states a standing instruction (<code>remember</code>, <code>don&#39;t forget</code>, <code>never</code>, <code>always</code>, <code>from now on</code>, <code>do not</code>, <code>must</code>, <code>only</code>, <code>make sure</code>) into the memory document verbatim, so it survives the working window and both compaction paths.</li>
+<li>Names the current plan phase in the state note on every pass: the active step and the done/total count.</li>
+<li>After a host compaction, reports what survived; when no plan survived, tells the model to recover it from the archive before continuing.</li>
+<li>Lets the model clear a directive once it has folded it into <code>decisions</code>, so the list does not become a second memory.</li>
+<li>Keeps the runtime as the schema owner: the capture is extraction and retention, never summarization.</li>
+</ul>
+
+<h2>Map</h2>
+<ul>
+<li><code>src/core/directives.ts</code> (new) - <code>Directive</code>, <code>directivesIn(text)</code>, <code>captureDirectives(record, messages, now)</code>, <code>MAX_DIRECTIVES</code>, <code>MAX_DIRECTIVE_CHARS</code>.</li>
+<li><code>src/core/types.ts</code> - <code>Directive</code>; <code>Memory.directives</code>.</li>
+<li><code>src/core/schema.ts</code> - the <code>MEMORY_FIELDS</code> row, <code>emptyMemory</code>, <code>emptyValue</code>, <code>normalizeMemory</code>, <code>applyPatch</code>, <code>isMemoryEmpty</code>.</li>
+<li><code>src/core/prompts.ts</code> - <code>memoryBody</code> renders <code>## Directives</code>; <code>renderTailState</code> renders the phase line and the post-compaction recovery; <code>POLICY</code> carries the directive and plan rules.</li>
+<li><code>src/core/context.ts</code> - <code>buildAppendPlan</code> calls <code>captureDirectives</code> before rendering; <code>TailBudget</code> carries the plan summary.</li>
+<li><code>src/core/append.ts</code> - <code>cloneMemory</code> copies <code>directives</code>; <code>checkpointAppend</code> and <code>migrateAppend</code> build the checkpoint through it.</li>
+<li><code>src/core/compaction.ts</code> - <code>runCompaction</code> is unchanged; it already stores <code>record.hostCompact</code>, which the note reads.</li>
+<li><code>src/core/measure.ts</code> - <code>memoryChars</code> counts directives like any other key.</li>
+<li><code>scripts/smoke.mjs</code> - the assertions under Tests that pin it.</li>
+</ul>
+
+<h2>How &amp; why</h2>
+<h3>The two moments memory misses</h3>
+<p>A standing instruction lives only in the user message. It leaves with the working window, and a host compaction replaces the transcript with <code>renderMemory(record)</code>; if the instruction was never written, it is gone. The same is true of the plan: the assistant&#39;s plan message is transcript, not memory.</p>
+<p>The plugin&#39;s own fold has a commit window (&quot;compaction due&quot;, the leaving turns, a turn to write). <code>runCompaction</code> has none: the host decides, the hook returns the memory document, and the transcript is replaced. A feature that relies on the model writing at that moment cannot work, so capture has to happen on the pass, mechanically, before the model is asked anything.</p>
+
+<h3>Directives: verbatim, mechanical, bounded</h3>
+<p><code>directivesIn</code> splits a user message into sentences, strips host blocks (<code>&lt;system-update&gt;</code>, <code>&lt;system-reminder&gt;</code>), drops questions, and keeps a sentence only when it matches an explicit instruction marker. The sentence is trimmed and capped at <code>MAX_DIRECTIVE_CHARS</code>; no paraphrase and no merge. A directive that repeats an existing one (case-folded, whitespace-collapsed) is not added again.</p>
+<p><code>captureDirectives</code> runs in <code>buildAppendPlan</code> over the raw messages from the window start, before the payload is rendered, keyed by the turn id. It is idempotent, so the several passes of one turn add nothing after the first. The list is capped at <code>MAX_DIRECTIVES</code>; when full, the oldest entry is dropped and the render says how many were dropped, so the loss is visible rather than silent.</p>
+<p>The entry renders inside the <code>&lt;smart-context&gt;</code> block as <code>## Directives</code>, after the goal and before the plan, once the checkpoint carries it: a fold copies the merged document into <code>base</code> and a host compaction returns it. A directive captured after the last checkpoint is not yet in the block the model just read, so the tail state note names it under <code>directives: captured since the checkpoint</code> until the next fold. The tail is the one part allowed to churn, so a new directive changes no cached bytes before it; a long session with no directive keeps the block stable.</p>
+<p>The model clears an entry with an ordinary patch (<code>directives: []</code> resets the list, or a rewritten list keeps the rest). Lists replace wholesale, so a partial list is a deletion; the same trap as <code>plan</code> and <code>open</code>, and the shrink warning applies to it too.</p>
+
+<h3>Plan and phase</h3>
+<p>The phase is derived, not stored twice: the first step with status <code>active</code> is the current unit, and the note prints <code>phase 2/6 active: &lt;text&gt;</code>. With no active step it prints <code>phase: none active (plan 2/6)</code>; with no plan at all, <code>phase: none (plan empty)</code>. It is rendered in the tail state note, so it costs no prefix stability and is impossible to miss.</p>
+<p>At the plugin&#39;s due mark the same line is added next to the leaving turns, so the commit window is about state as well as turn ids. If the plan is empty at that point the note says the fold will keep no phase information.</p>
+
+<h3>Post-compaction recovery</h3>
+<p><code>runCompaction</code> already stores <code>record.hostCompact</code> with the time and the archived count. The note extends it: when the plan is non-empty it repeats the phase; when it is empty it says the transcript was replaced with memory, that no plan or phase survived, and that the archived turns are searchable (<code>recall</code> with <code>lost:true</code>, then <code>expand</code>). That turns a silent loss into a named next action.</p>
+
+<h3>Traps</h3>
+<ul>
+<li><strong>Do not summarize the directive.</strong> The value is that it is the user&#39;s own words; a paraphrase is the model&#39;s memory again and can drift.</li>
+<li><strong>Do not capture the assistant&#39;s plan text.</strong> Extraction of arbitrary prose is unreliable; the plan is model-authored on purpose, and the fix for a missing plan is the phase line plus the fold warning, not a parser.</li>
+<li><strong><code>cloneMemory</code> must copy every key.</strong> The checkpoint is an explicit copy; a memory key it forgets renders in the merged document and disappears at the next fold. Pinned by &quot;the checkpoint clone keeps a directive&quot;.</li>
+<li><strong>Capture before render.</strong> If the pass renders first, the directive appears one pass late, which is exactly the pass that may be compacted.</li>
+<li><strong>Idempotence.</strong> A turn produces several passes; the turn id plus the normalized text is the dedupe key, not the message index.</li>
+<li><strong>The directive list is not a second working set.</strong> Clearing it after folding into <code>decisions</code> is part of the contract; the policy says so and the cap enforces it.</li>
+</ul>
+
+<h2>Config keys / UI</h2>
+<table>
+<thead><tr><th>Key</th><th>Value</th><th>Where</th></tr></thead>
+<tbody>
+<tr><td><code>MAX_DIRECTIVES</code></td><td>16 entries</td><td>constant in <code>directives.ts</code>; not a config key</td></tr>
+<tr><td><code>MAX_DIRECTIVE_CHARS</code></td><td>240 per entry</td><td>constant in <code>directives.ts</code></td></tr>
+<tr><td>phase line</td><td>derived from <code>memory.plan</code></td><td>the tail state note, every pass</td></tr>
+<tr><td>recovery line</td><td>after <code>record.hostCompact</code></td><td>the tail state note; the host-compaction marker stays on the record, as today</td></tr>
+</tbody>
+</table>
+
+<h2>Tests that pin it</h2>
+<ul>
+<li>&quot;a remember sentence becomes a directive&quot;</li>
+<li>&quot;a repeated directive is stored once&quot;</li>
+<li>&quot;a question is not a directive&quot;</li>
+<li>&quot;a host block is not a directive&quot;</li>
+<li>&quot;the state note names a fresh directive&quot;</li>
+<li>&quot;the merged memory document renders directives&quot;</li>
+<li>&quot;the checkpoint clone keeps a directive&quot;</li>
+<li>&quot;directives are capped with a visible drop count&quot;</li>
+<li>&quot;a host compaction returns the directive in its summary&quot;</li>
+<li>&quot;a cleared directive is gone&quot;</li>
+<li>&quot;the state note names the active phase&quot;</li>
+<li>&quot;a directive captured after the checkpoint is named in the state note&quot;</li>
+<li>&quot;a fold with an empty plan warns that the phase will not survive&quot;</li>
+<li>&quot;a host compaction with no plan names the recovery path&quot;</li>
+</ul>
+
+<h2>Related</h2>
+<ul>
+<li><a href="compaction.html">compaction.html</a> - the hook, the summary and the archive reset this feature recovers from.</li>
+<li><a href="context-handoff.html">context-handoff.html</a> - the memory block, the append layout and the tail state note.</li>
+<li><a href="memory-tool.html">memory-tool.html</a> - the patch merge, the over-cap rejection and list replacement.</li>
+<li><a href="archive.html">archive.html</a> - <code>recall</code>/<code>expand</code>, the recovery path after a compaction.</li>
+</ul>
+</article>
+</body>
+</html>

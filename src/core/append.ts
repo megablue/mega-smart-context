@@ -25,6 +25,7 @@ const MAP_KEYS: ReadonlySet<string> = new Set(
 export function cloneMemory(memory: Memory): Memory {
   return {
     goal: memory.goal,
+    directives: memory.directives.map((directive) => ({ ...directive })),
     plan: memory.plan.map((step) => ({ ...step })),
     facts: { ...memory.facts },
     files: { ...memory.files },

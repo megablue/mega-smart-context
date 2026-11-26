@@ -17,8 +17,9 @@
  * @module mega-smart-context/schema
  */
 
-import type { Memory, PlanStep, RefEntry } from "./types.ts"
+import type { Directive, Memory, PlanStep, RefEntry } from "./types.ts"
 import { isPlainObject } from "./types.ts"
+import { MAX_DIRECTIVE_CHARS } from "./directives.ts"
 
 export type PlanStatus = PlanStep["status"]
 
@@ -33,6 +34,7 @@ export interface MemoryField {
 /** The schema, in render order. The hints are what the model reads. */
 export const MEMORY_FIELDS: ReadonlyArray<MemoryField> = [
   { key: "goal", kind: "string", hint: "the current objective, in your own words" },
+  { key: "directives", kind: "list", hint: "user instructions captured verbatim; clear one once it is folded into decisions" },
   { key: "plan", kind: "list", hint: "steps, each { step, status: todo|active|done|blocked, text }" },
   { key: "facts", kind: "map", hint: "name -> a durable finding or verified flag" },
   { key: "files", kind: "map", hint: "path -> what you know or changed there" },
@@ -48,6 +50,7 @@ export const MEMORY_KEYS: ReadonlySet<string> = new Set(MEMORY_FIELDS.map((field
 export function emptyMemory(): Memory {
   return {
     goal: "",
+    directives: [],
     plan: [],
     facts: {},
     files: {},
@@ -59,7 +62,11 @@ export function emptyMemory(): Memory {
 }
 
 function emptyValue(key: keyof Memory): any {
-  return key === "plan" || key === "open" || key === "refs" ? [] : key === "facts" || key === "files" || key === "decisions" ? {} : ""
+  return key === "directives" || key === "plan" || key === "open" || key === "refs"
+    ? []
+    : key === "facts" || key === "files" || key === "decisions"
+      ? {}
+      : ""
 }
 
 /** The keys a patch names that the schema does not own. */
@@ -156,6 +163,35 @@ function normalizeOpen(value: unknown, errors: string[]): string[] {
   return items
 }
 
+function normalizeDirectives(value: unknown, errors: string[]): Directive[] {
+  if (!Array.isArray(value)) {
+    errors.push("directives must be an array")
+    return []
+  }
+  const out: Directive[] = []
+  const seen = new Set<string>()
+  value.forEach((item, index) => {
+    if (!isPlainObject(item)) {
+      errors.push(`directives[${index}] must be an object`)
+      return
+    }
+    const text = typeof item.text === "string" ? item.text.trim() : ""
+    if (text.length === 0) {
+      errors.push(`directives[${index}].text must be a non-empty string`)
+      return
+    }
+    const bounded = text.slice(0, MAX_DIRECTIVE_CHARS)
+    const key = bounded.replace(/\s+/g, " ").toLowerCase()
+    if (seen.has(key)) return
+    seen.add(key)
+    const turn = typeof item.turn === "string" ? item.turn : ""
+    const id = typeof item.id === "string" && item.id.length > 0 ? item.id : `${turn || "directive"}:${index}`
+    const at = typeof item.at === "number" && Number.isFinite(item.at) ? item.at : 0
+    out.push({ id, turn, text: bounded, at })
+  })
+  return out
+}
+
 function normalizeRefs(value: unknown, errors: string[]): RefEntry[] {
   if (!Array.isArray(value)) {
     errors.push("refs must be an array")
@@ -194,6 +230,7 @@ export function applyPatch(memory: Memory, patch: unknown): PatchResult {
   }
   const next: Memory = {
     ...memory,
+    directives: memory.directives.map((directive) => ({ ...directive })),
     plan: memory.plan.map((step) => ({ ...step })),
     facts: { ...memory.facts },
     files: { ...memory.files },
@@ -231,6 +268,11 @@ export function applyPatch(memory: Memory, patch: unknown): PatchResult {
       const after = stringMap(before, value, key, errors)
       ;(next as any)[typedKey] = after
       if (JSON.stringify(before) !== JSON.stringify(after)) changed.push(key)
+      continue
+    }
+    if (typedKey === "directives") {
+      next.directives = normalizeDirectives(value, errors)
+      changed.push(key)
       continue
     }
     if (typedKey === "plan") {
@@ -272,6 +314,7 @@ export function normalizeMemory(value: unknown): Memory {
   if (isPlainObject(value.decisions)) {
     for (const [key, entry] of Object.entries(value.decisions)) if (typeof entry === "string") memory.decisions[key] = entry
   }
+  memory.directives = normalizeDirectives(value.directives ?? [], errors)
   memory.plan = normalizePlan(value.plan ?? [], errors)
   memory.open = normalizeOpen(value.open ?? [], errors)
   memory.refs = normalizeRefs(value.refs ?? [], errors)
@@ -282,6 +325,7 @@ export function normalizeMemory(value: unknown): Memory {
 export function isMemoryEmpty(memory: Memory): boolean {
   return (
     memory.goal.trim().length === 0 &&
+    (memory.directives ?? []).length === 0 &&
     memory.plan.length === 0 &&
     Object.keys(memory.facts).length === 0 &&
     Object.keys(memory.files).length === 0 &&

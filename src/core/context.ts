@@ -17,6 +17,7 @@
 import { archivePending, knows, mechanicalGist, trimArchive, turnMessages } from "./archive.ts"
 import { checkpointAppend, invalidateAppend, migrateAppend } from "./append.ts"
 import type { ResolvedConfig } from "./config.ts"
+import { captureDirectives } from "./directives.ts"
 import { estimateTokens, memoryChars, messageChars, messagesChars } from "./measure.ts"
 import { effectivePoolCap, isNear } from "./window.ts"
 import { APPEND_NOTE, POLICY, NOTICE_HEADING, renderMemory, renderNotices, renderSnapshot, renderTailState, renderUpdate } from "./prompts.ts"
@@ -402,6 +403,11 @@ async function buildAppendPlan(options: AppendPlanInput): Promise<ContextPlan> {
     }
     record.windowStart = fallback.turns[0]?.id
   }
+
+  // Capture the user's standing instructions before anything renders. A pass is
+  // the only guaranteed moment: the host can compact without a commit window,
+  // and a directive that is not in the document when that happens is gone.
+  captureDirectives(record, raw.slice(window.startIdx), now())
 
   // A fold rebuilds the retained tail's bytes; the switch is re-read every pass,
   // so turning it off returns the original transcript bytes. The current turn is

@@ -118,11 +118,31 @@ export interface RefEntry {
 }
 
 /**
+ * One user instruction captured verbatim from a turn.
+ *
+ * A directive is not model-written memory: the runtime copies the sentence that
+ * carried it so a "remember" or "don't" survives the window and a compaction.
+ * The model may clear it once the rule is folded into `decisions`.
+ */
+export interface Directive {
+  /** Stable key: the turn id plus the sentence index. */
+  id: string
+  /** The user turn that carried the sentence. */
+  turn: string
+  /** The user's sentence, verbatim and bounded by the capture cap. */
+  text: string
+  /** When it was captured. */
+  at: number
+}
+
+/**
  * The document the model writes. Every key always exists, so the renderer never
  * has to branch on absence; `null` in a patch resets a key to its empty value.
  */
 export interface Memory {
   goal: string
+  /** User instructions the runtime captured verbatim; cleared once folded. */
+  directives: Directive[]
   plan: PlanStep[]
   facts: Record<string, string>
   files: Record<string, string>
@@ -611,6 +631,8 @@ export interface SessionRecord {
   ext?: WindowExtension
   /** The host's latest checkpoint, when the plugin preserved the turns it replaced. */
   hostCompact?: HostCompact
+  /** Directives evicted by the cap; rendered so the loss is visible. */
+  directivesDropped?: number
   /**
    * Turn ids whose bytes are rebuilt: reasoning dropped, successful write/edit
    * results replaced with a short confirmation, long shell output tail-cut.

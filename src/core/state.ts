@@ -621,6 +621,9 @@ export function normalizeRecord(value: unknown, now: number): SessionRecord {
   if (ext !== undefined) record.ext = ext
   const hostCompact = normalizeHostCompact(value.hostCompact)
   if (hostCompact !== undefined) record.hostCompact = hostCompact
+  if (typeof value.directivesDropped === "number" && Number.isFinite(value.directivesDropped)) {
+    record.directivesDropped = Math.max(0, Math.floor(value.directivesDropped))
+  }
   if (Array.isArray(value.rebuilt)) record.rebuilt = value.rebuilt.filter((id): id is string => typeof id === "string")
   if (typeof value.rebuildSaved === "number" && Number.isFinite(value.rebuildSaved)) record.rebuildSaved = value.rebuildSaved
   if (Array.isArray(value.seenTurns)) record.seenTurns = value.seenTurns.filter((id): id is string => typeof id === "string")
