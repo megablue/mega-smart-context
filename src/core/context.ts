@@ -139,6 +139,9 @@ function withGuardLine(tail: string, line: string | undefined): string {
 /** The fixed grace period for a legacy or undo-restored pending turn. */
 const PENDING_LEAD = 1
 
+/** Completed tool calls in one turn before the note asks for a memory write. */
+const CAPTURE_CUE_CALLS = 8
+
 /**
  * Move the turns the new window no longer keeps into pending, age the queue and
  * archive what the grace period has outlived.
@@ -631,6 +634,16 @@ async function buildAppendPlan(options: AppendPlanInput): Promise<ContextPlan> {
   // makes the provider re-read the whole turn on each tool loop. Trailing keeps
   // the turn a stable prefix and the note is still the last thing the model
   // reads before it replies.
+  // A turn that did real work with no accepted write is the moment memory
+  // under-records. One line, only after enough calls to be worth the reminder.
+  const cueTurn = currentIds.length > 0 ? currentIds[currentIds.length - 1] : ""
+  const wroteThisTurn = (record.updates ?? []).some((update) => update.turn === cueTurn)
+  const callsThisTurn = window.turns.find((span) => span.id === cueTurn)?.tools.length ?? 0
+  const captureCue =
+    !wroteThisTurn && callsThisTurn >= CAPTURE_CUE_CALLS
+      ? `capture: ${callsThisTurn} calls this turn, no accepted patch — record what matters (plan/facts/files/decisions/open) before the window moves.`
+      : undefined
+
   const snapshotTokens = estimateTokens(snapshotText.length, config.charsPerToken)
   const updateTokens = estimateTokens(sentUpdateChars, config.charsPerToken)
   let workingTokens = estimateTokens(turnChars, config.charsPerToken)
@@ -648,6 +661,7 @@ async function buildAppendPlan(options: AppendPlanInput): Promise<ContextPlan> {
       near,
       canExtend: config.windowExtend && record.ext === undefined && modelContext !== undefined,
       modelContext,
+      captureCue,
     }),
     guardRedirect,
   )
@@ -666,6 +680,7 @@ async function buildAppendPlan(options: AppendPlanInput): Promise<ContextPlan> {
       near,
       canExtend: config.windowExtend && record.ext === undefined && modelContext !== undefined,
       modelContext,
+      captureCue,
     }),
     guardRedirect,
   )

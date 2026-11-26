@@ -30,6 +30,7 @@ import { captureMemory, capturePurge, purgeWithUndo } from "./undo.ts"
 import type { SessionStore } from "./state.ts"
 import { StoreConflictError } from "./state.ts"
 import type { FeatureMapPort, Memory, SessionRecord } from "./types.ts"
+import { MAX_DIRECTIVES_DISMISSED, directiveKey } from "./directives.ts"
 import { refVerdict } from "./refs.ts"
 import { turnOutline, turnPage } from "./view.ts"
 
@@ -253,6 +254,21 @@ function patch(
     }
   }
 
+  // A clear, or a rewrite that drops an entry, must stay cleared: capture
+  // re-reads the same turn on every pass, so the removed sentence is recorded
+  // as dismissed instead of reappearing on the next pass.
+  if (result.changed.includes("directives")) {
+    const kept = new Set((result.memory.directives ?? []).map((entry) => directiveKey(entry.turn, entry.text)))
+    const removed = (before.directives ?? [])
+      .map((entry) => directiveKey(entry.turn, entry.text))
+      .filter((key) => !kept.has(key))
+    if (removed.length > 0) {
+      const dismissed = new Set(record.directivesDismissed ?? [])
+      for (const key of removed) dismissed.add(key)
+      record.directivesDismissed = [...dismissed].slice(-MAX_DIRECTIVES_DISMISSED)
+    }
+  }
+
   // Capture before the assignment: an undo restores the turn's starting document.
   captureMemory(record, before, result.changed, now)
   // The checkpoint must be the document as it stood before this patch; only
@@ -263,8 +279,40 @@ function patch(
   const lines = [`smart_context: stored${result.changed.length > 0 ? " " + result.changed.join(", ") : ""}`]
   if (result.dropped.length > 0) lines.push(`dropped unknown key(s): ${result.dropped.join(", ")}`)
   if (result.errors.length > 0) lines.push(`errors: ${result.errors.join("; ")}`)
+  lines.push(...shrinkWarnings(before, result.memory, result.changed))
   lines.push(usage(record, config))
   return { text: lines.join("\n"), ok: true }
+}
+
+/** Lists replace wholesale; name a drop so a partial patch cannot delete silently. */
+const SHRINK_LISTS = [
+  ["plan", "plan"],
+  ["open", "open"],
+  ["refs", "refs"],
+] as const
+
+function shrinkWarnings(
+  before: Memory,
+  after: Memory,
+  changed: ReadonlyArray<string>,
+): string[] {
+  const out: string[] = []
+  for (const [key, label] of SHRINK_LISTS) {
+    if (!changed.includes(key)) continue
+    const from = before[key].length
+    const to = after[key].length
+    if (to < from) {
+      out.push(`${label}: ${from} → ${to} item(s) — lists replace, send the full list if that was not intended`)
+    }
+  }
+  if (changed.includes("directives")) {
+    const from = (before.directives ?? []).length
+    const to = (after.directives ?? []).length
+    if (to > 0 && to < from) {
+      out.push(`directives: ${from} → ${to} item(s) — lists replace; a full clear is intentional, a partial one may not be`)
+    }
+  }
+  return out
 }
 
 async function addRef(

@@ -624,6 +624,11 @@ export function normalizeRecord(value: unknown, now: number): SessionRecord {
   if (typeof value.directivesDropped === "number" && Number.isFinite(value.directivesDropped)) {
     record.directivesDropped = Math.max(0, Math.floor(value.directivesDropped))
   }
+  if (Array.isArray(value.directivesDismissed)) {
+    record.directivesDismissed = value.directivesDismissed
+      .filter((key): key is string => typeof key === "string")
+      .slice(-MAX_DIRECTIVES_DISMISSED)
+  }
   if (Array.isArray(value.rebuilt)) record.rebuilt = value.rebuilt.filter((id): id is string => typeof id === "string")
   if (typeof value.rebuildSaved === "number" && Number.isFinite(value.rebuildSaved)) record.rebuildSaved = value.rebuildSaved
   if (Array.isArray(value.seenTurns)) record.seenTurns = value.seenTurns.filter((id): id is string => typeof id === "string")

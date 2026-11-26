@@ -60,6 +60,11 @@ the working budget (verbatim), and the current turn.
   derived from \`plan\`, and a list patch replaces the whole list.
 - A host compaction has no commit window: the transcript is replaced with this
   document. The plan and its phase survive only if they are written here.
+- Capture at the moment it happens: a user constraint goes into \`decisions\`
+  (quote the rule), a root cause into \`facts\` with its evidence, a check into
+  \`facts\` with its result, a file into \`files\` with its role. One entry is what,
+  where and why (or the number); reuse stable key names so a later patch merges
+  instead of duplicating.
 - Patch at the end of a turn, not after every fact: the memory block sits at the
   head of the next request, so a patch re-reads everything behind it instead of
   riding the prefix cache. Facts found mid-turn are one patch at the end.
@@ -85,7 +90,8 @@ the working budget (verbatim), and the current turn.
 - For project knowledge, prefer a feature-map reference over pasted prose when
   the reference is shorter. action:"ref" reports the gist and section costs.
 - This block carries no live numbers. Read them with action:"stats" (or the
-  /context command) and keep memory lean; compact before it is over.`
+  /context command). The cap is large: a written fact is cheaper than re-reading
+  the tool output that produced it, so record rather than compress.`
 
 /**
  * The extra static system part the append layout pushes after {@link POLICY}.
@@ -384,6 +390,8 @@ export interface TailBudget {
   readonly near: boolean
   /** True when a grant is possible: config on, no grant yet, window known. */
   readonly canExtend: boolean
+  /** One line when the current turn did real work without a memory write. */
+  readonly captureCue?: string
 }
 
 /**
@@ -414,6 +422,7 @@ export function renderTailState(record: SessionRecord, budget: TailBudget): stri
       ` (snapshot ${formatTokens(budget.snapshotTokens)} · updates ${formatTokens(budget.updateTokens)} · turns ${formatTokens(budget.workingTokens)})${over}`,
   )
   lines.push(phaseLine(record.memory.plan ?? []))
+  if (budget.captureCue !== undefined) lines.push(budget.captureCue)
 
   // Directives captured after the last checkpoint are not in the block the model
   // just read, so the note names them once. After a fold the checkpoint carries

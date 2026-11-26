@@ -17,6 +17,14 @@ export const MAX_DIRECTIVES = 16
 /** The per-entry character cap. A sentence, not a paragraph. */
 export const MAX_DIRECTIVE_CHARS = 240
 
+/** How many cleared directives stay suppressed. */
+export const MAX_DIRECTIVES_DISMISSED = 64
+
+/** The key that identifies one turn's copy of a sentence. */
+export function directiveKey(turn: string, text: string): string {
+  return `${turn}|${normalized(text)}`
+}
+
 /**
  * The explicit instruction markers. Deliberately narrow: "use", "avoid" and a
  * bare "no" occur in ordinary prose, and every false directive costs attention
@@ -64,13 +72,14 @@ export function captureDirectives(
   const memory = record.memory
   if (!Array.isArray(memory.directives)) memory.directives = []
   const seen = new Set(memory.directives.map((entry) => normalized(entry.text)))
+  const dismissed = new Set(record.directivesDismissed ?? [])
   let added = 0
   for (const message of messages) {
     if (!isRealUser(message)) continue
     const turn = message.id ?? ""
     directivesIn(textOf(message)).forEach((text, index) => {
       const key = normalized(text)
-      if (seen.has(key)) return
+      if (seen.has(key) || dismissed.has(directiveKey(turn, text))) return
       seen.add(key)
       memory.directives.push({ id: `${turn}:${index}`, turn, text, at: now })
       added += 1
@@ -78,8 +87,14 @@ export function captureDirectives(
   }
   if (memory.directives.length > MAX_DIRECTIVES) {
     const dropped = memory.directives.length - MAX_DIRECTIVES
+    const evicted = memory.directives.slice(0, dropped)
     memory.directives = memory.directives.slice(dropped)
     record.directivesDropped = (record.directivesDropped ?? 0) + dropped
+    // A capped entry must not be re-captured on the next pass; the turn plus
+    // sentence is the dismissal key, so a later turn may still raise it again.
+    const dismissed = new Set(record.directivesDismissed ?? [])
+    for (const entry of evicted) dismissed.add(directiveKey(entry.turn, entry.text))
+    record.directivesDismissed = [...dismissed].slice(-MAX_DIRECTIVES_DISMISSED)
   }
   return added
 }

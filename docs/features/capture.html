@@ -33,7 +33,7 @@ hr{border:0;border-top:1px solid var(--line);margin:2rem 0}
 <body>
 <article class="map">
 <h1>Capture guarantees - directives survive, phase stays visible</h1>
-<p class="status">Status: shipped (v0.3.21) - Read when: a user says &quot;remember&quot; or &quot;don&#39;t&quot;, the plan disappears after a host compaction, <code>directives</code>, the phase line in the state note, <code>runCompaction</code> recovery, or &quot;the model forgot what I told it&quot;.</p>
+<p class="status">Status: shipped (v0.3.22) - Read when: a user says &quot;remember&quot; or &quot;don&#39;t&quot;, the plan disappears after a host compaction, <code>directives</code>, the phase line in the state note, <code>runCompaction</code> recovery, or &quot;the model forgot what I told it&quot;.</p>
 
 <h2>What it does</h2>
 <ul>
@@ -41,6 +41,8 @@ hr{border:0;border-top:1px solid var(--line);margin:2rem 0}
 <li>Names the current plan phase in the state note on every pass: the active step and the done/total count.</li>
 <li>After a host compaction, reports what survived; when no plan survived, tells the model to recover it from the archive before continuing.</li>
 <li>Lets the model clear a directive once it has folded it into <code>decisions</code>, so the list does not become a second memory.</li>
+<li>Names a list that shrank in the patch reply, so a partial <code>plan</code>, <code>open</code>, <code>refs</code> or <code>directives</code> patch cannot delete entries silently.</li>
+<li>Adds one <code>capture:</code> line to the state note after eight completed tool calls with no accepted write in the turn.</li>
 <li>Keeps the runtime as the schema owner: the capture is extraction and retention, never summarization.</li>
 </ul>
 
@@ -53,6 +55,9 @@ hr{border:0;border-top:1px solid var(--line);margin:2rem 0}
 <li><code>src/core/context.ts</code> - <code>buildAppendPlan</code> calls <code>captureDirectives</code> before rendering; <code>TailBudget</code> carries the plan summary.</li>
 <li><code>src/core/append.ts</code> - <code>cloneMemory</code> copies <code>directives</code>; <code>checkpointAppend</code> and <code>migrateAppend</code> build the checkpoint through it.</li>
 <li><code>src/core/compaction.ts</code> - <code>runCompaction</code> is unchanged; it already stores <code>record.hostCompact</code>, which the note reads.</li>
+<li><code>src/core/memory-tool.ts</code> - <code>shrinkWarnings</code>, <code>SHRINK_LISTS</code>; the patch reply names a dropped list.</li>
+<li><code>src/core/context.ts</code> - <code>CAPTURE_CUE_CALLS</code> and the <code>captureCue</code> computed from the current span's tool calls and the accepted updates.</li>
+<li><code>src/core/state.ts</code> - <code>directivesDropped</code> and <code>directivesDismissed</code> are normalized and bounded on load.</li>
 <li><code>src/core/measure.ts</code> - <code>memoryChars</code> counts directives like any other key.</li>
 <li><code>scripts/smoke.mjs</code> - the assertions under Tests that pin it.</li>
 </ul>
@@ -75,11 +80,16 @@ hr{border:0;border-top:1px solid var(--line);margin:2rem 0}
 <h3>Post-compaction recovery</h3>
 <p><code>runCompaction</code> already stores <code>record.hostCompact</code> with the time and the archived count. The note extends it: when the plan is non-empty it repeats the phase; when it is empty it says the transcript was replaced with memory, that no plan or phase survived, and that the archived turns are searchable (<code>recall</code> with <code>lost:true</code>, then <code>expand</code>). That turns a silent loss into a named next action.</p>
 
+<h3>Feedback at the write moment</h3>
+<p>A patch that shrinks a list replaces it wholesale, so the reply appends <code>plan: 7 → 2 item(s) — lists replace, send the full list if that was not intended</code>. The same applies to <code>open</code> and <code>refs</code>. For <code>directives</code> a partial drop is named, while a full clear (<code>directives: []</code>) is the contract and is not warned.</p>
+<p>The no-write cue is the other half: when the current turn has made <code>CAPTURE_CUE_CALLS</code> (8) completed tool calls and has no accepted patch for that turn, the tail note prints <code>capture: N calls this turn, no accepted patch — record what matters...</code>. It is a reminder, not a rejection; an accepted patch for the turn removes it on the next pass. The count comes from the turn span's <code>tools</code>, so it survives the window being rebuilt.</p>
+
 <h3>Traps</h3>
 <ul>
 <li><strong>Do not summarize the directive.</strong> The value is that it is the user&#39;s own words; a paraphrase is the model&#39;s memory again and can drift.</li>
 <li><strong>Do not capture the assistant&#39;s plan text.</strong> Extraction of arbitrary prose is unreliable; the plan is model-authored on purpose, and the fix for a missing plan is the phase line plus the fold warning, not a parser.</li>
 <li><strong><code>cloneMemory</code> must copy every key.</strong> The checkpoint is an explicit copy; a memory key it forgets renders in the merged document and disappears at the next fold. Pinned by &quot;the checkpoint clone keeps a directive&quot;.</li>
+<li><strong>Clearing must dismiss.</strong> Capture re-reads the same turn on every pass; a cleared directive that is only removed from the list would reappear next pass. The removed sentence is recorded in <code>directivesDismissed</code>, keyed by turn and text, so the turn stays clear while a later turn that repeats the sentence is captured again. The cap drop uses the same key.</li>
 <li><strong>Capture before render.</strong> If the pass renders first, the directive appears one pass late, which is exactly the pass that may be compacted.</li>
 <li><strong>Idempotence.</strong> A turn produces several passes; the turn id plus the normalized text is the dedupe key, not the message index.</li>
 <li><strong>The directive list is not a second working set.</strong> Clearing it after folding into <code>decisions</code> is part of the contract; the policy says so and the cap enforces it.</li>
@@ -91,6 +101,7 @@ hr{border:0;border-top:1px solid var(--line);margin:2rem 0}
 <tbody>
 <tr><td><code>MAX_DIRECTIVES</code></td><td>16 entries</td><td>constant in <code>directives.ts</code>; not a config key</td></tr>
 <tr><td><code>MAX_DIRECTIVE_CHARS</code></td><td>240 per entry</td><td>constant in <code>directives.ts</code></td></tr>
+<tr><td><code>CAPTURE_CUE_CALLS</code></td><td>8 completed tool calls</td><td>constant in <code>context.ts</code>; the cue is not configurable</td></tr>
 <tr><td>phase line</td><td>derived from <code>memory.plan</code></td><td>the tail state note, every pass</td></tr>
 <tr><td>recovery line</td><td>after <code>record.hostCompact</code></td><td>the tail state note; the host-compaction marker stays on the record, as today</td></tr>
 </tbody>
@@ -108,10 +119,17 @@ hr{border:0;border-top:1px solid var(--line);margin:2rem 0}
 <li>&quot;directives are capped with a visible drop count&quot;</li>
 <li>&quot;a host compaction returns the directive in its summary&quot;</li>
 <li>&quot;a cleared directive is gone&quot;</li>
+<li>&quot;a cleared directive is not captured again&quot;</li>
 <li>&quot;the state note names the active phase&quot;</li>
 <li>&quot;a directive captured after the checkpoint is named in the state note&quot;</li>
 <li>&quot;a fold with an empty plan warns that the phase will not survive&quot;</li>
 <li>&quot;a host compaction with no plan names the recovery path&quot;</li>
+<li>&quot;a shrinking plan is named in the reply&quot;</li>
+<li>&quot;a partial directive drop is named&quot;</li>
+<li>&quot;a full directive clear is not warned&quot;</li>
+<li>&quot;a long turn with no write gets the capture cue&quot;</li>
+<li>&quot;an accepted patch clears the capture cue&quot;</li>
+<li>&quot;the policy asks for capture at the moment&quot;</li>
 </ul>
 
 <h2>Related</h2>

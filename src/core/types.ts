@@ -633,6 +633,8 @@ export interface SessionRecord {
   hostCompact?: HostCompact
   /** Directives evicted by the cap; rendered so the loss is visible. */
   directivesDropped?: number
+  /** Cleared directives, keyed by turn and sentence, so capture does not re-add them. */
+  directivesDismissed?: string[]
   /**
    * Turn ids whose bytes are rebuilt: reasoning dropped, successful write/edit
    * results replaced with a short confirmation, long shell output tail-cut.

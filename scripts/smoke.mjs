@@ -4356,5 +4356,85 @@ ok(
   "a host compaction with no plan names the recovery path",
 )
 
+// Capture feedback: a shrinking list is named, and a long turn with no write
+// gets one cue in the state note.
+const shrinkStore = new SessionStore()
+const shrinkConfig = resolveConfig({
+  options: { workingTokens: 20_000, memoryTokens: 3_000, charsPerToken: 2, defaultProfile: "" },
+})
+const shrinkDeps = { store: shrinkStore, config: shrinkConfig }
+await buildPayload(
+  {
+    sessionID: "shrink",
+    system: [],
+    messages: [user("sh1", "remember rule one. remember rule two."), assistant("sha1", "ok")],
+    model: {},
+  },
+  shrinkDeps,
+)
+const shrinkFirst = await runMemoryTool(
+  {
+    sessionID: "shrink",
+    action: "patch",
+    patch: {
+      plan: [
+        { step: 1, status: "todo", text: "one" },
+        { step: 2, status: "todo", text: "two" },
+        { step: 3, status: "todo", text: "three" },
+      ],
+    },
+  },
+  shrinkDeps,
+)
+ok(shrinkFirst.ok, "a three-step plan is stored")
+const shrinkSecond = await runMemoryTool(
+  { sessionID: "shrink", action: "patch", patch: { plan: [{ step: 1, status: "active", text: "one" }] } },
+  shrinkDeps,
+)
+ok(shrinkSecond.text.includes("plan: 3 → 1 item(s)"), "a shrinking plan is named in the reply")
+const shrinkPartial = await runMemoryTool(
+  { sessionID: "shrink", action: "patch", patch: { directives: [{ text: "remember rule one." }] } },
+  shrinkDeps,
+)
+ok(shrinkPartial.text.includes("directives: 2 → 1 item(s)"), "a partial directive drop is named")
+const shrinkClear = await runMemoryTool(
+  { sessionID: "shrink", action: "patch", patch: { directives: null } },
+  shrinkDeps,
+)
+ok(!shrinkClear.text.includes("directives:"), "a full directive clear is not warned")
+await buildPayload(
+  {
+    sessionID: "shrink",
+    system: [],
+    messages: [user("sh1", "remember rule one. remember rule two."), assistant("sha1", "ok")],
+    model: {},
+  },
+  shrinkDeps,
+)
+const shrinkReload = await shrinkStore.load("shrink", { fresh: true })
+ok(shrinkReload.memory.directives.length === 0, "a cleared directive is not captured again")
+
+const noteCueStore = new SessionStore()
+const noteCueConfig = resolveConfig({
+  options: { workingTokens: 20_000, memoryTokens: 3_000, charsPerToken: 2, defaultProfile: "" },
+})
+const noteCueDeps = { store: noteCueStore, config: noteCueConfig }
+const noteCueMessages = [user("cue1", "investigate")]
+for (let index = 0; index < 8; index += 1) {
+  noteCueMessages.push(call("cuea" + index, "cuec" + index, "read", { path: "f" + index + ".txt" }))
+  noteCueMessages.push(result("cuer" + index, "cuec" + index, "read", "ok"))
+}
+const noteCuePlan = await buildPayload({ sessionID: "cue", system: [], messages: noteCueMessages, model: {} }, noteCueDeps)
+const noteCueTail = noteCuePlan.messages[noteCuePlan.messages.length - 1].content[0].text
+ok(
+  noteCueTail.includes("capture: 8 calls this turn, no accepted patch"),
+  "a long turn with no write gets the capture cue",
+)
+await runMemoryTool({ sessionID: "cue", action: "patch", patch: { goal: "investigate the files" } }, noteCueDeps)
+const noteCueAfter = await buildPayload({ sessionID: "cue", system: [], messages: noteCueMessages, model: {} }, noteCueDeps)
+const noteCueAfterTail = noteCueAfter.messages[noteCueAfter.messages.length - 1].content[0].text
+ok(!noteCueAfterTail.includes("no accepted patch"), "an accepted patch clears the capture cue")
+ok(POLICY.includes("Capture at the moment it happens"), "the policy asks for capture at the moment")
+
 await dispose()
 console.log(`smoke: ${passed} assertions passed`)
