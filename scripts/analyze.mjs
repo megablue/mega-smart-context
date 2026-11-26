@@ -294,7 +294,7 @@ function hostUsage(db, sessionID) {
 const BREAK_TOKENS = 20_000
 
 /** Where a pass sits in the list, and the tools the pass before it called. */
-function passUsage(db, sessionID) {
+export function passUsage(db, sessionID) {
   const rows = db
     .prepare(
       "SELECT m.seq AS seq, m.data AS message, p.data AS tool " +
@@ -308,7 +308,13 @@ function passUsage(db, sessionID) {
     let step = steps[steps.length - 1]
     if (step === undefined || step.seq !== row.seq) {
       const message = parseRecord(row.message) ?? {}
-      step = { seq: row.seq, input: Number(message.tokens?.input) || 0, tools: [] }
+      step = {
+        seq: row.seq,
+        input: Number(message.tokens?.input) || 0,
+        read: Number(message.tokens?.cache?.read) || 0,
+        write: Number(message.tokens?.cache?.write) || 0,
+        tools: [],
+      }
       steps.push(step)
     }
     if (row.tool !== null && row.tool !== undefined) {
@@ -341,12 +347,15 @@ function causeOf(tools) {
 }
 
 /**
- * Attribute every pass at or above {@link BREAK_TOKENS} uncached input to the
- * tools the previous pass called. A memory patch rewrites the block at the head
- * of the payload, a fold rewrites and cuts it, and a large tool result changes
- * the tail: all three re-pay part of the prefix, and the tally says how much.
+ * Split every pass into the prefix it re-sent and the content it added.
+ *
+ * A break is not "a pass with a lot of uncached input": a large tool result
+ * grows the prompt and re-reads nothing, and a fold cuts the prompt rather than
+ * re-sending it. The test is the part that survived from the previous pass and
+ * was still not served from cache: `min(previous size, this size) - cacheRead`.
+ * Only that is a re-read; the rest is content the provider had never cached.
  */
-function breakdownOf(steps) {
+export function breakdownOf(steps) {
   const causes = {
     patch: { events: 0, tokens: 0 },
     compact: { events: 0, tokens: 0 },
@@ -356,17 +365,44 @@ function breakdownOf(steps) {
     other: { events: 0, tokens: 0 },
     none: { events: 0, tokens: 0 },
   }
+  let prompt = 0
   let input = 0
+  let cold = 0
+  let reread = 0
+  const newContent = { passes: 0, input: 0 }
   steps.forEach((step, index) => {
+    const size = step.input + step.read + step.write
+    prompt += size
     input += step.input
-    if (step.input < BREAK_TOKENS) return
-    const cause = causes[causeOf(index === 0 ? [] : steps[index - 1].tools)]
-    cause.events += 1
-    cause.tokens += step.input
+    if (index === 0) {
+      cold += step.input
+      return
+    }
+    const previous = steps[index - 1]
+    const previousSize = previous.input + previous.read + previous.write
+    const missed = Math.max(0, Math.min(previousSize, size) - step.read)
+    reread += missed
+    if (missed >= BREAK_TOKENS) {
+      const cause = causes[causeOf(previous.tools)]
+      cause.events += 1
+      cause.tokens += missed
+    } else if (step.input >= BREAK_TOKENS) {
+      newContent.passes += 1
+      newContent.input += step.input
+    }
   })
   const events = Object.values(causes).reduce((sum, value) => sum + value.events, 0)
-  const tokens = Object.values(causes).reduce((sum, value) => sum + value.tokens, 0)
-  return { threshold: BREAK_TOKENS, passes: steps.length, input, events, tokens, causes }
+  return {
+    threshold: BREAK_TOKENS,
+    passes: steps.length,
+    prompt,
+    input,
+    cold,
+    events,
+    tokens: reread,
+    causes,
+    newContent,
+  }
 }
 
 /** Read the database and return plain data — the text report is a view of it. */
@@ -558,16 +594,22 @@ function renderFallback(data) {
 /** The cache-break tally, in one section: passes, tokens, and the cause. */
 function renderBreaks(breaks) {
   if (breaks === undefined || breaks === null) return null
-  if (breaks.events === 0) return `cache breaks none at or above ${formatTokens(breaks.threshold)} uncached input`
-  const share = breaks.input > 0 ? Math.round((breaks.tokens / breaks.input) * 100) : 0
+  if (breaks.events === 0 && breaks.newContent.passes === 0) {
+    return `cache breaks none at or above ${formatTokens(breaks.threshold)} re-read tokens`
+  }
+  const share = breaks.prompt > 0 ? Math.round((breaks.tokens / breaks.prompt) * 100) : 0
+  const added =
+    breaks.newContent.passes > 0
+      ? ` · ${breaks.newContent.passes} large passes added ${formatTokens(breaks.newContent.input)} without re-reading`
+      : ""
+  const head =
+    `cache breaks ${breaks.events} passes re-read ${formatTokens(breaks.tokens)} of ` +
+    `${formatTokens(breaks.prompt)} prompt tokens (${share}%) · cold start ${formatTokens(breaks.cold)}` +
+    added
   const parts = Object.entries(breaks.causes)
     .filter(([, value]) => value.events > 0)
     .map(([name, value]) => `${name} ${value.events}×/${formatTokens(value.tokens)}`)
-  return [
-    `cache breaks ${breaks.events} passes at or above ${formatTokens(breaks.threshold)} uncached input · ` +
-      `${formatTokens(breaks.tokens)} of ${formatTokens(breaks.input)} input (${share}%)`,
-    `  by preceding event: ${parts.join(" · ")}`,
-  ].join("\n")
+  return parts.length > 0 ? [head, `  by preceding event: ${parts.join(" · ")}`].join("\n") : head
 }
 
 /** The text report. */
