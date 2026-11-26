@@ -40,6 +40,7 @@ hr{border:0;border-top:1px solid var(--line);margin:2rem 0}
 <ul>
 <li>Stores short, evidence-backed environment facts per repository, shared by every worktree of one git root.</li>
 <li>Learns only from a tool call paired with its observed result: command, exit code and a canonical error signature. Assistant prose and raw output are never inputs.</li>
+<li>Shell-shaped means the host's <code>shell</code>/<code>bash</code> family and this plugin's <code>run</code>. A <code>run</code> result's <code>state</code> (<code>completed</code>/<code>ready</code> vs <code>failed</code>/<code>stopped</code>) decides the outcome when the exit code is absent, and a job still <code>running</code> is not folded as evidence.</li>
 <li>Promotes a candidate after <code>K_PROMOTE = 3</code> confirmations from separate sessions, then injects it only after it clears the firing gate.</li>
 <li>Renders a deterministic block capped at 4 facts and 150 estimated tokens, with the fact id beside each claim so it can be forgotten by hand.</li>
 <li>Keeps facts inspectable and forgettable. A forgotten or retired id is never learned again; unforget restores a forgotten record.</li>
@@ -106,6 +107,8 @@ hr{border:0;border-top:1px solid var(--line);margin:2rem 0}
 <li><code>forget hides a fact, blocks re-learning and unforget restores it</code></li>
 <li><code>the render cap is four facts and 150 estimated tokens, hard</code> / <code>render is stable across passes and insertion order</code></li>
 <li><code>redaction removes secrets, credentials and home paths</code> / <code>extraction parses a signature but never stores raw output</code></li>
+<li><code>a run result is a shell observation, not an unknown tool</code> / <code>a run state decides the outcome when the exit code is null</code></li>
+<li><code>a running job is not folded as evidence</code> / <code>a run failure teaches an absent tool like the shell did</code></li>
 <li><code>a shell failure becomes a candidate and three sessions promote it</code> / <code>a working tool contradicts an absent-tool fact and retires it</code></li>
 <li><code>a later working form repairs the failed form</code> / <code>facts folding leaves tool usage to the usage fold</code></li>
 <li>Smoke: first-pass injection and second-pass byte stability; no block without the project layer or with <code>projectFacts:false</code>; fold-once across repeated passes; <code>/context facts</code> and forget clearing the snapshot</li>

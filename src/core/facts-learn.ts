@@ -27,6 +27,8 @@ import { isPlainObject, type ContentPart, type Message } from "./types.ts"
 /** Shell-shaped tools whose results carry a command and an exit status. */
 export const SHELL_TOOLS: ReadonlySet<string> = new Set([
   "shell",
+  // This plugin replaces the host's `shell` with `run`; the learner must see it.
+  "run",
   "bash",
   "sh",
   "zsh",
@@ -336,15 +338,31 @@ function numericCode(value: unknown): number | undefined {
   return undefined
 }
 
+/** The outcome a `run`-shaped result reports, at the top level or under `output`. */
+function stateOf(value: unknown): string | undefined {
+  if (!isPlainObject(value)) return undefined
+  for (const source of [
+    value,
+    isPlainObject(value.output) ? value.output : undefined,
+    isPlainObject(value.metadata) ? value.metadata : undefined,
+  ]) {
+    if (source === undefined) continue
+    const state = source.state
+    if (typeof state === "string" && state.length > 0) return state.toLowerCase()
+  }
+  return undefined
+}
+
 function exitCodeOf(value: unknown, text: string): number | undefined {
   if (isPlainObject(value)) {
-    for (const key of ["exitCode", "exit_code", "status"]) {
-      const code = numericCode(value[key])
-      if (code !== undefined) return code
-    }
-    if (isPlainObject(value.metadata)) {
+    for (const source of [
+      value,
+      isPlainObject(value.output) ? value.output : undefined,
+      isPlainObject(value.metadata) ? value.metadata : undefined,
+    ]) {
+      if (source === undefined) continue
       for (const key of ["exitCode", "exit_code", "status"]) {
-        const code = numericCode(value.metadata[key])
+        const code = numericCode(source[key])
         if (code !== undefined) return code
       }
     }
@@ -359,6 +377,9 @@ function exitCodeOf(value: unknown, text: string): number | undefined {
 
 function okOf(value: unknown, exitCode: number | undefined, text: string): boolean {
   if (exitCode !== undefined) return exitCode === 0
+  const state = stateOf(value)
+  if (state === "failed" || state === "stopped" || state === "error") return false
+  if (state === "completed" || state === "ready") return true
   if (isPlainObject(value)) {
     if (value.ok === false || value.success === false || value.isError === true) return false
     if (value.ok === true || value.success === true) return true
@@ -432,6 +453,9 @@ export function extractObservations(
   for (const call of calls) {
     if (!results.has(call.id)) continue
     const value = results.get(call.id)
+    // A job that is still running has not produced an outcome; folding it would
+    // invent one. The completion note arrives on a later pass with a finished state.
+    if (stateOf(value) === "running") continue
     const text = textOfValue(value).slice(0, PARSE_LIMIT)
     const shell = SHELL_TOOLS.has(call.name)
     const command = shell ? commandOf(call.input) : undefined

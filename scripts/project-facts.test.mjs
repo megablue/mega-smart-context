@@ -100,6 +100,26 @@ function shellMessages(id, command, value) {
   ]
 }
 
+function runMessages(id, command, output) {
+  return [
+    {
+      role: "assistant",
+      content: [{ type: "tool-call", id, name: "run", input: { command } }],
+    },
+    {
+      role: "tool",
+      content: [
+        {
+          type: "tool-result",
+          id,
+          name: "run",
+          result: { type: "json", value: output },
+        },
+      ],
+    },
+  ]
+}
+
 function observationsFor(sessionID, command, value) {
   return extractObservations(shellMessages(sessionID + "-call", command, value), { sessionID })
 }
@@ -524,6 +544,64 @@ await test("extraction parses a signature but never stores raw output", () => {
   assert.equal(stored.includes("TOP-SECRET"), false)
   assert.equal(stored.includes("sk-abcdef"), false)
   assert.equal(Object.values(record.candidates)[0].params.tool, "deploy")
+})
+
+await test("a run result is a shell observation, not an unknown tool", () => {
+  const observations = extractObservations(
+    runMessages("run-1", "npm test", {
+      output: "1 failing",
+      exitCode: 1,
+      wallTimeSeconds: 0.4,
+      state: "failed",
+    }),
+    { sessionID: "run" },
+  )
+  assert.equal(observations.length, 1)
+  assert.equal(observations[0].command, "npm test")
+  assert.equal(observations[0].exitCode, 1)
+  assert.equal(observations[0].ok, false)
+})
+
+await test("a run state decides the outcome when the exit code is null", () => {
+  const failed = extractObservations(
+    runMessages("run-2", "npm test", { output: "boom", exitCode: null, wallTimeSeconds: 0, state: "failed" }),
+    { sessionID: "run" },
+  )
+  assert.equal(failed[0].ok, false)
+  const completed = extractObservations(
+    runMessages("run-3", "npm test", { output: "ok", exitCode: null, wallTimeSeconds: 0, state: "completed" }),
+    { sessionID: "run" },
+  )
+  assert.equal(completed[0].ok, true)
+})
+
+await test("a running job is not folded as evidence", () => {
+  const observations = extractObservations(
+    runMessages("run-4", "npm run dev", {
+      output: "",
+      exitCode: null,
+      wallTimeSeconds: 0,
+      state: "running",
+      jobID: "job-1",
+    }),
+    { sessionID: "run" },
+  )
+  assert.equal(observations.length, 0)
+})
+
+await test("a run failure teaches an absent tool like the shell did", () => {
+  const record = empty()
+  const observations = extractObservations(
+    runMessages("run-5", "deploy --token sk-abcdef1234567890", {
+      output: "command not found: deploy",
+      exitCode: 127,
+      wallTimeSeconds: 0.1,
+      state: "failed",
+    }),
+    { sessionID: "run" },
+  )
+  const result = foldObservations(record, observations, { sessionID: "run", turnID: "t1", now: NOW })
+  assert.deepEqual(result.factIds, ["absent_tool:deploy"])
 })
 
 // ---------------------------------------------------------------------------
