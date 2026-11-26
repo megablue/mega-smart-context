@@ -7,6 +7,25 @@ export interface ShellResult {
   wallTimeSeconds: number
 }
 
+/**
+ * The quick shell's guard fired. The command is stopped, but the output it
+ * produced before the deadline is kept so a misclassified long command is
+ * diagnosable instead of silently empty.
+ */
+export class ShellTimeoutError extends Error {
+  readonly output: string
+  readonly wallTimeSeconds: number
+  readonly timeoutMs: number
+
+  constructor(timeoutMs: number, output: string, wallTimeSeconds: number) {
+    super("command did not exit within " + Math.round(timeoutMs / 1000) + "s; stopped with the output so far")
+    this.name = "ShellTimeoutError"
+    this.timeoutMs = timeoutMs
+    this.output = output
+    this.wallTimeSeconds = wallTimeSeconds
+  }
+}
+
 interface Pending {
   marker: string
   resolve: (value: ShellResult) => void
@@ -37,10 +56,14 @@ while ($true) {
   $cmd = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($line.Substring($split + 1)))
   $global:LASTEXITCODE = 0
   $ok = $true
-  $result = $null
-  try { $result = Invoke-Expression $cmd 2>&1; $ok = $true } catch { $result = $_.Exception.Message; $ok = $false }
+  try {
+    Invoke-Expression $cmd 2>&1 | ForEach-Object { $_ | Out-String -Stream }
+    $ok = $true
+  } catch {
+    $_.Exception.Message | Out-String -Stream
+    $ok = $false
+  }
   $code = if ($null -ne $LASTEXITCODE -and $LASTEXITCODE -ne 0 -and $LASTEXITCODE -ne -1) { $LASTEXITCODE } elseif ($ok -or $LASTEXITCODE -eq -1) { 0 } else { 1 }
-  if ($null -ne $result) { $result | Out-String -Stream }
   Write-Output ($marker + ':' + $code)
 }`
 
@@ -142,11 +165,14 @@ export class PersistentShell {
       const started = Date.now()
       return await new Promise<ShellResult>((resolve, reject) => {
         const timer = setTimeout(() => {
+          const output = this.partialOutput()
           this.pending = null
           try { proc.kill() } catch {}
           this.proc = null
-          this.warn("quick command exceeded " + Math.round(timeoutMs / 1000) + "s; restarting the shell")
-          reject(new Error("command did not exit within " + Math.round(timeoutMs / 1000) + "s; start it as a service or job"))
+          this.buffer = ""
+          this.stderrBuffer = ""
+          this.warn("quick command exceeded " + Math.round(timeoutMs / 1000) + "s; stopped and kept the output; restarting the shell")
+          reject(new ShellTimeoutError(timeoutMs, output, (Date.now() - started) / 1000))
         }, timeoutMs)
         this.pending = { marker, resolve, reject, timer, started }
         proc.stdin.write(line)
@@ -155,6 +181,16 @@ export class PersistentShell {
     const next = this.queue.then(task, task)
     this.queue = next.then(() => undefined, () => undefined)
     return next
+  }
+
+  /** Everything the command printed before the guard fired, stderr included. */
+  private partialOutput(): string {
+    const stderr = this.stderrBuffer.trim()
+    let output = this.buffer.replace(/\r\n/g, "\n")
+    if (stderr.length > 0 && !stderr.includes("#< CLIXML")) {
+      output = output.length > 0 && !output.endsWith("\n") ? output + "\n" + stderr : output + stderr
+    }
+    return output
   }
 
   private kill(): void {

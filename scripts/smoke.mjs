@@ -34,6 +34,8 @@ import {
   loopGuardGreen,
 } from "../src/core/loopguard.ts"
 import { classify } from "../src/core/run/classify.ts"
+import { ShellTimeoutError } from "../src/core/run/shell.ts"
+import { QUICK_TIMEOUT_MS, shouldPromoteToJob } from "../src/core/run/tool.ts"
 import { npmScriptCommand, resolveNpmScript } from "../src/core/run/npm.ts"
 import { TimingStore } from "../src/core/run/timings.ts"
 import { consoleSpawnOptions } from "../src/core/run/windows.ts"
@@ -4211,6 +4213,29 @@ const runManifest = { services: [{ match: "start-api", ready: "listening" }] }
 const runService = classify("start-api --port 3000", runManifest)
 ok(runService.kind === "service", "a manifest service rule wins")
 ok(runService.rule?.ready === "listening", "the ready pattern is carried")
+ok(classify("cargo test", undefined).kind === "job", "cargo test is a job")
+ok(classify("cargo +nightly test --all", undefined).kind === "job", "a cargo toolchain override is a job")
+ok(classify("cargo build --release", undefined).kind === "job", "a cargo build is a job")
+ok(classify("go test ./...", undefined).kind === "job", "go test is a job")
+ok(classify("pytest -q", undefined).kind === "job", "pytest is a job")
+ok(classify("python -m pytest", undefined).kind === "job", "python -m pytest is a job")
+ok(classify("dotnet test", undefined).kind === "job", "dotnet test is a job")
+ok(classify("./gradlew test", undefined).kind === "job", "the Gradle wrapper is a job")
+ok(classify("make test", undefined).kind === "job", "make test is a job")
+ok(classify("npm install", undefined).kind === "job", "an npm install is a job")
+ok(classify("git status", undefined).kind === "quick", "git status stays quick")
+ok(classify("cargo --version", undefined).kind === "quick", "a cargo version check stays quick")
+ok(classify("dotnet run", undefined).kind === "service", "dotnet run stays a service")
+ok(classify("npm start", undefined).kind === "service", "npm start is a service")
+ok(shouldPromoteToJob("quick", QUICK_TIMEOUT_MS + 1), "a quick command with a longer hint is promoted")
+ok(!shouldPromoteToJob("quick", QUICK_TIMEOUT_MS), "the quick clock itself is not a promotion")
+ok(!shouldPromoteToJob("quick", undefined), "no hint keeps the quick path")
+ok(!shouldPromoteToJob("job", QUICK_TIMEOUT_MS * 10), "a job is not promoted twice")
+const runTimeoutError = new ShellTimeoutError(10_000, "compiling…", 10.2)
+ok(
+  runTimeoutError.output === "compiling…" && runTimeoutError.wallTimeSeconds === 10.2,
+  "a shell timeout keeps its partial output",
+)
 ok(TimingStore.signature("npm test -- 123456") === "npm test -- #", "a volatile number collapses in a timing signature")
 ok(TimingStore.project("C:\\Work\\App") === "c:/work/app", "the project key is normalized")
 const runTimingsStore = new TimingStore()
@@ -4230,7 +4255,8 @@ ok(runNpmDirect.includes("npm_lifecycle_event = 'version:check'"), "the direct n
 ok(runNpmDirect.includes("node_modules") && runNpmDirect.includes(".bin"), "the direct npm command puts node_modules/.bin on PATH")
 ok(runNpmDirect.includes("try { node scripts/version.mjs --check } finally"), "the direct npm command restores the environment")
 ok(consoleSpawnOptions(true).detached === false && consoleSpawnOptions(true).windowsHide === (process.platform === "win32" ? false : true), "a host console is shared on Windows")
-ok(consoleSpawnOptions(false).detached === (process.platform === "win32" ? true : false) && consoleSpawnOptions(false).windowsHide === true, "no host console gets a hidden console")
+ok(consoleSpawnOptions(false).detached === false && consoleSpawnOptions(false).windowsHide === true, "no host console gets a hidden, attached console")
+ok(consoleSpawnOptions(true).detached === false && consoleSpawnOptions(false).detached === false, "a job is never detached from its stdio")
 
 // Capture guarantees: a standing instruction is copied verbatim, survives the
 // checkpoint, and a host compaction carries it in the summary.

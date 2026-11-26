@@ -21,7 +21,7 @@ export interface Classified {
 }
 
 const SERVICE_PATTERNS = [
-  /\b(?:npm|pnpm|yarn|bun)\s+(?:run\s+)?dev\b/i,
+  /\b(?:npm|pnpm|yarn|bun)\s+(?:run\s+)?(?:dev|start)\b/i,
   /\bvite\b/i,
   /\bnext\s+dev\b/i,
   /\bnuxt\s+dev\b/i,
@@ -37,11 +37,25 @@ const SERVICE_PATTERNS = [
 
 const JOB_PATTERNS = [
   /\b(?:npm|pnpm|yarn|bun)\s+(?:run\s+)?(?:test|build|deploy|release|lint|typecheck|e2e)\b/i,
+  /\b(?:npm|pnpm|yarn|bun)\s+(?:install|ci|add|remove|update)\b/i,
   /\b(?:jest|vitest|playwright|cypress|puppeteer|tsc)\b/i,
   /\bgh\s+run\s+(?:watch|view|list)\b/i,
   /\bgit\s+clone\b/i,
   /\bdocker\s+(?:build|compose)\b/i,
   /\b(?:deploy|release)\b/i,
+  // Compilers and test runners outside the JS ecosystem. A first compile or a
+  // suite can outlast the quick shell's 10s clock; the job clock returns a job
+  // id instead of killing the process.
+  /\bcargo\s+(?:\+\S+\s+)?(?:test|build|check|clippy|nextest|bench|doc|publish|install|run|llvm-cov|tarpaulin|audit)\b/i,
+  /\bgo\s+(?:test|build|vet|generate|run)\b/i,
+  /\b(?:pytest|py\.test|tox|nox|phpunit|rspec)\b/i,
+  /\bpython(?:3)?\s+-m\s+(?:pytest|unittest|tox|nox)\b/i,
+  /\bdotnet\s+(?:test|build|publish|pack|restore)\b/i,
+  /\b(?:mvn|mvnw|gradle|gradlew)\b/i,
+  /\b(?:make|cmake|ctest|ninja|bazel)\b/i,
+  /\bswift\s+(?:test|build)\b/i,
+  /\bmix\s+(?:test|compile)\b/i,
+  /\b(?:rake|just)\s+\S+/i,
 ]
 
 export function classify(command: string, manifest: RunManifest | undefined): Classified {

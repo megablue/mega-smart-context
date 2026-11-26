@@ -117,7 +117,9 @@ export class JobRegistry {
       append("\n" + error.message)
       this.settle(job, "failed", null)
     })
-    child.on("exit", (code) => {
+    // Wait for close, not exit: exit can fire before the last stdout/stderr
+    // chunk is delivered, which loses a short job's output.
+    child.on("close", (code) => {
       this.settle(job, code === 0 ? "completed" : "failed", code)
     })
     this.jobs.set(job.id, job)

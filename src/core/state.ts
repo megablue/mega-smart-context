@@ -16,6 +16,7 @@
  */
 
 import { emptyMemory, normalizeMemory } from "./schema.ts"
+import { MAX_DIRECTIVES_DISMISSED } from "./directives.ts"
 import { normalizeUpdate } from "./append.ts"
 import { normalizeRaw } from "./raw.ts"
 import { normalizeLoopGuard } from "./loopguard.ts"
