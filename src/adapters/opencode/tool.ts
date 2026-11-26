@@ -112,6 +112,7 @@ export function createSmartContextTool(options: {
         sessionID,
         action: raw.action,
         patch: raw.patch,
+        reason: raw.reason,
         key: raw.key,
         id: raw.id,
         page: raw.page,

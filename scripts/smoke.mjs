@@ -109,7 +109,7 @@ import { deriveVersion, readVersionBase } from "../src/core/version.ts"
 import { balanceCuts, erodeToolResults, gistText, hostMessageOf, isHostCue, isHostJob, isHostMessage, isHostTail, isRealUser, modeReminderOf, noticeOf, rebuildTurn, RESUMED_TEXT, selectAppendWindow, selectWorkingWindow, splitNotices, supersededReads, turnSpans } from "../src/core/view.ts"
 import { livenessFromError } from "../src/adapters/opencode/sessions.ts"
 import { modelWindowOf } from "../src/adapters/opencode/context.ts"
-import { TOOL_DESCRIPTION } from "../src/adapters/opencode/tool.ts"
+import { TOOL_DESCRIPTION, createSmartContextTool } from "../src/adapters/opencode/tool.ts"
 import { readPluginVersion } from "../src/adapters/opencode/version.ts"
 import {
   CHECK_INTERVAL_MS,
@@ -1457,6 +1457,32 @@ ok(extCompact.ok, "compact is accepted after an extension")
 await extendPass([...extTurn2, user("xu3", "next"), assistant("xa3", "ok")])
 extendRecord = await extendStore.load("append-extend")
 ok(extendRecord.ext === undefined, "the fold clears the extension for the next era")
+
+// The adapter is a whitelist, not a pass-through: a field the core reads is
+// dropped unless it is copied onto the request. Core tests pass `reason`
+// directly, so only the wire shape pins this.
+const wireStore = new SessionStore()
+const wireDeps = { store: wireStore, config: extendConfig }
+await buildPayload(
+  {
+    sessionID: "append-extend-wire",
+    system: [{ type: "text", text: "base" }],
+    messages: [user("wu1", "hi"), assistant("wa1", "ok")],
+    model: extendModel,
+  },
+  wireDeps,
+)
+const wireTool = createSmartContextTool({ store: wireStore, config: extendConfig, root: "." })
+const wireResult = await wireTool.execute(
+  { action: "extend", reason: "finish the atomic step" },
+  { sessionID: "append-extend-wire" },
+)
+const wireText = wireResult.content.map((part) => part.text).join(" ")
+const wireRecord = await wireStore.load("append-extend-wire")
+ok(
+  !wireText.includes("needs reason") && wireText.includes("window extended") && wireRecord.ext !== undefined,
+  "the adapter forwards reason to extend",
+)
 
 const unknownWindowStore = new SessionStore()
 const unknownWindowDeps = {

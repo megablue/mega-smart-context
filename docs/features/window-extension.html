@@ -88,6 +88,9 @@ hr{border:0;border-top:1px solid var(--line);margin:2rem 0}
 
 <h3>Resets and what does not happen</h3>
 <p><code>action:&quot;compact&quot;</code> clears <code>record.ext</code> with the rest of the fold state. A host compaction also clears it, along with <code>windowStart</code>, the update log, <code>seenTurns</code> and the rebuild bookkeeping; the host&#39;s turns are archived first. The plugin does not continue the task by itself after a fold, and it does not grant a second extension in the same era.</p>
+
+<h3>The adapter is a whitelist</h3>
+<p><code>createSmartContextTool</code> copies each argument onto the request field by field; it is not a spread. A field declared in <code>TOOL_INPUT</code> and read by the core is invisible on the wire until it is copied there, and core tests that build a request object directly cannot see the gap. <code>reason</code> was declared and never copied, so every <code>action:&quot;extend&quot;</code> answered <em>extend needs reason</em> no matter what the model sent, and sessions folded instead of granting. When adding a field, add it in three places - <code>TOOL_INPUT</code>, the request object, and a smoke assertion that calls <code>createSmartContextTool(...).execute(...)</code>. Pinned by &ldquo;the adapter forwards reason to extend&rdquo;.</p>
 </section>
 
 <section id="config-keys-ui">

@@ -50,6 +50,9 @@ the working budget (verbatim), and the current turn.
   only the keys that changed. Maps merge; lists replace; \`null\` resets a key (or
   deletes one map entry). Unknown keys are dropped and an over-cap write is
   rejected rather than silently trimmed.
+- Patch at the end of a turn, not after every fact: the memory block sits at the
+  head of the next request, so a patch re-reads everything behind it instead of
+  riding the prefix cache. Facts found mid-turn are one patch at the end.
 - \`smart_context\` is a direct tool: call it by name, never as
   \`tools.smart_context(...)\` inside \`execute\`. The Code Mode catalog does not
   contain it, so such a call comes back as "Unknown tool" and nothing is written.

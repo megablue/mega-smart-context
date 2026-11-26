@@ -290,6 +290,85 @@ function hostUsage(db, sessionID) {
   }
 }
 
+/** Uncached input in one pass at or above this is a cache break. */
+const BREAK_TOKENS = 20_000
+
+/** Where a pass sits in the list, and the tools the pass before it called. */
+function passUsage(db, sessionID) {
+  const rows = db
+    .prepare(
+      "SELECT m.seq AS seq, m.data AS message, p.data AS tool " +
+        "FROM session_message m " +
+        "LEFT JOIN session_part p ON p.message_id = m.id AND p.type = 'tool' " +
+        "WHERE m.session_id = ? AND m.type = 'assistant' ORDER BY m.seq, p.ordinal",
+    )
+    .all(sessionID)
+  const steps = []
+  for (const row of rows) {
+    let step = steps[steps.length - 1]
+    if (step === undefined || step.seq !== row.seq) {
+      const message = parseRecord(row.message) ?? {}
+      step = { seq: row.seq, input: Number(message.tokens?.input) || 0, tools: [] }
+      steps.push(step)
+    }
+    if (row.tool !== null && row.tool !== undefined) {
+      const tool = parseRecord(row.tool) ?? {}
+      step.tools.push({
+        name: typeof tool.name === "string" ? tool.name : "",
+        action: typeof tool.state?.input?.action === "string" ? tool.state.input.action : undefined,
+      })
+    }
+  }
+  return steps
+}
+
+/** Which preceding write accounts for a break: the cause, not a guess at it. */
+function causeOf(tools) {
+  const smart = tools.find((tool) => tool.name === "smart_context")
+  if (smart?.action === "patch" || smart?.action === "compact" || smart?.action === "extend") return smart.action
+  if (
+    smart !== undefined &&
+    smart.action !== "read" &&
+    smart.action !== "stats" &&
+    smart.action !== "recall" &&
+    smart.action !== "raw" &&
+    smart.action !== "expand"
+  ) {
+    return "memory"
+  }
+  if (tools.some((tool) => tool.name === "execute")) return "execute"
+  return tools.length > 0 ? "other" : "none"
+}
+
+/**
+ * Attribute every pass at or above {@link BREAK_TOKENS} uncached input to the
+ * tools the previous pass called. A memory patch rewrites the block at the head
+ * of the payload, a fold rewrites and cuts it, and a large tool result changes
+ * the tail: all three re-pay part of the prefix, and the tally says how much.
+ */
+function breakdownOf(steps) {
+  const causes = {
+    patch: { events: 0, tokens: 0 },
+    compact: { events: 0, tokens: 0 },
+    extend: { events: 0, tokens: 0 },
+    memory: { events: 0, tokens: 0 },
+    execute: { events: 0, tokens: 0 },
+    other: { events: 0, tokens: 0 },
+    none: { events: 0, tokens: 0 },
+  }
+  let input = 0
+  steps.forEach((step, index) => {
+    input += step.input
+    if (step.input < BREAK_TOKENS) return
+    const cause = causes[causeOf(index === 0 ? [] : steps[index - 1].tools)]
+    cause.events += 1
+    cause.tokens += step.input
+  })
+  const events = Object.values(causes).reduce((sum, value) => sum + value.events, 0)
+  const tokens = Object.values(causes).reduce((sum, value) => sum + value.tokens, 0)
+  return { threshold: BREAK_TOKENS, passes: steps.length, input, events, tokens, causes }
+}
+
 /** Read the database and return plain data — the text report is a view of it. */
 export function analyze({ session, dir, db, context = UNKNOWN_WINDOW, keep = DEFAULT_KEEP, summary = DEFAULT_SUMMARY, buffer, native = true, model, weights }) {
   if (!existsSync(db)) throw new Error(`no database at ${db}`)
@@ -358,6 +437,7 @@ export function analyze({ session, dir, db, context = UNKNOWN_WINDOW, keep = DEF
         hostCost: host.cost,
       },
       transcript: transcriptEstimate(sqlite, located.id),
+      breaks: breakdownOf(passUsage(sqlite, located.id)),
     }
   } finally {
     sqlite.close()
@@ -475,6 +555,21 @@ function renderFallback(data) {
   return lines.join("\n")
 }
 
+/** The cache-break tally, in one section: passes, tokens, and the cause. */
+function renderBreaks(breaks) {
+  if (breaks === undefined || breaks === null) return null
+  if (breaks.events === 0) return `cache breaks none at or above ${formatTokens(breaks.threshold)} uncached input`
+  const share = breaks.input > 0 ? Math.round((breaks.tokens / breaks.input) * 100) : 0
+  const parts = Object.entries(breaks.causes)
+    .filter(([, value]) => value.events > 0)
+    .map(([name, value]) => `${name} ${value.events}×/${formatTokens(value.tokens)}`)
+  return [
+    `cache breaks ${breaks.events} passes at or above ${formatTokens(breaks.threshold)} uncached input · ` +
+      `${formatTokens(breaks.tokens)} of ${formatTokens(breaks.input)} input (${share}%)`,
+    `  by preceding event: ${parts.join(" · ")}`,
+  ].join("\n")
+}
+
 /** The text report. */
 export function render(data) {
   const lines = [
@@ -483,6 +578,7 @@ export function render(data) {
     renderPlugins(data),
     data.history !== null ? renderHistory(data.history, data.summary, data.baseline) : renderFallback(data),
     renderUsage(data.usage),
+    renderBreaks(data.breaks),
     `memory ${formatTokens(data.memoryChars)} chars · seenTurns ${data.seenTurns} · pending ${data.pending.length} · ` +
       `archive ${data.archive.length} · record ${formatBytes(data.recordBytes)}`,
     `goal: ${oneLine(data.goal, 100) || "(empty)"}`,
