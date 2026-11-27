@@ -644,6 +644,7 @@ export function normalizeRecord(value: unknown, now: number): SessionRecord {
   if (typeof value.createdAt === "number") record.createdAt = value.createdAt
   if (typeof value.updatedAt === "number") record.updatedAt = value.updatedAt
   if (typeof value.directory === "string" && value.directory.length > 0) record.directory = value.directory
+  if (value.mode === "plan" || value.mode === "build") record.mode = value.mode
   if (isPlainObject(value.lastReport)) record.lastReport = value.lastReport as SessionRecord["lastReport"]
   const history = normalizeHistory(value.history)
   if (history !== undefined) record.history = history

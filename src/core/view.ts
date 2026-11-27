@@ -224,6 +224,32 @@ export function modeReminderOf(text: string): ModeReminder | undefined {
   return undefined
 }
 
+/** The agent's name, whether the host hands a string or an agent object. */
+export function agentNameOf(agent: unknown): string | undefined {
+  if (typeof agent === "string" && agent.length > 0) return agent
+  if (typeof agent !== "object" || agent === null) return undefined
+  const value = agent as Record<string, unknown>
+  for (const key of ["name", "id", "agent"]) {
+    const candidate = value[key]
+    if (typeof candidate === "string" && candidate.length > 0) return candidate
+  }
+  return undefined
+}
+
+/**
+ * The mode a host agent names, when its name is one of the two.
+ *
+ * The request's agent is the authority on the mode: it arrives on every pass, so
+ * a switch takes effect even when the host's instruction message never reaches
+ * `event.messages` and can never age out of the window.
+ */
+export function modeOfAgent(agent: unknown): ModeReminder | undefined {
+  const name = agentNameOf(agent)
+  if (name === "plan") return "plan"
+  if (name === "build") return "build"
+  return undefined
+}
+
 /**
  * Pull the host's notices out of a payload.
  *

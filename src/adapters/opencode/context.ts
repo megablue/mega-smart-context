@@ -21,6 +21,7 @@ import { resolve, sep } from "node:path"
 
 import type { ResolvedConfig } from "../../core/config.ts"
 import { buildPayload, modelContextOf, type ContextReport } from "../../core/context.ts"
+import { agentNameOf } from "../../core/view.ts"
 import type { ProjectSessionDeps } from "../../core/project-session.ts"
 import { extractHtmlSection, extractSection, pageCandidates } from "../../core/refs.ts"
 import type { SessionStore } from "../../core/state.ts"
@@ -191,6 +192,19 @@ export async function runContextTransform(
 
   const modelContext = await modelWindowOf(ctx, event.model, deps.modelWindows ?? new Map())
 
+  // The mode belongs to the request's agent, which the host names on the event.
+  // A host that omits it is asked once per pass; the pinned notice stays the
+  // last fallback.
+  let agent = agentNameOf(event.agent)
+  if (agent === undefined) {
+    try {
+      const session = await ctx.session.get({ sessionID })
+      agent = agentNameOf(session.agent)
+    } catch {
+      // a host that cannot answer leaves the notice fallback in place
+    }
+  }
+
   const plan = await buildPayload(
     {
       sessionID,
@@ -198,6 +212,7 @@ export async function runContextTransform(
       messages: event.messages,
       model: event.model,
       modelContext,
+      agent,
       tools:
         event.tools === undefined || event.tools === null
           ? undefined

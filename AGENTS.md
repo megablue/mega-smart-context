@@ -213,8 +213,10 @@ mechanisms and traps.
 - **The current mode survives every pass: captured, pinned, re-emitted.** The
   pass must always know which PLAN/BUILD mode the session is in and render it on
   every request; only the live mode is kept - a superseded one is retired, never
-  preserved beside it. Keeping that true means classifying every shape the host
-  uses for the switch, not just the one seen today: a `user` message whose whole
+  preserved beside it. The request's agent (`event.agent`) is the authority: read
+  it on every pass and store the mode it names. Classifying the instruction text
+  is the fallback for a host that names no agent, and it must cover every shape
+  the host has used, not just the one seen today: a `user` message whose whole
   text is `<system-reminder>…</system-reminder>`, and a `system`-role
   instruction (`metadata.notice: "instructions"`,
   `instructionSources: ["core/agent"]`) that opens "You are in Plan mode" or

@@ -591,6 +591,16 @@ export interface ToolUsageCursor {
 export interface SessionRecord {
   version: 1
   memory: Memory
+
+  /**
+   * The mode the host's agent names, written every pass from `event.agent`.
+   *
+   * The tail note reads this before it falls back to a pinned notice: the mode
+   * belongs to the request, not to a transcript message that can age out of the
+   * window. Absent when the session runs on an agent that is neither Plan nor
+   * Build.
+   */
+  mode?: "plan" | "build"
   /**
    * The checkpoint the append-only layout renders first.
    *

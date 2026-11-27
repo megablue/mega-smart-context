@@ -42,6 +42,7 @@ import {
   supersededReads,
   turnSpans,
   type TurnSpan,
+  modeOfAgent,
 } from "./view.ts"
 
 /** Most leaving-turn previews the tail note lists before counting the rest. */
@@ -62,6 +63,8 @@ export interface ContextInput {
   readonly modelContext?: number
   /** Tool names the host offered on this pass; observed for tool usage only. */
   readonly tools?: ReadonlyArray<string>
+  /** The agent the host is running, from the request; it names the mode. */
+  readonly agent?: string
 }
 
 export interface ContextDeps {
@@ -329,6 +332,7 @@ export async function buildPayload(input: ContextInput, deps: ContextDeps): Prom
       raw,
       spans,
       notices: split.notices,
+    agent: input.agent,
       now,
     })
 }
@@ -346,6 +350,8 @@ interface AppendPlanInput {
   readonly spans: TurnSpan[]
   readonly notices: ReadonlyArray<{ id: string; text: string }>
   readonly now: () => number
+  /** The agent the request runs on, already reduced to a name. */
+  readonly agent?: string
 }
 
 /**
@@ -532,6 +538,15 @@ async function buildAppendPlan(options: AppendPlanInput): Promise<ContextPlan> {
     record.notices = folded.notices
     if (folded.retired.length > 0) record.retired = folded.retired
     else delete record.retired
+  }
+  // The agent the host runs names the mode outright. It is a property of the
+  // request, so it arrives on every pass and cannot age out of the window with
+  // a transcript message; a pinned notice is only the fallback for a host that
+  // names no agent.
+  if (options.agent !== undefined) {
+    const named = modeOfAgent(options.agent)
+    if (named === undefined) delete record.mode
+    else record.mode = named
   }
   const noticesText = renderNotices(record, { excludeModes: true })
 

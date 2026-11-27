@@ -406,7 +406,9 @@ export function renderTailState(record: SessionRecord, budget: TailBudget): stri
   const lines = ["<smart-context-state>"]
 
   const notices = record.notices ?? []
-  let mode: "plan" | "build" | undefined
+  // The host's agent names the mode outright; a pinned notice is the fallback
+  // for a host that does not.
+  let mode: "plan" | "build" | undefined = record.mode
   for (let index = notices.length - 1; index >= 0 && mode === undefined; index -= 1) {
     mode = modeReminderOf(notices[index].text)
   }

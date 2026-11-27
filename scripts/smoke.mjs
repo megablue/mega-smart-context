@@ -110,7 +110,7 @@ import {
 import { MAX_HISTORY, MAX_NOTICES, MAX_NOTICE_CHARS, MAX_RETIRED, SessionStore, StoreConflictError, pruneOrphans, retireNotice, sameDirectory, trimHistory, upsertNotices } from "../src/core/state.ts"
 import { extractHtmlSection, extractSection, htmlToText, pageCandidates } from "../src/core/refs.ts"
 import { deriveVersion, readVersionBase } from "../src/core/version.ts"
-import { balanceCuts, erodeToolResults, gistText, hostMessageOf, isHostCue, isHostJob, isHostMessage, isHostTail, isRealUser, modeReminderOf, noticeOf, rebuildTurn, RESUMED_TEXT, selectAppendWindow, selectWorkingWindow, splitNotices, supersededReads, turnSpans } from "../src/core/view.ts"
+import { balanceCuts, erodeToolResults, gistText, hostMessageOf, isHostCue, isHostJob, isHostMessage, isHostTail, isRealUser, modeOfAgent, modeReminderOf, noticeOf, rebuildTurn, RESUMED_TEXT, selectAppendWindow, selectWorkingWindow, splitNotices, supersededReads, turnSpans } from "../src/core/view.ts"
 import { livenessFromError } from "../src/adapters/opencode/sessions.ts"
 import { modelWindowOf } from "../src/adapters/opencode/context.ts"
 import { TOOL_DESCRIPTION, createSmartContextTool } from "../src/adapters/opencode/tool.ts"
@@ -921,6 +921,36 @@ ok(!JSON.stringify(modePayload).includes("NO LONGER in Plan mode"), "the system-
 const modeRec = await modeStore.load("sys-notice")
 ok(modeRec.notices.length === 1 && modeRec.notices[0].text === SYSTEM_BUILD, "only the live system-role mode is pinned")
 ok((modeRec.retired ?? []).some((entry) => entry.id === "s-plan"), "the system-update plan instruction is retired")
+
+// The request's agent names the mode outright: it arrives on every pass, so the
+// mode cannot depend on a transcript message the window may drop.
+const agentStore = new SessionStore()
+const agentDeps = { store: agentStore, config: noticeConfig }
+const agentPass = (agent) =>
+  buildPayload(
+    {
+      sessionID: "agent-mode",
+      system: [{ type: "text", text: "base" }],
+      messages: [user("u1", "Hi. ".repeat(10))],
+      model: {},
+      agent,
+    },
+    agentDeps,
+  )
+const agentTail = (payload) => {
+  const last = payload.messages[payload.messages.length - 1]
+  return last.content.filter((part) => part.type === "text").map((part) => part.text).join("\n")
+}
+const buildPass = await agentPass("build")
+ok(agentTail(buildPass).includes("mode: build"), "the agent names the mode without any notice")
+ok((await agentStore.load("agent-mode")).mode === "build", "the mode is stored on the record")
+await agentPass("plan")
+ok((await agentStore.load("agent-mode")).mode === "plan", "a switch to plan lands on the next pass")
+await agentPass("general")
+ok((await agentStore.load("agent-mode")).mode === undefined, "another agent clears the mode")
+ok(!agentTail(await agentPass("general")).includes("mode:"), "an agent with no mode renders no mode line")
+ok(modeOfAgent({ name: "build" }) === "build", "an agent object names the mode too")
+ok(modeOfAgent("general") === undefined, "an unrelated agent is not a mode")
 
 // A mode switch carries no user turn: it must not age a pending turn out.
 const ageStore = new SessionStore()

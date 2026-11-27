@@ -4,10 +4,11 @@ Next: `docs/features/index.html` - the feature map. Read only the page for your 
 
 **A snapshot, not a source of truth.** This file goes stale by design. If it disagrees with the code, the code is right. The process doc is `AGENTS.md`, the feature map is `docs/features/` and the behavior spec is `docs/SPEC.html`. This file is the volatile one - it exists so a new session knows *where things stand*, not *how they work*.
 
-As of `feat/tokeneconomizer-integration` - 2026-11-26.
+As of `main` - 2026-11-27.
 
 ## State
 
+- **The mode comes from the request's agent (11/27).** Two attempts: first, `hostMessageOf` was taught the system-role and `<system-update>` shapes (210e50c) — the install was current and the restart clean, but the record still showed `noticeTokens: 0`, because the host never puts that instruction in `event.messages` at all. The authority is the request's agent: `event.agent` (string, or an object with a name) read every pass, reduced to "plan"/"build" by `modeOfAgent`, stored as `record.mode`, and rendered by `renderTailState` before any pinned text is consulted; `ctx.session.get` answers only when the event names no agent, and the text classifier is the last fallback. `session_v2.agent = "build"` and the `agent-switched` row are the ground truth this rests on. New smoke assertions (766 total); feature page, SPEC and the AGENTS rule name the agent as the authority. Needs the installed copy refreshed plus a `/reload`, then a live check of `record.mode`.
 - **Project facts can see the run tool (11/26).** `SHELL_TOOLS` in `src/core/facts-learn.ts` omitted `run`, the tool this plugin installs in place of the host's `shell`. Every run outcome therefore became an observation with no command, and no fact family could fire. `run` is now a shell tool; `stateOf` reads the `run` result's `state` (completed/ready vs failed/stopped/error) at the top level or under `output`/`metadata`, `exitCodeOf` reads the nested value, and a job still `running` is skipped as not-yet-evidence. Four new tests in `scripts/project-facts.test.mjs`; feature page and SPEC updated. Gate: typecheck, smoke 747, install 17, version 0.3.23, project-facts 28. Not yet exercised live, and Code Mode still records a `run` call as a sub-call of `execute` - see Open threads.
 - **The job path was not running (11/26).** `consoleSpawnOptions()` returned `detached: true` when the host had no console; a detached PowerShell with piped stdio exits 0 in ~0.12s without running the command, so every job returned empty. It now returns `detached: false` and `windowsHide: !hostHasConsole`; jobs run. The persistent shell's LOOP now streams output so a quick timeout keeps partial output, and `JobRegistry` settles on `close`, not `exit`. `cargo test` with a 15s test now runs to completion and writes its log; a hint above 10s promotes a quick command to a job; a 10s no-hint ticker stops with ticks 1-10. Pinned by smoke and live checks.
 - **Capture is mechanical (11/26).** A user sentence that states a standing instruction (`remember`, `don't`, `never`, `always`, `from now on`, `must`, `make sure`) is copied verbatim into `memory.directives` by `captureDirectives` on every pass, before render. It survives the working window, the fold and a host compaction because `cloneMemory` carries it. The tail state note names directives captured since the checkpoint and prints `phase: N/M done · active: ...` from `plan` on every pass; after a host compaction with no plan it says no plan survived and to recall the archived turns. That host path has no commit window, which is why the plan used to disappear. Feature page `docs/features/capture.html`; SPEC updated. Pinned by 14 smoke assertions; typecheck, smoke 719, install 17, version:check pass.
@@ -78,6 +79,16 @@ As of `feat/tokeneconomizer-integration` - 2026-11-26.
 
 ## Open threads
 
+- **Verify the mode live (11/27).** After `npm run plugin:install` and `/reload`, check
+  that this session's record carries `mode: "build"` and that the state note ends with
+  `mode: build`. If `record.mode` is absent, `event.agent` is not what the tool call
+  context's `agent` is — the debug line and `session_v2.agent` then decide the next
+  source.
+- **The host system prompt still carries the old Plan text (11/27).** After the Build
+  switch the session's system prompt still held the "You are in Plan mode..." block;
+  only the `<system-update>` message announced Build. That is why the tail `mode:`
+  line is the sole correction - a change that drops it puts the model back on the
+  stale system prompt.
 - **Consider a dedicated missing-section ref test.** The smoke's `ref` uses `context-handoff.md` / `How & why`, which resolves. The branch where no candidate file holds the section (including a page name with no file at all) is reviewed, not asserted.
 - **Consider a live test for a mixed-shape turn.** The erosion fix is live but has not yet been exercised by a real multi-part result over `maxResultChars` since the restart.
 - **`hostSystemTokens` is verified live (10/18, v0.1.13).** The 20:33 restart showed `lastReport.hostSystemTokens` = 4218 over 5 parts, constant across the post-restart samples, so the host does hand its `core/*` instruction blobs to the plugin. The measurement is display-only and not in `totalTokens`; `/context` prints `host system ~4.2k est (5 parts) · not counted`.
@@ -85,7 +96,7 @@ As of `feat/tokeneconomizer-integration` - 2026-11-26.
 
 ## Known gaps (volatile; the durable traps live in the feature pages)
 
-- **The smoke is not the host.** It exercises the transform, the tool, the archive, subagents, compaction and the installer through a fake `ctx`. The live run found one shape mismatch the fake host hid (`content` tool results); assume other shapes can differ too.
+- **The smoke is not the host.** It exercises the transform, the tool, the archive, subagents, compaction and the installer through a fake `ctx`. The live run found one shape mismatch the fake host hid (`content` tool results); assume other shapes can differ too - and it happened again on 11/27, when the host's system-role mode instruction went unrecognised for 146 passes.
 - **`/context` delivers through `ctx.session.prompt`.** That creates a user message, which the next context pass treats as a real turn. It does not corrupt memory, but the command's report can become part of the conversation it is reporting on. There is no display-only channel: `ctx.session.synthetic` still starts a model turn (probed live), so `prompt` is the honest choice.
 - **A child's archive survives until the store's LRU evicts it** (`MAX_SESSIONS` 64). There is no per-child cleanup on session end. The startup sweep only removes records whose session the host no longer has; records for sessions that still exist are never capped on disk.
 - **The archive caps are per session** (`archiveMaxTurns`, `archiveMaxChars`); there is no global storage budget.
