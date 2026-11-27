@@ -83,6 +83,7 @@ import {
   panelSections,
   panelText,
   profileRequestSchema,
+  poolBarParts,
   sidebarLines,
   sidebarText,
   snapshotStale,
@@ -3048,16 +3049,16 @@ ok(
   "a header with no version keeps one span and asks for no spread",
 )
 ok(
-  sidebarBody.includes("mem ") && sidebarBody.includes("/ 20k"),
-  "the sidebar draws the memory budget",
+  sidebarBody.includes("pool ") && sidebarBody.includes("/ 40k"),
+  "the sidebar draws one bar over the shared pool",
 )
 ok(
-  sidebarBody.includes("win ") && sidebarBody.includes("*45k / 20k") && statusReply.overBudget,
-  "the sidebar marks a working window that is over cap with a star in the gutter",
+  sidebarBody.includes("mem ") && sidebarBody.includes("win ") && sidebarBody.includes("· 20k+20k"),
+  "the sidebar legend names both shares and the profile's own pool",
 )
 ok(
-  sidebarBody.includes("3 kept · 41 dropped") && sidebarBody.includes("1 pending · 1 archive · 0 ref"),
-  "the sidebar counts turns, pending, archive and refs",
+  !sidebarBody.includes(" kept · ") && !sidebarBody.includes(" pending · ") && !sidebarBody.includes(" archive · "),
+  "the sidebar leaves the counts, pending, archive and refs to the panel",
 )
 ok(
   statusReply.updatedAt === statusRecord.updatedAt && statusReply.ageMs === 6 * 60_000,
@@ -3099,38 +3100,25 @@ ok(
 )
 const alertLines = sidebarLines(statusReply).filter((line) => line.spans.some((span) => span.tone === "alert"))
 ok(
-  alertLines.length === 1 &&
-    alertLines[0].spans
-      .map((span) => span.text)
-      .join("")
-      .includes("*45k / 20k"),
-  "only the over-cap working line carries the alert tone",
+  alertLines.length === 1 && alertLines[0].spans.map((span) => span.text).join("").includes("/ 40k"),
+  "only the over-cap pool line carries the alert tone",
 )
-const sidebarMeters = sidebarBody
-  .split("\n")
-  .filter((line) => line.startsWith("mem ") || line.startsWith("win "))
+const poolRow = sidebarLines(statusReply).find((line) => line.spans[0]?.text === "pool ")
+ok(poolRow?.spread === true, "the pool line puts its numbers on the right edge")
 ok(
-  sidebarMeters.length === 2 && sidebarMeters[0].indexOf("/") === sidebarMeters[1].indexOf("/"),
-  "the two budget lines align their value, slash and cap",
-)
-const meterSidebar = sidebarLines(statusReply).filter(
-  (line) => line.spans[0]?.text === "mem " || line.spans[0]?.text === "win ",
+  poolRow.spans[1].text.length + poolRow.spans[2].text.length + poolRow.spans[3].text.length === STATUS_BAR_WIDTH,
+  "the pool line draws the shared bar width",
 )
 ok(
-  meterSidebar.length === 2 && meterSidebar.every((line) => line.spread === true),
-  "both budget lines ask the renderer to put their numbers on the right edge",
+  /\/ \d+k?$/.test(poolRow.spans[poolRow.spans.length - 1].text),
+  "the numbers are the pool line's last span, which is what the renderer pushes right",
 )
+const parts = poolBarParts(statusReply)
 ok(
-  meterSidebar.every((line) => line.spans[1].text.length + line.spans[2].text.length === STATUS_BAR_WIDTH),
-  "each budget line draws the shared bar width",
-)
-ok(
-  meterSidebar.every((line) => /\/ \d+k?$/.test(line.spans[line.spans.length - 1].text)),
-  "the numbers are a budget line's last span, which is what the renderer pushes right",
-)
-ok(
-  sidebarMeters.every((line) => /\/ \d+k?$/.test(line)),
-  "the flat form of a budget line still ends with its cap",
+  parts.mem.length + parts.working.length + parts.empty.length === STATUS_BAR_WIDTH &&
+    parts.mem.length > 0 &&
+    parts.working.length > 0,
+  "the one bar carries both shares, memory first",
 )
 const wideSidebar = sidebarText({
   ...statusReply,
@@ -3139,11 +3127,39 @@ const wideSidebar = sidebarText({
   workingCap: 40_000,
 }).split("\n")
 ok(
-  wideSidebar[2].includes("   9k / 20k") &&
-    wideSidebar[3].includes("*121k / 40k") &&
-    wideSidebar[2].indexOf("/") === wideSidebar[3].indexOf("/"),
-  "a shorter value is padded on the left so the digits stay right-aligned",
+  wideSidebar[0].startsWith("Mega Smart Context") && wideSidebar[2].includes("/ 60k"),
+  "a wider working share still reports the whole pool as one number",
 )
+const extReply = {
+  ...statusReply,
+  memoryTokens: 9_000,
+  workingTokens: 45_000,
+  workingCap: 60_000,
+  ext: { fromCap: 40_000, toCap: 80_000, factor: 2 },
+}
+ok(
+  sidebarText(extReply).includes("ext ×2") && sidebarText(extReply).includes("20k+20k"),
+  "the sidebar names the extension and the profile's own pool",
+)
+ok(
+  panelText(statsOf({ ...statusRecord }, statusConfig, "0.1.99")).includes("## Budget"),
+  "the panel keeps its budget section",
+)
+ok(
+  panelText({ ...statsOf({ ...statusRecord }, statusConfig, "0.1.99"), ext: extReply.ext, mode: "build", projectFactsTokens: 1_200, toolUsage: { used: 12, offered: 15, unused: 3, prompts: 4, sessions: 1 } }).includes(
+    "extension ×2: 40k → 80k",
+  ),
+  "the panel spells the extension out",
+)
+const richPanel = panelText({
+  ...statsOf({ ...statusRecord }, statusConfig, "0.1.99"),
+  mode: "build",
+  projectFactsTokens: 1_200,
+  toolUsage: { used: 12, offered: 15, unused: 3, prompts: 4, sessions: 1 },
+})
+ok(richPanel.includes("mode: build"), "the panel names the live mode")
+ok(richPanel.includes("project facts ~1.2k est"), "the panel reports the project-facts block")
+ok(richPanel.includes("tools 12 used · 15 offered · 3 unused · 4 prompts"), "the panel reports tool usage")
 ok(
   sidebarLines({ ...noHostReply, overBudget: false }).every((line) =>
     line.spans.every((span) => span.tone !== "alert"),
@@ -3199,13 +3215,14 @@ ok(
   "the panel reports the budgets, the host system size and the undo state",
 )
 const panelBudget = panelSections(panelReply)[0].rows
-  .slice(0, 2)
+  .slice(0, 3)
   .map((row) => row.spans.map((span) => span.text).join(""))
 ok(
-  panelBudget[0].indexOf("/") === panelBudget[1].indexOf("/") &&
-    panelBudget[1].includes("*45k / 20k") &&
-    panelBudget[0].startsWith("mem "),
-  "the panel's budget rows share the sidebar's alignment and over-cap star",
+  panelBudget[0].startsWith("pool ") &&
+    panelBudget[1].startsWith("mem ") &&
+    panelBudget[2].startsWith("win ") &&
+    panelBudget[2].includes("*45k / 20k"),
+  "the panel keeps the shared bar above the two detailed rows",
 )
 ok(
   panelBody.includes("passes ") && panelBody.includes("3 samples · peak 5k"),
@@ -3696,16 +3713,19 @@ ok(
   "/context prints the profile, how it was chosen and the model",
 )
 ok(
-  sidebarText(profStats).split("\n")[1] === "profile deep · pinned",
-  "the sidebar says which profile the session runs on",
+  sidebarText(profStats).split("\n")[1].startsWith("profile deep · pinned · ") &&
+    sidebarText(profStats).split("\n")[1].includes("+"),
+  "the sidebar says which profile the session runs on, and the pool it implies",
 )
 ok(
-  panelText(profStats).includes("profile deep · pinned · model other/m"),
+  panelText(profStats).includes("profile deep · pinned") &&
+    panelText(profStats).includes("model other/m") &&
+    /profile deep · pinned · \d+k?\+\d+k?/.test(panelText(profStats)),
   "the panel says which profile and model are in force",
 )
 ok(
   statusRows(profStats).some((row) => row.value === PROFILE_ACTION) &&
-    statusRows(profStats).some((row) => row.title === "profile deep · pinned"),
+    statusRows(profStats).some((row) => row.title.startsWith("profile deep · pinned")),
   "the dialog shows the profile and offers the switch",
 )
 ok(

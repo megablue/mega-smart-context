@@ -17,7 +17,7 @@
  */
 
 import type { ResolvedConfig } from "./config.ts"
-import { formatTokens } from "./measure.ts"
+import { estimateTokens, formatTokens } from "./measure.ts"
 import { PRODUCT_NAME, budgetOf, noticePreview } from "./prompts.ts"
 import { choiceLabel, chooseProfile, modelLabel, type ProfileSource } from "./profiles.ts"
 import type { SessionRecord } from "./types.ts"
@@ -126,6 +126,15 @@ export interface StatsRequest {
  * builds its own rows, and a gist or a notice preview never has to cross the
  * process boundary for the status view.
  */
+/** The working-pool extension in force, as the grant recorded it. */
+export interface StatusExtension {
+  /** The profile's own pool: `memoryTokens + workingTokens`. */
+  readonly fromCap: number
+  readonly toCap: number
+  readonly factor: number
+  readonly reason?: string
+}
+
 export interface StatsReply {
   readonly version?: string
   /**
@@ -166,6 +175,12 @@ export interface StatsReply {
   readonly profile?: StatusProfile
   /** Read-only tool usage summary; omitted by older builds and empty projects. */
   readonly toolUsage?: ToolUsageSummary
+  /** The mode the request's agent named; absent off the Plan/Build pair. */
+  readonly mode?: "plan" | "build"
+  /** The one extension this era granted; absent when the pool is the profile's. */
+  readonly ext?: StatusExtension
+  /** The project-facts block the last pass measured, when the session has one. */
+  readonly projectFactsTokens?: number
 }
 
 export interface PurgeRequest {
@@ -313,6 +328,13 @@ export function isStatsReply(value: unknown): value is StatsReply {
   if (value.lastUndo !== undefined && !isUndo(value.lastUndo)) return false
   if (!isCount(value.undoTurns)) return false
   if (value.profile !== undefined && !isProfile(value.profile)) return false
+  if (value.mode !== undefined && value.mode !== "plan" && value.mode !== "build") return false
+  if (value.projectFactsTokens !== undefined && !isCount(value.projectFactsTokens)) return false
+  if (value.ext !== undefined) {
+    const ext = value.ext
+    if (!isRecord(ext) || !isCount(ext.fromCap) || !isCount(ext.toCap) || !isCount(ext.factor)) return false
+    if (ext.reason !== undefined && typeof ext.reason !== "string") return false
+  }
   if (value.toolUsage !== undefined) {
     const tools = value.toolUsage
     if (!isRecord(tools)) return false
@@ -459,6 +481,20 @@ export function statsOf(
       ...(profile.missing === undefined ? {} : { missing: profile.missing }),
       ...(record.lastModel === undefined ? {} : { model: modelLabel(record.lastModel) }),
     },
+    ...(record.mode === undefined ? {} : { mode: record.mode }),
+    ...(record.ext === undefined
+      ? {}
+      : {
+          ext: {
+            fromCap: record.ext.fromCap,
+            toCap: record.ext.toCap,
+            factor: record.ext.factor,
+            ...(record.ext.reason === undefined ? {} : { reason: record.ext.reason }),
+          },
+        }),
+    ...(record.projectFacts === undefined
+      ? {}
+      : { projectFactsTokens: estimateTokens(record.projectFacts.rendered.length, config.charsPerToken) }),
   }
 }
 
@@ -537,7 +573,7 @@ export function statusRows(reply: StatsReply): StatusRow[] {
   ]
   if (reply.profile !== undefined) {
     rows.splice(2, 0, {
-      title: `profile ${choiceLabel(reply.profile)}`,
+      title: `profile ${choiceLabel(reply.profile)} · ${nominalLabel(reply)}${reply.ext === undefined ? "" : ` · ext ×${reply.ext.factor}`}`,
       value: "",
       description:
         reply.profile.model === undefined
@@ -637,7 +673,7 @@ export function snapshotStale(
  * A span is text plus the one tone the sidebar paints it with. Tones are names,
  * not colours: the TUI half owns the theme, and a pure module cannot import one.
  */
-export type SidebarTone = "title" | "meter" | "value" | "muted" | "alert"
+export type SidebarTone = "title" | "memory" | "working" | "meter" | "value" | "muted" | "alert"
 
 export interface StatusSpan {
   readonly text: string
@@ -713,8 +749,73 @@ function meterLine(label: string, value: number, cap: number, over: boolean, wid
 }
 
 /**
- * The sidebar's block: a title, the two budgets, two count lines and how old the
- * numbers are.
+ * One bar over the shared pool: the memory share first, the working share after
+ * it. The split is the only way a fixed width shows both budgets at once, and it
+ * is what makes the extension legible - the profile is one number, the bar is
+ * the pool the pass is actually held to.
+ */
+export function poolBarParts(reply: StatsReply): { readonly mem: string; readonly working: string; readonly empty: string } {
+  const width = STATUS_BAR_WIDTH
+  const cap = Math.max(1, reply.memoryCap + reply.workingCap)
+  // A share that exists always gets a cell: at a 400k pool a 3k memory block
+  // rounds to zero cells, and the bar would read as if memory were empty.
+  const memCells =
+    reply.memoryTokens > 0 ? Math.max(1, Math.min(width, Math.round((reply.memoryTokens / cap) * width))) : 0
+  const workCells =
+    reply.workingTokens > 0
+      ? Math.max(1, Math.min(width - memCells, Math.round((reply.workingTokens / cap) * width)))
+      : 0
+  return { mem: "█".repeat(memCells), working: "█".repeat(workCells), empty: "░".repeat(width - memCells - workCells) }
+}
+
+/** The profile's own pool, before any extension: the numbers a person expects. */
+function nominalPool(reply: StatsReply): { readonly memory: number; readonly working: number } {
+  const pool = reply.ext?.fromCap ?? reply.memoryCap + reply.workingCap
+  return { memory: reply.memoryCap, working: Math.max(0, pool - reply.memoryCap) }
+}
+
+/** "100k+100k", the shape the profile is usually read in. */
+function nominalLabel(reply: StatsReply): string {
+  const nominal = nominalPool(reply)
+  return `${formatTokens(nominal.memory)}+${formatTokens(nominal.working)}`
+}
+
+/** The one budget line: the pool bar, its numbers, and the extension if one is in force. */
+function poolLine(reply: StatsReply): SidebarLine {
+  const parts = poolBarParts(reply)
+  const cap = reply.memoryCap + reply.workingCap
+  const ext = reply.ext === undefined ? "" : ` · ext ×${reply.ext.factor}`
+  return {
+    spread: true,
+    spans: [
+      { text: "pool ", tone: "muted" },
+      { text: parts.mem, tone: "memory" },
+      { text: parts.working, tone: reply.overBudget ? "alert" : "working" },
+      { text: parts.empty, tone: "muted" },
+      {
+        text: ` ${formatTokens(reply.memoryTokens + reply.workingTokens)} / ${formatTokens(cap)}${ext}`,
+        tone: reply.overBudget ? "alert" : "value",
+      },
+    ],
+  }
+}
+
+/** The colour key: which share of the bar is memory and which is working. */
+function legendLine(reply: StatsReply): SidebarLine {
+  return {
+    spans: [
+      { text: "mem ", tone: "muted" },
+      { text: formatTokens(reply.memoryTokens), tone: "memory" },
+      { text: " · win ", tone: "muted" },
+      { text: formatTokens(reply.workingTokens), tone: "working" },
+      { text: ` · ${nominalLabel(reply)}`, tone: "muted" },
+    ],
+  }
+}
+
+/**
+ * The sidebar's block: a title, the shared pool, the colour key, the tools and how
+ * old the numbers are.
  *
  * Deliberately nothing that grows with the session: no gists, no notice text, no
  * archive list. Those live behind the dialog, where the user asked for them.
@@ -727,7 +828,6 @@ function meterLine(label: string, value: number, cap: number, over: boolean, wid
  * and the panel still print it.
  */
 export function sidebarLines(reply: StatsReply): SidebarLine[] {
-  const widths = meterWidths(reply)
   const title: StatusSpan = { text: PRODUCT_NAME, tone: "title" }
   const lines: SidebarLine[] = [
     // A header: the name against the left edge, the build against the right one.
@@ -736,21 +836,8 @@ export function sidebarLines(reply: StatsReply): SidebarLine[] {
     reply.version === undefined
       ? { spans: [title] }
       : { spans: [title, { text: `v${reply.version}`, tone: "muted" }], spread: true },
-    meterLine("mem", reply.memoryTokens, reply.memoryCap, reply.memoryTokens > reply.memoryCap, widths),
-    meterLine("win", reply.workingTokens, reply.workingCap, reply.overBudget, widths),
-    {
-      spans: [
-        { text: `${count(reply.workingTurns)} kept · ${count(reply.droppedTurns)} dropped`, tone: "muted" },
-      ],
-    },
-    {
-      spans: [
-        {
-          text: `${count(reply.pending.length)} pending · ${count(reply.archive.length)} archive · ${count(reply.refs)} ref`,
-          tone: "muted",
-        },
-      ],
-    },
+    poolLine(reply),
+    legendLine(reply),
   ]
   if (reply.toolUsage !== undefined && reply.toolUsage.used > 0) {
     const unused = reply.toolUsage.unused === undefined ? "" : ` · ${count(reply.toolUsage.unused)} unused`
@@ -760,7 +847,10 @@ export function sidebarLines(reply: StatsReply): SidebarLine[] {
     // Right under the header: the one setting the glance can act on, and the
     // `[profile]` target below switches it. `base` is still worth saying, because
     // it is the answer to "which bundle is this session on?".
-    lines.splice(1, 0, { spans: [{ text: `profile ${choiceLabel(reply.profile)}`, tone: "muted" }] })
+    const ext = reply.ext === undefined ? "" : ` · ext ×${reply.ext.factor}`
+    lines.splice(1, 0, {
+      spans: [{ text: `profile ${choiceLabel(reply.profile)} · ${nominalLabel(reply)}${ext}`, tone: "muted" }],
+    })
   }
   if (reply.ageMs !== undefined) {
     // This line took the slot the host-system size used to occupy: a size the
@@ -858,6 +948,7 @@ function turnRow(turn: StatusTurn, place: "pending" | "archive"): PanelRow {
 export function panelSections(reply: StatsReply): PanelSection[] {
   const widths = meterWidths(reply)
   const budget: PanelRow[] = [
+    { spans: poolLine(reply).spans },
     {
       spans: meterLine("mem", reply.memoryTokens, reply.memoryCap, reply.memoryTokens > reply.memoryCap, widths)
         .spans,
@@ -867,7 +958,8 @@ export function panelSections(reply: StatsReply): PanelSection[] {
     },
   ]
   if (reply.profile !== undefined) {
-    const spans: StatusSpan[] = [{ text: `profile ${choiceLabel(reply.profile)}`, tone: "value" }]
+    const spans: StatusSpan[] = [{ text: `profile ${choiceLabel(reply.profile)} · ${nominalLabel(reply)}`, tone: "value" }]
+    if (reply.ext !== undefined) spans.push({ text: ` · ext ×${reply.ext.factor}`, tone: "muted" })
     if (reply.profile.model !== undefined) spans.push({ text: ` · model ${reply.profile.model}`, tone: "muted" })
     if (reply.profile.source === "pin") spans.push({ text: " · pinned until you pick auto", tone: "muted" })
     budget.push({ spans })
@@ -884,6 +976,40 @@ export function panelSections(reply: StatsReply): PanelSection[] {
       ],
     })
   }
+  if (reply.ext !== undefined) {
+    const used = reply.memoryTokens + reply.workingTokens
+    const left = Math.max(0, reply.ext.toCap - used)
+    budget.push({
+      spans: [
+        {
+          text: `extension ×${reply.ext.factor}: ${formatTokens(reply.ext.fromCap)} → ${formatTokens(reply.ext.toCap)} · ${formatTokens(left)} left` +
+            (reply.ext.reason === undefined ? "" : ` · ${reply.ext.reason}`),
+          tone: "muted",
+        },
+      ],
+    })
+  }
+  if (reply.projectFactsTokens !== undefined) {
+    budget.push({
+      spans: [
+        {
+          text: `project facts ~${formatTokens(reply.projectFactsTokens)} est · learned, outside the memory document`,
+          tone: "muted",
+        },
+      ],
+    })
+  }
+  if (reply.toolUsage !== undefined) {
+    const unused = reply.toolUsage.unused === undefined ? "" : ` · ${count(reply.toolUsage.unused)} unused`
+    budget.push({
+      spans: [
+        {
+          text: `tools ${count(reply.toolUsage.used)} used · ${count(reply.toolUsage.offered)} offered${unused} · ${count(reply.toolUsage.prompts)} prompts`,
+          tone: "muted",
+        },
+      ],
+    })
+  }
   if (reply.ageMs !== undefined && reply.ageMs >= PANEL_MEASURED_STALE_MS) {
     budget.push({
       spans: [{ text: `measured ${ageLabel(reply.ageMs)}`, tone: "muted" }],
@@ -891,6 +1017,7 @@ export function panelSections(reply: StatsReply): PanelSection[] {
   }
 
   const window: PanelRow[] = [
+    ...(reply.mode === undefined ? [] : [{ spans: [{ text: `mode: ${reply.mode}`, tone: "value" as const }] }]),
     {
       spans: [
         { text: `${count(reply.workingTurns)} kept · ${count(reply.droppedTurns)} dropped`, tone: "muted" },

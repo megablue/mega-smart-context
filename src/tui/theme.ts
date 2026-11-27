@@ -17,7 +17,9 @@ import type { TuiContext } from "./context.ts"
 export function toneColor(context: TuiContext, tone: SidebarTone): string | undefined {
   try {
     const text = context.theme.text
-    if (tone === "alert") return text.feedback.warning.base
+    if (tone === "memory") return text.base
+  if (tone === "working") return text.muted
+  if (tone === "alert") return text.feedback.warning.base
     if (tone === "muted") return text.muted
     return text.base
   } catch {
