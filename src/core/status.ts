@@ -784,7 +784,6 @@ function nominalLabel(reply: StatsReply): string {
 function poolLine(reply: StatsReply): SidebarLine {
   const parts = poolBarParts(reply)
   const cap = reply.memoryCap + reply.workingCap
-  const ext = reply.ext === undefined ? "" : ` · ext ×${reply.ext.factor}`
   return {
     spread: true,
     spans: [
@@ -793,7 +792,7 @@ function poolLine(reply: StatsReply): SidebarLine {
       { text: parts.working, tone: reply.overBudget ? "alert" : "working" },
       { text: parts.empty, tone: "muted" },
       {
-        text: ` ${formatTokens(reply.memoryTokens + reply.workingTokens)} / ${formatTokens(cap)}${ext}`,
+        text: ` ${formatTokens(reply.memoryTokens + reply.workingTokens)} / ${formatTokens(cap)}`,
         tone: reply.overBudget ? "alert" : "value",
       },
     ],
@@ -808,7 +807,7 @@ function legendLine(reply: StatsReply): SidebarLine {
       { text: formatTokens(reply.memoryTokens), tone: "memory" },
       { text: " · win ", tone: "muted" },
       { text: formatTokens(reply.workingTokens), tone: "working" },
-      { text: ` · ${nominalLabel(reply)}`, tone: "muted" },
+      ...(reply.ext === undefined ? [] : [{ text: ` · ext ×${reply.ext.factor}`, tone: "muted" as const }]),
     ],
   }
 }
@@ -847,9 +846,8 @@ export function sidebarLines(reply: StatsReply): SidebarLine[] {
     // Right under the header: the one setting the glance can act on, and the
     // `[profile]` target below switches it. `base` is still worth saying, because
     // it is the answer to "which bundle is this session on?".
-    const ext = reply.ext === undefined ? "" : ` · ext ×${reply.ext.factor}`
     lines.splice(1, 0, {
-      spans: [{ text: `profile ${choiceLabel(reply.profile)} · ${nominalLabel(reply)}${ext}`, tone: "muted" }],
+      spans: [{ text: `profile ${choiceLabel(reply.profile)} · ${nominalLabel(reply)}`, tone: "muted" }],
     })
   }
   if (reply.ageMs !== undefined) {
@@ -989,7 +987,7 @@ export function panelSections(reply: StatsReply): PanelSection[] {
       ],
     })
   }
-  if (reply.projectFactsTokens !== undefined) {
+  if (reply.projectFactsTokens !== undefined && reply.projectFactsTokens > 0) {
     budget.push({
       spans: [
         {

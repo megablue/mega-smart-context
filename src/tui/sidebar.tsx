@@ -58,7 +58,7 @@ function Line(props: { host: SidebarHost; line: SidebarLine }): JSX.Element {
     <box flexDirection="row">
       <For each={head()}>
         {(span) => (
-          <text fg={toneColor(props.host.context, span.tone)} attributes={toneAttributes(span.tone)}>
+          <text fg={toneColor(props.host.context, span.tone)} attributes={toneAttributes(span.tone)} flexShrink={0}>
             {span.text}
           </text>
         )}
@@ -66,8 +66,8 @@ function Line(props: { host: SidebarHost; line: SidebarLine }): JSX.Element {
       <Show when={tail()}>
         {(span: () => StatusSpan) => (
           <>
-            <box flexGrow={1} />
-            <text fg={toneColor(props.host.context, span().tone)} attributes={toneAttributes(span().tone)}>
+            <box flexGrow={1} minWidth={1} />
+            <text fg={toneColor(props.host.context, span().tone)} attributes={toneAttributes(span().tone)} flexShrink={0}>
               {span().text}
             </text>
           </>
