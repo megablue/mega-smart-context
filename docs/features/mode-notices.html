@@ -1,0 +1,156 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="generator" content="opencode-feature-map">
+<title>Mode notices - the PLAN/BUILD mode — feature map</title>
+<style>
+:root{color-scheme:light dark;--fg:#1d2433;--muted:#5b6475;--bg:#fff;--line:#d8dee9;--accent:#0b6e99;--warn:#8a5a00;--code:#f4f6fa}
+@media (prefers-color-scheme:dark){:root{--fg:#e6eaf2;--muted:#9aa4b8;--bg:#11151c;--line:#2b3342;--accent:#6cc4e8;--warn:#e0b25c;--code:#1a202a}}
+*{box-sizing:border-box}
+body{margin:0 auto;max-width:60rem;padding:2rem 1.25rem 4rem;background:var(--bg);color:var(--fg);font:16px/1.6 system-ui,-apple-system,Segoe UI,sans-serif}
+h1,h2,h3{line-height:1.25;margin:2rem 0 .75rem}
+h1{font-size:1.9rem;border-bottom:2px solid var(--line);padding-bottom:.4rem}
+h2{font-size:1.35rem}
+h3{font-size:1.08rem;color:var(--muted)}
+p,ul,ol,table,pre,blockquote{margin:.75rem 0}
+a{color:var(--accent)}
+code{background:var(--code);padding:.1em .3em;border-radius:.25rem;font-size:.92em}
+pre{background:var(--code);border:1px solid var(--line);border-radius:.4rem;padding:.8rem 1rem;overflow:auto}
+pre code{background:none;padding:0}
+pre.verbatim{border-left:4px solid var(--warn)}
+pre.verbatim::before{content:"verbatim — " attr(data-why);display:block;color:var(--warn);font:600 .78rem/1.4 ui-monospace,monospace;margin-bottom:.5rem;white-space:pre-wrap}
+pre.pseudo{border-left:4px solid var(--accent)}
+pre.mermaid{background:var(--bg);border:1px dashed var(--line)}
+p.status{color:var(--muted);font-size:.92rem}
+table{border-collapse:collapse;width:100%}
+th,td{border:1px solid var(--line);padding:.4rem .6rem;text-align:left;vertical-align:top}
+th{background:var(--code)}
+blockquote{margin-left:0;padding-left:1rem;border-left:3px solid var(--line);color:var(--muted)}
+hr{border:0;border-top:1px solid var(--line);margin:2rem 0}
+.lede{color:var(--muted)}
+</style>
+</head>
+<body>
+<article class="map">
+<h1>Mode notices - the PLAN/BUILD mode the model is told it is in</h1>
+<p class="status">Status: shipped - Read when: the PLAN/BUILD mode, <code>event.agent</code>, <code>record.mode</code>, the <code>mode:</code> line in the state note, <code>modeReminderOf</code>, <code>collapseModeNotices</code>, &quot;the model kept acting in Plan mode&quot;, or any change to the context pass that touches the transcript, the notices or the tail note.</p>
+
+<p class="lede">This page exists because the same bug shipped three times: the stale Plan reminder outliving the Build switch (62ca41e), then nothing being pinned at all after the host changed the shape (146 passes, 11/27), then a text-shape fix that installed cleanly and never fired because the instruction is not in the transcript. Read the traps before touching anything in the pass.</p>
+
+<section id="what-it-does">
+<h2>What it does</h2>
+<ul>
+<li>Records the live mode on the session record as <code>record.mode</code> (<code>&quot;plan&quot;</code> or <code>&quot;build&quot;</code>), from the request's agent, on every pass.</li>
+<li>Renders it as one line in the trailing <code>&lt;smart-context-state&gt;</code> note: <code>mode: plan - do not modify files; tell the user to switch agents</code> or <code>mode: build - edit and run commands</code>.</li>
+<li>Keeps <strong>only the live mode</strong>. A later switch replaces it; an agent that is neither Plan nor Build clears it.</li>
+<li>Pins host text notices separately, in one system part, and <strong>excludes the mode from that part</strong> so a switch never moves the system prefix.</li>
+<li>Still retires a superseded Plan/Build text reminder when the fallback path pinned both, so a stale imperative cannot read as the live instruction.</li>
+</ul>
+</section>
+
+<section id="map">
+<h2>Map</h2>
+<table>
+<thead><tr><th>File</th><th>What lives there</th></tr></thead>
+<tbody>
+<tr><td><code>src/adapters/opencode/context.ts</code></td><td><code>runContextTransform</code> reads <code>event.agent</code>, falls back to <code>ctx.session.get({sessionID}).agent</code>, and passes the name into <code>buildPayload</code>.</td></tr>
+<tr><td><code>src/core/view.ts</code></td><td><code>agentNameOf</code> (string or agent object), <code>modeOfAgent</code> (name &#8594; mode), <code>hostMessageOf</code>, <code>noticeOf</code>, <code>splitNotices</code>, <code>modeReminderOf</code>.</td></tr>
+<tr><td><code>src/core/context.ts</code></td><td><code>splitNotices</code> on the raw transcript; <code>record.mode</code> written in <code>buildAppendPlan</code>; <code>renderNotices(record, { excludeModes: true })</code>; the tail note appended last.</td></tr>
+<tr><td><code>src/core/prompts.ts</code></td><td><code>renderTailState</code> renders <code>mode:</code> from <code>record.mode</code> first, then a pinned notice; <code>renderNotices</code> renders the non-mode notices.</td></tr>
+<tr><td><code>src/core/state.ts</code></td><td><code>upsertNotices</code>, <code>collapseModeNotices</code> (one of the pair survives), <code>retireNotice</code>, <code>MAX_NOTICES</code>, <code>MAX_RETIRED</code>.</td></tr>
+<tr><td><code>src/core/types.ts</code></td><td><code>SessionRecord.mode</code>, <code>Notice</code>, <code>RetiredNotice</code>.</td></tr>
+<tr><td><code>src/core/notices.ts</code>, <code>src/core/memory-tool.ts</code></td><td><code>retirePinned</code> and <code>smart_context { action:&quot;notice&quot; }</code> - listing and retiring text notices; the newest is refused.</td></tr>
+<tr><td><code>scripts/smoke.mjs</code></td><td>The notice block: classifier shapes, the pinned record, retirement, the tail line, and the agent source.</td></tr>
+</tbody>
+</table>
+</section>
+
+<section id="how-and-why">
+<h2>How &amp; why</h2>
+
+<h3>The authority ladder</h3>
+<ol>
+<li><strong><code>event.agent</code></strong> - the request names the agent it runs on. Reduce it with <code>agentNameOf</code> (a string, or an object with <code>name</code>, <code>id</code> or <code>agent</code>), then <code>modeOfAgent</code>: exact <code>&quot;plan&quot;</code> or <code>&quot;build&quot;</code>, anything else clears <code>record.mode</code>. This is the authority because it arrives on every request and cannot be evicted.</li>
+<li><strong><code>ctx.session.get({sessionID}).agent</code></strong> - only when the event names no agent. The session row carries the same value (<code>session_v2.agent</code>). It costs a host round-trip per pass, which is why it is not the first choice.</li>
+<li><strong>The instruction text</strong> - the fallback for a host that names no agent at all. See the shapes below.</li>
+<li><strong>Nothing</strong> - no mode line; never guess.</li>
+</ol>
+
+<h3>Why the transcript cannot be the authority</h3>
+<p>On 2026-11-27 session <code>ses_de657349dffeT8H5apLdq4zzhv</code> ran 146 passes with an empty <code>record.notices</code> while the mode switch sat in <code>session_message</code> at seq 280, as a <code>type: &quot;system&quot;</code> row with <code>metadata.notice: &quot;instructions&quot;</code> and <code>instructionSources: [&quot;core/agent&quot;]</code>. The transform never received it: <code>event.messages</code> carries the conversation, not that row. The user had to type &quot;you are in build mode&quot; at seq 1274. A first fix that taught the classifier the new text shapes (210e50c) installed cleanly, passed the smoke, and still showed <code>noticeTokens: 0</code> - proof that no text matcher can fix this. The mode lived on the session all along: <code>session_v2.agent = &quot;build&quot;</code>, plus an <code>agent-switched</code> row <code>{&quot;agent&quot;:&quot;build&quot;,&quot;previous&quot;:&quot;plan&quot;}</code>.</p>
+<p>The smoke cannot see this: it feeds <code>buildPayload</code> directly, so it proves the render and not the host channel. Every claim about &quot;where the notice arrives&quot; has to be checked against the real database or a live pass.</p>
+
+<h3>The text shapes (fallback only)</h3>
+<p><code>hostMessageOf</code> classifies a host-injected message that is not from the plugin (no <code>megasc_</code> id, exactly one text part, a trailing <code>@n@</code> stripped). A mode instruction has been seen in three shapes, and <code>modeReminderOf</code> accepts all three:</p>
+<ul>
+<li>a <code>user</code> message whose whole text is <code>&lt;system-reminder&gt;...&lt;/system-reminder&gt;</code>, matched by substring inside the block (the original shape);</li>
+<li>a <code>user</code> message whose whole text is <code>&lt;system-update&gt;...&lt;/system-update&gt;</code>, unwrapped before classification (what the host repaints the instruction into);</li>
+<li>a <code>system</code>-role message whose text opens with the full sentence: <code>You are in Plan mode. </code> or <code>You are no longer the Plan agent, so you are NO LONGER in Plan mode. </code>.</li>
+</ul>
+<p>The full lead sentence matters: a bare &quot;You are in Plan mode.&quot; stays a real turn, so a human asking about the mode is never pinned as an instruction. A message that merely quotes a tag, or adds prose after it, also stays a turn.</p>
+
+<h3>Where it renders</h3>
+<ol>
+<li><code>system</code>: <code>...hostSystem</code>, <code>POLICY</code>, <code>APPEND_NOTE</code>, project facts, then the pinned <strong>non-mode</strong> notices under <code>## Pinned host notices</code>.</li>
+<li><code>messages</code>: the memory block (<code>megasc_memory</code>), the working window, the current turn, and <strong>last</strong> the <code>&lt;smart-context-state&gt;</code> note that carries <code>mode:</code>.</li>
+</ol>
+<p>The split is deliberate. The state note is the only part allowed to churn, and it sits after the current turn so a live number cannot invalidate the turn inside a tool loop. The system part must stay still: a Plan/Build switch that rewrote it would cost a prefix-cache miss on every request.</p>
+
+<h3>Only the live mode</h3>
+<p>Plan and Build contradict each other; pinning both leaves the old &quot;do not implement, tell the user to switch agents&quot; reading as the instruction (that was 62ca41e). <code>collapseModeNotices</code> keeps the mode the host emitted last and retires the other into <code>record.retired</code>; re-emitting the retired mode brings it back and retires the other in turn. The agent path is simpler still: one field, overwritten every pass, deleted when the agent is neither mode.</p>
+
+<h3>What compaction does not touch</h3>
+<p><code>record.mode</code> and <code>record.notices</code> are top-level record fields. <code>checkpointAppend</code> moves <code>base</code> and <code>updates</code> only; a host checkpoint archives the turns it replaces and never clears the mode or the notices. The tail note is rebuilt from the record on the next pass, so the mode reads correctly before and after any fold. If a future change moves the mode into the memory document, this stops being true - do not.</p>
+
+<h3>Traps</h3>
+<ul>
+<li><strong>Do not infer the mode from the transcript alone.</strong> The host has already shown it can keep the instruction out of <code>event.messages</code> entirely.</li>
+<li><strong>Do not require a shape.</strong> The host has used three; a matcher that knows one is how the 146-pass session happened.</li>
+<li><strong>Do not render the mode in the system part.</strong> It belongs in the tail note, or every switch pays a cache miss.</li>
+<li><strong>Do not keep the superseded mode.</strong> One mode, retired or overwritten.</li>
+<li><strong>Do not treat a sentence as an instruction.</strong> The full lead is the gate; a human question must stay a turn.</li>
+<li><strong>Do not assume every hook has an agent.</strong> The host docs say the <code>title</code> hook has neither <code>agent</code> nor <code>tools</code>; <code>context</code>, <code>compaction</code> and <code>generate</code> do.</li>
+<li><strong>Do not generalise an agent name.</strong> Exact <code>plan</code>/<code>build</code> only; a custom agent clears the mode rather than inheriting one.</li>
+<li><strong>Do not trust the smoke for a host channel.</strong> It proves the render; the database and a live pass prove the arrival.</li>
+</ul>
+</section>
+
+<section id="config">
+<h2>Config keys / UI</h2>
+<ul>
+<li>No config key. The mode is derived, never set by the user or the model.</li>
+<li>The only user-visible surface is the <code>mode:</code> line in the state note.</li>
+<li><code>smart_context { action:&quot;notice&quot; }</code> lists pinned text notices and retires a superseded one; the newest is refused. The mode itself is not a notice the model may retire.</li>
+</ul>
+</section>
+
+<section id="tests">
+<h2>Tests that pin it</h2>
+<p>From the notice block of <code>scripts/smoke.mjs</code> (<code>npm run smoke</code>):</p>
+<ul>
+<li>&quot;a system-role mode instruction is a notice&quot;, &quot;the system-role build instruction classifies as build&quot;, &quot;the system-role plan instruction classifies as plan&quot;</li>
+<li>&quot;a system-update mode switch is a notice&quot;, &quot;the system-update wrapper classifies as build&quot;</li>
+<li>&quot;a notice with a trailing @n@ marker is recognised&quot;, &quot;a plain user message is not a notice&quot;, &quot;a reminder with trailing prose is a real turn, not a notice&quot;, &quot;a human saying the mode is not a notice&quot;</li>
+<li>&quot;prose about plan mode is not a mode reminder&quot;</li>
+<li>&quot;the live mode is in the tail state note&quot;, &quot;the superseded mode is not repeated&quot;, &quot;mode notices are not pinned into a system part&quot;</li>
+<li>&quot;the record pins only the live mode reminder&quot;, &quot;the superseded reminder is retired, so the window cannot re-add it&quot;, &quot;re-emitting the superseded mode brings it back and retires the other&quot;</li>
+<li>&quot;the agent names the mode without any notice&quot;, &quot;the mode is stored on the record&quot;, &quot;a switch to plan lands on the next pass&quot;, &quot;another agent clears the mode&quot;, &quot;an agent with no mode renders no mode line&quot;, &quot;an agent object names the mode too&quot;, &quot;an unrelated agent is not a mode&quot;</li>
+</ul>
+<p>The live check no test can make: a session's record carries <code>mode: &quot;build&quot;</code> while <code>record.notices</code> is empty, and the state note still says <code>mode: build</code>. Verified 2026-11-27 on this host.</p>
+</section>
+
+<section id="related">
+<h2>Related</h2>
+<ul>
+<li><code>context-handoff.html</code> - the payload, the tail note and the notice pinning in full.</li>
+<li><code>compaction.html</code> - why a fold cannot clear the record's mode.</li>
+<li><code>memory-tool.html</code> - <code>action:&quot;notice&quot;</code> and the memory document the tail note follows.</li>
+<li><code>AGENTS.md</code> - the hard rule &quot;The current mode survives every pass: captured, pinned, re-emitted&quot;.</li>
+</ul>
+</section>
+</article>
+
+</body>
+</html>
