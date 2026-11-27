@@ -79,11 +79,11 @@ As of `main` - 2026-11-27.
 
 ## Open threads
 
-- **Verify the mode live (11/27).** After `npm run plugin:install` and `/reload`, check
-  that this session's record carries `mode: "build"` and that the state note ends with
-  `mode: build`. If `record.mode` is absent, `event.agent` is not what the tool call
-  context's `agent` is — the debug line and `session_v2.agent` then decide the next
-  source.
+- **The mode is verified live (11/27).** `npm run plugin:install` was enough — the host
+  reloaded the copy without a restart. This session's record carries `mode: "build"`
+  and the state note renders `mode: build` while `record.notices` is still empty, so
+  the mode now comes from `event.agent` and not from the transcript. The text-shape
+  classifier stays as the fallback for a host that names no agent.
 - **The host system prompt still carries the old Plan text (11/27).** After the Build
   switch the session's system prompt still held the "You are in Plan mode..." block;
   only the `<system-update>` message announced Build. That is why the tail `mode:`
