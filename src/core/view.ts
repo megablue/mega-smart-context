@@ -80,7 +80,7 @@ export const RESUMED_TEXT =
   "[mega-smart-context] Continue from where you left off without repeating completed content."
 
 /**
- * Classify a host-injected user message; `undefined` for a message a person wrote.
+ * Classify a host-injected message; `undefined` for a message a person wrote.
  *
  * The host admits four kinds of message as a *user* message that no one typed: a
  * Plan/Build mode notice (a `<system-reminder>` block, sometimes with a trailing
@@ -90,6 +90,11 @@ export const RESUMED_TEXT =
  * which reaches the transform through the same synthetic channel and has the
  * same shape. All of them are one text part under an unprefixed id, so the shape
  * is the only tell.
+ *
+ * A mode switch now also arrives as a `system`-role instruction (an instruction
+ * update, `metadata.notice: "instructions"`), so the mode is classified by its
+ * text on either role. Only the mode sentence qualifies; every other system
+ * message is left where it is.
  *
  * - A *notice* is a standing instruction. Left in place it starts a turn: it
  *   inflates the working window and ages a pending turn on a mode switch the
@@ -104,7 +109,7 @@ export const RESUMED_TEXT =
  *   the newest-refusal rail to a nudge instead of the live mode notice.
  */
 export function hostMessageOf(message: Message | undefined): HostMessage | undefined {
-  if (message?.role !== "user" || isInjected(message)) return undefined
+  if (message === undefined || isInjected(message)) return undefined
   if (typeof message.id !== "string" || message.id.length === 0) return undefined
   const content = message.content ?? []
   if (content.length !== 1) return undefined
@@ -115,7 +120,22 @@ export function hostMessageOf(message: Message | undefined): HostMessage | undef
     .replace(/\s*@[^@\s]*@\s*$/u, "")
     .trim()
   const id = message.id
+  if (message.role === "system") {
+    // The host sends the switch as an instruction update on the system role,
+    // not as a `<system-reminder>` user message. Pinning it is what keeps the
+    // live mode on the record once the turn that carried it leaves the window;
+    // only the mode sentence qualifies, so the host's other system messages are
+    // left alone.
+    return modeReminderOf(text) === undefined ? undefined : { kind: "notice", id, text }
+  }
+  if (message.role !== "user") return undefined
   if (/^<system-reminder>[\s\S]*<\/system-reminder>$/u.test(text)) return { kind: "notice", id, text }
+  // The host repaints an instruction update into the conversation as a
+  // `<system-update>` block, and the switch reaches the model through that
+  // wrapper. It counts only when the block announces a mode.
+  if (/^<system-update>[\s\S]*<\/system-update>$/u.test(text) && modeReminderOf(text) !== undefined) {
+    return { kind: "notice", id, text }
+  }
   if (text.startsWith(OUTPUT_LIMIT_PREFIX)) return { kind: "notice", id, text }
   if (text === INTERRUPTED_TEXT || text === RESUMED_TEXT) return { kind: "cue", id, text }
   if (/^<shell\b[\s\S]*<\/shell>$/u.test(text) || /^<subagent\b[\s\S]*<\/subagent>$/u.test(text)) {
@@ -165,9 +185,14 @@ export function noticeOf(message: Message | undefined): { id: string; text: stri
 /** Which mode a host reminder announces. The two are mutually exclusive. */
 export type ModeReminder = "plan" | "build"
 
-/** The clause that identifies each mode reminder. Both are re-emitted verbatim. */
+/** The sentence that identifies each mode reminder. Both are re-emitted verbatim. */
 const PLAN_MODE_CLAUSE = "You are in Plan mode"
 const BUILD_MODE_CLAUSE = "You are NO LONGER in Plan mode"
+/** The system-role build instruction opens with this sentence instead. */
+const BUILD_AGENT_CLAUSE = "You are no longer the Plan agent"
+/** The system-role instructions continue past the first sentence; prose alone does not. */
+const PLAN_INSTRUCTION_LEAD = "You are in Plan mode. "
+const BUILD_INSTRUCTION_LEAD = "You are no longer the Plan agent, so you are NO LONGER in Plan mode. "
 
 /**
  * Which mode a reminder announces, if it is one.
@@ -179,14 +204,23 @@ const BUILD_MODE_CLAUSE = "You are NO LONGER in Plan mode"
  * the Build switch and read as the instruction. `state.ts` retires the older
  * one.
  *
- * A substring match, because the raw text starts `<system-reminder>` followed by
- * a newline. Gated on the reminder shape so prose that talks about Plan mode
- * (a nudge, a human question) can never classify.
+ * Three shapes are recognised: the `<system-reminder>` block, matched as a
+ * substring because the raw text starts with the tag and a newline; the
+ * `<system-update>` wrapper the host repaints an instruction update into; and
+ * the bare system-role instruction, which must open with its own full sentence
+ * and continue past it. Gating on the shape is what keeps prose that merely
+ * talks about Plan mode (a nudge, a human question) from classifying.
  */
 export function modeReminderOf(text: string): ModeReminder | undefined {
-  if (!text.startsWith("<system-reminder>")) return undefined
-  if (text.includes(BUILD_MODE_CLAUSE)) return "build"
-  if (text.includes(PLAN_MODE_CLAUSE)) return "plan"
+  if (text.startsWith("<system-reminder>")) {
+    if (text.includes(BUILD_MODE_CLAUSE)) return "build"
+    if (text.includes(PLAN_MODE_CLAUSE)) return "plan"
+    return undefined
+  }
+  const update = /^<system-update>([\s\S]*)<\/system-update>$/u.exec(text)
+  if (update !== null && update[1] !== undefined) return modeReminderOf(update[1].trim())
+  if (text.startsWith(BUILD_INSTRUCTION_LEAD) || text.startsWith(BUILD_MODE_CLAUSE + ". ")) return "build"
+  if (text.startsWith(PLAN_INSTRUCTION_LEAD)) return "plan"
   return undefined
 }
 

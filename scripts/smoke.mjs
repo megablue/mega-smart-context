@@ -802,6 +802,28 @@ ok(
   "a reminder with trailing prose is a real turn, not a notice",
 )
 
+function systemMsg(id, text) {
+  return { id, role: "system", content: [{ type: "text", text }] }
+}
+function updateMsg(id, text) {
+  return { id, role: "user", content: [{ type: "text", text: "<system-update>\n" + text + "\n</system-update>" }] }
+}
+const SYSTEM_PLAN = "You are in Plan mode. Discuss the plan with the user directly in the conversation."
+const SYSTEM_BUILD =
+  "You are no longer the Plan agent, so you are NO LONGER in Plan mode. The previous Plan restrictions no longer apply. Any Plan mode instructions from earlier in this conversation are no longer active."
+
+ok(noticeOf(systemMsg("s1", SYSTEM_BUILD))?.text === SYSTEM_BUILD, "a system-role mode instruction is a notice")
+ok(noticeOf(systemMsg("s2", "You are a helpful assistant.")) === undefined, "another system message is not a notice")
+ok(modeReminderOf(SYSTEM_BUILD) === "build", "the system-role build instruction classifies as build")
+ok(modeReminderOf(SYSTEM_PLAN) === "plan", "the system-role plan instruction classifies as plan")
+ok(noticeOf(updateMsg("u-build", SYSTEM_BUILD)) !== undefined, "a system-update mode switch is a notice")
+ok(modeReminderOf(updateMsg("u-build", SYSTEM_BUILD).content[0].text) === "build", "the system-update wrapper classifies as build")
+ok(
+  noticeOf(updateMsg("u-other", "The instructions from AGENTS.md changed.")) === undefined,
+  "a system-update that is not a mode is not a notice",
+)
+ok(noticeOf(noticeMsg("s3", "you are in build mode")) === undefined, "a human saying the mode is not a notice")
+
 const withNotices = [
   user("u1", "First request. ".repeat(10)),
   noticeMsg("n-plan", PLAN_NOTICE),
@@ -874,6 +896,31 @@ ok(
   (backRec.retired ?? []).some((entry) => entry.id === "n-build" && entry.text === BUILD_NOTICE),
   "the mode it replaced is retired in turn",
 )
+
+// The live mode in the shape the host uses now: a system-role instruction (and
+// its <system-update> repaint) is pinned like the old reminder, retired on the
+// switch, and carried by the tail note once the turn that held it is gone.
+const modeStore = new SessionStore()
+const modeDeps = { store: modeStore, config: noticeConfig }
+const modeMessages = [
+  updateMsg("s-plan", SYSTEM_PLAN),
+  user("u1", "First request. ".repeat(10)),
+  assistant("a1", "Working. ".repeat(10)),
+  systemMsg("s-build", SYSTEM_BUILD),
+  user("u2", "Continue. ".repeat(10)),
+  assistant("a2", "Done. ".repeat(10)),
+]
+const modePayload = await buildPayload(
+  { sessionID: "sys-notice", system: [{ type: "text", text: "base" }], messages: modeMessages, model: {} },
+  modeDeps,
+)
+const modeTail = modePayload.messages[modePayload.messages.length - 1]
+const modeTailText = modeTail.content.filter((part) => part.type === "text").map((part) => part.text).join("\n")
+ok(modeTailText.includes("mode: build"), "the system-role switch puts the live mode in the tail note")
+ok(!JSON.stringify(modePayload).includes("NO LONGER in Plan mode"), "the system-role notice is not replayed in the payload")
+const modeRec = await modeStore.load("sys-notice")
+ok(modeRec.notices.length === 1 && modeRec.notices[0].text === SYSTEM_BUILD, "only the live system-role mode is pinned")
+ok((modeRec.retired ?? []).some((entry) => entry.id === "s-plan"), "the system-update plan instruction is retired")
 
 // A mode switch carries no user turn: it must not age a pending turn out.
 const ageStore = new SessionStore()
