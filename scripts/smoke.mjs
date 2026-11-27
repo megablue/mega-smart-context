@@ -1517,7 +1517,7 @@ const extGranted = await runMemoryTool(
   extendDeps,
 )
 let extendRecord = await extendStore.load("append-extend")
-ok(extGranted.ok && extendRecord.ext?.toCap === 8000 && extendRecord.ext?.factor === 2, "extend doubles the pool")
+ok(extGranted.ok && extendRecord.ext?.toCap === 7000 && extendRecord.ext?.factor === 2, "extend doubles the working budget")
 ok(extendRecord.compact === undefined, "an extension clears a due mark")
 const extAfter = await extendPass(extTurn2)
 ok(
@@ -1525,7 +1525,7 @@ ok(
     (message) =>
       message.id === "megasc_state" &&
       message.content[0].text.includes("extension: +100%") &&
-      message.content[0].text.includes("/8k"),
+      message.content[0].text.includes("/7k"),
   ),
   "the note shows the extended cap and the grant",
 )

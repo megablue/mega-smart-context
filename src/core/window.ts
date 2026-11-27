@@ -35,8 +35,10 @@ export interface ExtensionRequest {
   readonly enabled: boolean
   /** The configured multiplier, already validated by `config.ts`. */
   readonly factor: number
-  /** The memory + working pool the era started with. */
-  readonly baseCap: number
+  /** The budget that does not grow: the memory document. */
+  readonly memoryTokens: number
+  /** The budget the factor applies to: the working window. */
+  readonly workingTokens: number
   /** The model's context window, when the host reports one. */
   readonly modelContext?: number
   /** Estimated tokens the host spends on its own system prompt and tools. */
@@ -93,9 +95,14 @@ export function decideExtension(request: ExtensionRequest): ExtensionDecision {
   const multiplier = Number.isFinite(request.factor)
     ? clamp(request.factor, EXTEND_FACTOR_MIN, EXTEND_FACTOR_MAX)
     : EXTEND_FACTOR_MIN
-  const wanted = Math.floor(request.baseCap * multiplier)
+  const memory = Math.max(0, Math.floor(request.memoryTokens))
+  const working = Math.max(0, Math.floor(request.workingTokens))
+  const baseCap = memory + working
+  // The factor grows the working window, not the pool: doubling a 100k+100k
+  // session gives 100k + 200k, not 200k + 200k.
+  const wanted = memory + Math.floor(working * multiplier)
   const toCap = Math.min(wanted, hardCap)
-  if (toCap <= request.baseCap) {
+  if (toCap <= baseCap) {
     return {
       ok: false,
       why: `no headroom under the ~${formatTokens(hardCap)} model ceiling; checkpoint now`,
@@ -104,7 +111,7 @@ export function decideExtension(request: ExtensionRequest): ExtensionDecision {
   return {
     ok: true,
     toCap,
-    factor: Math.round((toCap / request.baseCap) * 100) / 100,
+    factor: working > 0 ? Math.round(((toCap - memory) / working) * 100) / 100 : 1,
     hardCap,
   }
 }

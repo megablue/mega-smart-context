@@ -473,7 +473,8 @@ function extendWindow(
   const decision = decideExtension({
     enabled: config.windowExtend,
     factor: config.windowExtendFactor,
-    baseCap,
+    memoryTokens: config.memoryTokens,
+    workingTokens: config.workingTokens,
     modelContext: report?.modelContext,
     hostSystemTokens: report?.hostSystemTokens,
     alreadyExtended: record.ext !== undefined,

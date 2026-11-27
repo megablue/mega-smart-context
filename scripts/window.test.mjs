@@ -26,7 +26,8 @@ function request(overrides = {}) {
   return {
     enabled: true,
     factor: 2,
-    baseCap: 300_000,
+    memoryTokens: 100_000,
+    workingTokens: 200_000,
     modelContext: 1_000_000,
     alreadyExtended: false,
     ...overrides,
@@ -40,10 +41,10 @@ test("the bounds are the documented ones", () => {
   assert.equal(WARN_PERCENT_MAX, 95)
 })
 
-test("a 1M window doubles a 300k cap under an 810k hard cap", () => {
+test("a 1M window doubles the working budget (100k+200k) under an 810k hard cap", () => {
   assert.deepEqual(decideExtension(request()), {
     ok: true,
-    toCap: 600_000,
+    toCap: 500_000,
     factor: 2,
     hardCap: 810_000,
   })
@@ -53,7 +54,7 @@ test("a 400k window binds the extension at the 324k hard cap", () => {
   assert.deepEqual(decideExtension(request({ modelContext: 400_000 })), {
     ok: true,
     toCap: 324_000,
-    factor: 1.08,
+    factor: 1.12,
     hardCap: 324_000,
   })
 })
@@ -103,29 +104,29 @@ test("host system tokens reduce the hard cap by their overhead", () => {
   const decision = decideExtension(request({ hostSystemTokens: 100_000 }))
   assert.equal(decision.ok, true)
   assert.equal(decision.hardCap, 720_000)
-  assert.equal(decision.toCap, 600_000)
+  assert.equal(decision.toCap, 500_000)
 })
 
 test("the factor is clamped at both ends", () => {
   const low = decideExtension(request({ factor: 0.5 }))
   assert.equal(low.ok, true)
-  assert.equal(low.toCap, 330_000)
+  assert.equal(low.toCap, 320_000)
   assert.equal(low.factor, 1.1)
 
   const high = decideExtension(request({ factor: 10 }))
   assert.equal(high.ok, true)
   assert.equal(high.toCap, 810_000)
-  assert.equal(high.factor, 2.7)
+  assert.equal(high.factor, 3.55)
   assert.equal(high.hardCap, 810_000)
 })
 
 test("the host reply reserve steps up at a 32k window", () => {
-  const below = decideExtension(request({ modelContext: 31_999, baseCap: 10_000 }))
+  const below = decideExtension(request({ modelContext: 31_999, memoryTokens: 5_000, workingTokens: 5_000 }))
   assert.equal(below.ok, true)
   assert.equal(below.hardCap, 25_920)
-  assert.equal(below.toCap, 20_000)
+  assert.equal(below.toCap, 15_000)
 
-  const at = decideExtension(request({ modelContext: 32_000, baseCap: 10_000 }))
+  const at = decideExtension(request({ modelContext: 32_000, memoryTokens: 5_000, workingTokens: 5_000 }))
   assert.equal(at.ok, true)
   assert.equal(at.hardCap, 14_400)
   assert.equal(at.toCap, 14_400)
