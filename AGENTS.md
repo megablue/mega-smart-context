@@ -210,6 +210,28 @@ mechanisms and traps.
   from the raw transcript on every request. *Reason:* mutating the transcript
   corrupts the very session the pass is managing. *Pinned by:* the smoke
   assertion "the durable transcript objects were not mutated".
+- **The current mode survives every pass: captured, pinned, re-emitted.** The
+  pass must always know which PLAN/BUILD mode the session is in and render it on
+  every request; only the live mode is kept - a superseded one is retired, never
+  preserved beside it. Keeping that true means classifying every shape the host
+  uses for the switch, not just the one seen today: a `user` message whose whole
+  text is `<system-reminder>…</system-reminder>`, and a `system`-role
+  instruction (`metadata.notice: "instructions"`,
+  `instructionSources: ["core/agent"]`) that opens "You are in Plan mode" or
+  contains "NO LONGER in Plan mode". Any change to window selection, the fold,
+  compaction, payload assembly or notice classification must keep that detection
+  true: the tail note's `mode:` line (`renderTailState`) is the only channel
+  the mode reaches the model through, so a pass that loses it is a regression
+  even when every other assertion passes.
+  *Reason:* the loss is silent and one-sided - the transcript copy looks right
+  until the turn carrying it leaves the window, and from then on the model acts
+  on a stale or absent mode; it kept claiming Plan mode minutes after the Build
+  switch, and the user had to type "you are in build mode" by hand.
+  *Pinned by:* the smoke notice block ("a notice with a trailing @n@ marker is
+  recognised", "the live mode is in the tail state note", "the record pins only
+  the live mode reminder") - which covers the `<system-reminder>` shape only.
+  No assertion covers the `system`-role instruction today, so a change to the
+  pass must verify `record.notices` by hand after a switch until one does.
 - **Never split a tool call from its result, and always keep the current turn.**
   The working window cuts at turn starts; `balanceCuts` is the assertion that
   this is safe, and the current turn is included even when it alone exceeds the
