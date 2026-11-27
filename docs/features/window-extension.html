@@ -40,7 +40,7 @@ hr{border:0;border-top:1px solid var(--line);margin:2rem 0}
 <section id="what-it-does">
 <h2>What it does</h2>
 <p>The working pool can grow once per compaction era, on the model&#39;s request, when the trailing state note says the pool is near its cap. At <code>windowWarnPercent</code> (80% default) of the effective pool the note asks the model to write the continuation brief into memory first, then offers two moves: finish only the current atomic step with <code>smart_context { action:&quot;extend&quot;, reason:&quot;...&quot; }</code>, or fold now with <code>action:&quot;compact&quot;</code>. The extension is not automatic; the model has to ask for it and say why.</p>
-<p>A grant raises the pool to a cap that is bounded twice: by <code>windowExtendFactor</code> (2 means double, clamped 1.1..4) and by what the host&#39;s own ceiling will accept before it compacts. The realized multiplier can therefore be smaller than the configured one. The cap that the plugin enforces - for the working window, <code>budgetOf</code>, <code>/context</code> and the stats report - becomes <code>record.ext.toCap</code>; the model&#39;s real context window is only a clamp and is never printed as a used figure.</p>
+<p>A grant raises the <strong>working budget</strong> to a cap that is bounded twice: by <code>windowExtendFactor</code> (2 means double the working share, clamped 1.1..4) and by what the host&#39;s own ceiling will accept before it compacts. The factor never multiplies the pool: <code>toCap = memoryTokens + workingTokens * factor</code>, so a 100k+100k profile grants 300k, not 400k - the memory document is not doubled. The realized multiplier can therefore be smaller than the configured one. The cap that the plugin enforces - for the working window, <code>budgetOf</code>, <code>/context</code> and the stats report - becomes <code>record.ext.toCap</code>; the model&#39;s real context window is only a clamp and is never printed as a used figure.</p>
 <p>One grant per era. A fold clears <code>record.ext</code>, and so does a host compaction, so the next era starts at <code>memoryTokens + workingTokens</code> again. After a grant the note reports the extension and asks for one atomic step; at the warning line of the extended pool it says the extension is spent and the fold runs at the cap; once the pool is full the usual <code>compaction due</code> line says the extension is spent. There is no automatic continuation after the fold.</p>
 </section>
 
@@ -76,8 +76,8 @@ hr{border:0;border-top:1px solid var(--line);margin:2rem 0}
 <li><code>reserve = max(floor(window * 0.1), window &gt;= 32000 ? 16000 : 0)</code></li>
 <li><code>ceiling = window - reserve - hostSystemTokens</code></li>
 <li><code>hardCap = floor(ceiling * 0.9)</code> - the last 10% is safety for tool schemas and character-count error</li>
-<li><code>toCap = min(floor(baseCap * clamp(factor, 1.1, 4)), hardCap)</code></li>
-<li>grant only when <code>toCap &gt; baseCap</code>; the stored <code>factor</code> is <code>round(toCap / baseCap, 2)</code></li>
+<li><code>toCap = min(memoryTokens + floor(workingTokens * clamp(factor, 1.1, 4)), hardCap)</code></li>
+<li>grant only when <code>toCap &gt; baseCap</code>; the stored <code>factor</code> is the realized growth of the working share, <code>round((toCap - memoryTokens) / workingTokens, 2)</code></li>
 </ul>
 <p>The order of the refusals is deliberate: disabled, already extended, unknown model window, then no headroom. The last case is the one that surprises: a window small enough that the hard cap sits below the base pool refuses rather than shrinking the pool. <code>hostSystemTokens</code> is optional and is subtracted only when the host reports it.</p>
 
